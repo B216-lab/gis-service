@@ -1,5 +1,6 @@
 import '@mantine/core/styles.css';
 import '@gfazioli/mantine-split-pane/styles.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { MantineProvider } from '@mantine/core';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

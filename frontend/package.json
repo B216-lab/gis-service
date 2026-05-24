@@ -11,10 +11,14 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@deck.gl/layers": "^9.2.2",
+    "@deck.gl/mapbox": "^9.2.2",
     "@tabler/icons-react": "^3.34.1",
     "@gfazioli/mantine-split-pane": "^4.1.4",
     "@mantine/core": "^9.2.1",
     "@mantine/hooks": "^9.2.1",
+    "maplibre-gl": "^5.9.0",
+    "pmtiles": "^4.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "zustand": "^5.0.8"

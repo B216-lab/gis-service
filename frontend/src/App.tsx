@@ -40,6 +40,7 @@ import {
   type InspectableTable,
   type InspectorRowsResponse,
 } from './features/inspector/api';
+import { MapPane } from './features/map/MapPane';
 
 const pageSize = 100;
 
@@ -949,11 +950,7 @@ export function App() {
             >
               <Split.Pane grow minHeight={0}>
                 <PanelFrame hint="Resizable" title="Map">
-                  <EmptyState
-                    background="linear-gradient(135deg, rgba(228,240,255,0.9) 0%, rgba(231,245,255,0.9) 35%, rgba(255,249,219,0.85) 100%)"
-                    detail="Center top pane"
-                    label="Map Canvas"
-                  />
+                  <MapPane />
                 </PanelFrame>
               </Split.Pane>
 
