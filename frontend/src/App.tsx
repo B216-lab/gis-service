@@ -13,6 +13,7 @@ import {
   PasswordInput,
   ScrollArea,
   Select,
+  Slider,
   Stack,
   Table,
   Text,
@@ -23,6 +24,8 @@ import { useDisclosure } from '@mantine/hooks';
 import {
   IconCheck,
   IconDatabasePlus,
+  IconEye,
+  IconEyeOff,
   IconPlug,
   IconPlugConnected,
   IconRefresh,
@@ -32,6 +35,7 @@ import { useEffect, useState, type ChangeEvent, type ReactNode } from 'react';
 
 import {
   type DatabaseConnection,
+  type ImportedLayer,
   useConnectionStore,
 } from './features/connections/store';
 import {
@@ -140,8 +144,19 @@ const initialConnectionForm: ConnectionFormState = {
   password: '',
 };
 
-function ConnectionManager({}: {}) {
+function ConnectionManager({
+  importedLayers,
+  onImportSelectedTable,
+  selectedInspectableTable,
+  tables,
+}: {
+  importedLayers: ImportedLayer[];
+  onImportSelectedTable: () => void;
+  selectedInspectableTable: InspectableTable | null;
+  tables: InspectableTable[];
+}) {
   const [opened, { open, close }] = useDisclosure(false);
+  const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
   const [form, setForm] = useState<ConnectionFormState>(initialConnectionForm);
   const connections = useConnectionStore((state) => state.connections);
   const selectedConnectionId = useConnectionStore(
@@ -166,9 +181,19 @@ function ConnectionManager({}: {}) {
   const setConnectionTestError = useConnectionStore(
     (state) => state.setConnectionTestError,
   );
+  const toggleImportedLayerVisibility = useConnectionStore(
+    (state) => state.toggleImportedLayerVisibility,
+  );
+  const updateImportedLayer = useConnectionStore(
+    (state) => state.updateImportedLayer,
+  );
 
   const activeConnections = connections.filter(
     (connection) => connection.isActive,
+  );
+  const canImportSelectedTable = Boolean(
+    selectedInspectableTable &&
+      selectedInspectableTable.geometryColumns.length > 0,
   );
 
   function handleFieldChange(event: ChangeEvent<HTMLInputElement>) {
@@ -513,6 +538,227 @@ function ConnectionManager({}: {}) {
             ) : null}
           </Stack>
         </ScrollArea>
+
+        <Stack gap="xs">
+          <Group justify="space-between" wrap="nowrap">
+            <div>
+              <Text fw={700} size="sm">
+                Imported Layers
+              </Text>
+              <Text c="dimmed" size="xs">
+                {importedLayers.length} layer
+                {importedLayers.length === 1 ? '' : 's'}
+              </Text>
+            </div>
+            <Button
+              disabled={!canImportSelectedTable}
+              onClick={onImportSelectedTable}
+              size="compact-sm"
+            >
+              Import Layer
+            </Button>
+          </Group>
+
+          <Stack gap={4}>
+            {importedLayers.map((layer) => {
+              const sourceTable =
+                tables.find((table) => table.fullName === layer.fullName) ??
+                null;
+              const isExpanded = expandedLayerId === layer.id;
+
+              return (
+                <Paper
+                  key={layer.id}
+                  p="xs"
+                  radius="md"
+                  shadow="xs"
+                  style={{
+                    border: '1px solid var(--mantine-color-gray-3)',
+                    opacity: layer.visible ? 1 : 0.55,
+                  }}
+                >
+                  <Stack gap="xs">
+                    <Group justify="space-between" wrap="nowrap">
+                      <Group gap="xs" wrap="nowrap">
+                        <LayerGlyph
+                          color={layer.color}
+                          icon={layer.icon}
+                          visible={layer.visible}
+                        />
+                        <Stack gap={0}>
+                          <Text fw={600} size="sm">
+                            {layer.name}
+                          </Text>
+                          <Text c="dimmed" size="xs">
+                            {layer.geometryColumn} • {layer.kind}
+                          </Text>
+                        </Stack>
+                      </Group>
+
+                      <Group gap={4} wrap="nowrap">
+                        <Button
+                          onClick={() =>
+                            setExpandedLayerId((current) =>
+                              current === layer.id ? null : layer.id,
+                            )
+                          }
+                          size="compact-xs"
+                          variant="subtle"
+                        >
+                          {isExpanded ? 'Close' : 'Style'}
+                        </Button>
+                        <ActionIcon
+                          aria-label={
+                            layer.visible ? 'Hide layer' : 'Show layer'
+                          }
+                          onClick={() =>
+                            toggleImportedLayerVisibility(layer.id)
+                          }
+                          size="sm"
+                          variant="subtle"
+                        >
+                          {layer.visible ? (
+                            <IconEye size={16} />
+                          ) : (
+                            <IconEyeOff size={16} />
+                          )}
+                        </ActionIcon>
+                      </Group>
+                    </Group>
+
+                    <Text c="dimmed" size="xs">
+                      {layer.schema}.{layer.table}
+                    </Text>
+
+                    {isExpanded ? (
+                      <Stack
+                        gap="xs"
+                        pt="xs"
+                        style={{
+                          borderTop: '1px solid var(--mantine-color-gray-2)',
+                        }}
+                      >
+                        <TextInput
+                          label="Layer name"
+                          onChange={(event) =>
+                            updateImportedLayer(layer.id, {
+                              name: event.currentTarget.value,
+                            })
+                          }
+                          size="xs"
+                          value={layer.name}
+                        />
+
+                        <Select
+                          data={(sourceTable?.geometryColumns ?? []).map(
+                            (column) => ({
+                              label: `${column.name} (${column.geometryType})`,
+                              value: column.name,
+                            }),
+                          )}
+                          label="Geographic column"
+                          onChange={(value) => {
+                            const nextGeometryColumn =
+                              sourceTable?.geometryColumns.find(
+                                (column) => column.name === value,
+                              ) ?? null;
+
+                            updateImportedLayer(layer.id, {
+                              geometryColumn: value ?? layer.geometryColumn,
+                            });
+
+                            if (nextGeometryColumn) {
+                              updateImportedLayer(layer.id, {
+                                geometryType: nextGeometryColumn.geometryType,
+                              });
+                            }
+                          }}
+                          size="xs"
+                          value={layer.geometryColumn}
+                        />
+
+                        <Group align="end" grow>
+                          <Box>
+                            <Text c="dimmed" fw={500} mb={4} size="xs">
+                              Color
+                            </Text>
+                            <input
+                              aria-label={`Choose color for ${layer.name}`}
+                              onChange={(event) =>
+                                updateImportedLayer(layer.id, {
+                                  color: event.currentTarget.value,
+                                })
+                              }
+                              style={{
+                                width: '100%',
+                                height: 36,
+                                border: '1px solid var(--mantine-color-gray-4)',
+                                borderRadius: 8,
+                                background: 'transparent',
+                                padding: 4,
+                              }}
+                              type="color"
+                              value={layer.color}
+                            />
+                          </Box>
+
+                          <Select
+                            data={[
+                              { label: 'Circle', value: 'circle' },
+                              { label: 'Square', value: 'square' },
+                              { label: 'Diamond', value: 'diamond' },
+                              { label: 'Line', value: 'line' },
+                            ]}
+                            label="List icon"
+                            onChange={(value) => {
+                              if (!value) {
+                                return;
+                              }
+
+                              updateImportedLayer(layer.id, {
+                                icon: value as ImportedLayer['icon'],
+                              });
+                            }}
+                            size="xs"
+                            value={layer.icon}
+                          />
+                        </Group>
+
+                        <Stack gap={4}>
+                          <Group justify="space-between">
+                            <Text c="dimmed" fw={500} size="xs">
+                              Opacity
+                            </Text>
+                            <Text c="dimmed" size="xs">
+                              {layer.opacity}%
+                            </Text>
+                          </Group>
+                          <Slider
+                            max={100}
+                            min={0}
+                            onChange={(value) =>
+                              updateImportedLayer(layer.id, {
+                                opacity: value,
+                              })
+                            }
+                            size="sm"
+                            value={layer.opacity}
+                          />
+                        </Stack>
+                      </Stack>
+                    ) : null}
+                  </Stack>
+                </Paper>
+              );
+            })}
+
+            {importedLayers.length === 0 ? (
+              <Text c="dimmed" size="xs">
+                Select geometry table below, then import it as layer.
+              </Text>
+            ) : null}
+          </Stack>
+        </Stack>
       </Stack>
     </>
   );
@@ -523,11 +769,13 @@ function DataInspector({
   tables,
   selectedTableKey,
   onSelectTable,
+  tablesError,
 }: {
   connection: DatabaseConnection | null;
   tables: InspectableTable[];
   selectedTableKey: string | null;
   onSelectTable: (tableKey: string | null) => void;
+  tablesError: string;
 }) {
   const [rowsState, setRowsState] = useState<InspectorRowsResponse | null>(
     null,
@@ -669,6 +917,12 @@ function DataInspector({
           {isLoadingRows ? <Loader size={16} /> : <IconRefresh size={16} />}
         </ActionIcon>
       </Group>
+
+      {tablesError ? (
+        <Text c="red" size="sm">
+          {tablesError}
+        </Text>
+      ) : null}
 
       {rowsError ? (
         <Text c="red" size="sm">
@@ -821,12 +1075,64 @@ function getCellFontFamily(columnName: string, columnType: string) {
   return 'var(--mantine-font-family)';
 }
 
+function LayerGlyph({
+  color,
+  icon,
+  visible,
+}: Pick<ImportedLayer, 'color' | 'icon' | 'visible'>) {
+  const sharedStyle = {
+    flexShrink: 0,
+    opacity: visible ? 1 : 0.5,
+  } as const;
+
+  if (icon === 'line') {
+    return (
+      <Box
+        style={{
+          ...sharedStyle,
+          width: 14,
+          height: 4,
+          borderRadius: 999,
+          background: color,
+        }}
+      />
+    );
+  }
+
+  if (icon === 'diamond') {
+    return (
+      <Box
+        style={{
+          ...sharedStyle,
+          width: 10,
+          height: 10,
+          background: color,
+          transform: 'rotate(45deg)',
+        }}
+      />
+    );
+  }
+
+  return (
+    <Box
+      style={{
+        ...sharedStyle,
+        width: 10,
+        height: 10,
+        borderRadius: icon === 'circle' ? 999 : 2,
+        background: color,
+      }}
+    />
+  );
+}
+
 function isNumericColumnType(columnType: string) {
   return /int|numeric|double|real|decimal|serial/i.test(columnType);
 }
 
 export function App() {
   const connections = useConnectionStore((state) => state.connections);
+  const importedLayers = useConnectionStore((state) => state.importedLayers);
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
   );
@@ -836,7 +1142,11 @@ export function App() {
   const setSelectedTable = useConnectionStore(
     (state) => state.setSelectedTable,
   );
+  const addImportedLayer = useConnectionStore(
+    (state) => state.addImportedLayer,
+  );
   const [tables, setTables] = useState<InspectableTable[]>([]);
+  const [tablesError, setTablesError] = useState('');
 
   const selectedConnection =
     connections.find((connection) => connection.id === selectedConnectionId) ??
@@ -844,6 +1154,8 @@ export function App() {
   const selectedTableKey = selectedConnectionId
     ? (selectedTableByConnectionId[selectedConnectionId] ?? null)
     : null;
+  const selectedInspectableTable =
+    tables.find((table) => table.fullName === selectedTableKey) ?? null;
 
   function handleSelectTable(tableKey: string | null) {
     if (!selectedConnectionId) {
@@ -853,9 +1165,38 @@ export function App() {
     setSelectedTable(selectedConnectionId, tableKey);
   }
 
+  function handleImportSelectedTable() {
+    if (!selectedConnectionId || !selectedTableKey) {
+      return;
+    }
+
+    if (
+      !selectedInspectableTable ||
+      selectedInspectableTable.geometryColumns.length === 0
+    ) {
+      return;
+    }
+
+    addImportedLayer({
+      connectionId: selectedConnectionId,
+      schema: selectedInspectableTable.schema,
+      table: selectedInspectableTable.name,
+      fullName: selectedInspectableTable.fullName,
+      kind: selectedInspectableTable.kind,
+      name: selectedInspectableTable.name,
+      geometryColumn: selectedInspectableTable.geometryColumns[0].name,
+      geometryType: selectedInspectableTable.geometryColumns[0].geometryType,
+    });
+  }
+
+  const selectedConnectionImportedLayers = importedLayers.filter(
+    (layer) => layer.connectionId === selectedConnectionId,
+  );
+
   useEffect(() => {
     if (!selectedConnection || selectedConnection.testStatus !== 'success') {
       setTables([]);
+      setTablesError('');
       return;
     }
 
@@ -864,6 +1205,7 @@ export function App() {
 
     async function loadTables() {
       try {
+        setTablesError('');
         const nextTables = await fetchInspectableTables(activeConnection);
         if (!isActive) {
           return;
@@ -880,6 +1222,11 @@ export function App() {
           return;
         }
         setTables([]);
+        setTablesError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to load inspectable tables.',
+        );
         handleSelectTable(null);
       }
     }
@@ -935,7 +1282,12 @@ export function App() {
         >
           <Split.Pane initialWidth={280} maxWidth={480} minWidth={0}>
             <PanelFrame hint="Resizable" title="Data & Layers">
-              <ConnectionManager />
+              <ConnectionManager
+                importedLayers={selectedConnectionImportedLayers}
+                onImportSelectedTable={handleImportSelectedTable}
+                selectedInspectableTable={selectedInspectableTable}
+                tables={tables}
+              />
             </PanelFrame>
           </Split.Pane>
 
@@ -962,6 +1314,7 @@ export function App() {
                     connection={selectedConnection}
                     onSelectTable={handleSelectTable}
                     selectedTableKey={selectedTableKey}
+                    tablesError={tablesError}
                     tables={tables}
                   />
                 </PanelFrame>

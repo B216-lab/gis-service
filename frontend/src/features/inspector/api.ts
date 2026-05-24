@@ -6,11 +6,20 @@ export interface InspectableTable {
   fullName: string;
   kind: string;
   rowEstimate: number;
+  columns: InspectorColumn[];
+  geometryColumns: InspectorGeometryColumn[];
 }
 
 export interface InspectorColumn {
   name: string;
   type: string;
+}
+
+export interface InspectorGeometryColumn {
+  name: string;
+  storageType: string;
+  geometryType: string;
+  srid: number;
 }
 
 export interface InspectorRowsResponse {

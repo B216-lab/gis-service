@@ -37,11 +37,13 @@ type ConnectionTestResult struct {
 }
 
 type TableSummary struct {
-	Schema      string `json:"schema"`
-	Name        string `json:"name"`
-	FullName    string `json:"fullName"`
-	Kind        string `json:"kind"`
-	RowEstimate int64  `json:"rowEstimate"`
+	Schema          string               `json:"schema"`
+	Name            string               `json:"name"`
+	FullName        string               `json:"fullName"`
+	Kind            string               `json:"kind"`
+	RowEstimate     int64                `json:"rowEstimate"`
+	Columns         []ColumnMeta         `json:"columns"`
+	GeometryColumns []GeometryColumnMeta `json:"geometryColumns"`
 }
 
 type ListTablesResult struct {
@@ -61,6 +63,13 @@ type ColumnMeta struct {
 	Type string `json:"type"`
 }
 
+type GeometryColumnMeta struct {
+	Name         string `json:"name"`
+	StorageType  string `json:"storageType"`
+	GeometryType string `json:"geometryType"`
+	SRID         int    `json:"srid"`
+}
+
 type ListRowsResult struct {
 	Schema  string                   `json:"schema"`
 	Table   string                   `json:"table"`
@@ -75,6 +84,13 @@ type columnDefinition struct {
 	Name    string
 	Type    string
 	UdtName string
+}
+
+type geometryColumnDefinition struct {
+	Name         string
+	StorageType  string
+	GeometryType string
+	SRID         int
 }
 
 func NewService(timeout time.Duration) *Service {
@@ -260,6 +276,52 @@ func (service *Service) ListTables(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
 	}
+	rows.Close()
+
+	for index := range tables {
+		columnDefinitions, err := service.listColumnDefinitions(
+			timeoutCtx,
+			conn,
+			tables[index].Schema,
+			tables[index].Name,
+		)
+		if err != nil {
+			return nil, err
+		}
+		tables[index].Columns = make([]ColumnMeta, 0, len(columnDefinitions))
+		for _, column := range columnDefinitions {
+			tables[index].Columns = append(tables[index].Columns, ColumnMeta{
+				Name: column.Name,
+				Type: column.Type,
+			})
+		}
+
+		geometryDefinitions, err := service.listGeometryColumns(
+			timeoutCtx,
+			conn,
+			tables[index].Schema,
+			tables[index].Name,
+		)
+		if err != nil {
+			return nil, err
+		}
+		tables[index].GeometryColumns = make(
+			[]GeometryColumnMeta,
+			0,
+			len(geometryDefinitions),
+		)
+		for _, geometryColumn := range geometryDefinitions {
+			tables[index].GeometryColumns = append(
+				tables[index].GeometryColumns,
+				GeometryColumnMeta{
+					Name:         geometryColumn.Name,
+					StorageType:  geometryColumn.StorageType,
+					GeometryType: geometryColumn.GeometryType,
+					SRID:         geometryColumn.SRID,
+				},
+			)
+		}
+	}
 
 	return &ListTablesResult{
 		Tables: tables,
@@ -378,6 +440,60 @@ func (service *Service) listColumnDefinitions(
 	for rows.Next() {
 		var definition columnDefinition
 		if err := rows.Scan(&definition.Name, &definition.Type, &definition.UdtName); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		}
+		definitions = append(definitions, definition)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+	}
+
+	return definitions, nil
+}
+
+func (service *Service) listGeometryColumns(
+	ctx context.Context,
+	conn *pgx.Conn,
+	schema string,
+	table string,
+) ([]geometryColumnDefinition, error) {
+	rows, err := conn.Query(
+		ctx,
+		`
+		select
+		  a.attname as column_name,
+		  t.typname as storage_type,
+		  coalesce(nullif(postgis_typmod_type(a.atttypmod), ''), 'GEOMETRY') as geometry_type,
+		  coalesce(nullif(postgis_typmod_srid(a.atttypmod), 0), 4326) as srid
+		from pg_attribute a
+		join pg_class c on c.oid = a.attrelid
+		join pg_namespace n on n.oid = c.relnamespace
+		join pg_type t on t.oid = a.atttypid
+		where n.nspname = $1
+		  and c.relname = $2
+		  and a.attnum > 0
+		  and not a.attisdropped
+		  and t.typname in ('geometry', 'geography')
+		order by a.attnum
+		`,
+		schema,
+		table,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	definitions := make([]geometryColumnDefinition, 0)
+	for rows.Next() {
+		var definition geometryColumnDefinition
+		if err := rows.Scan(
+			&definition.Name,
+			&definition.StorageType,
+			&definition.GeometryType,
+			&definition.SRID,
+		); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
 		}
 		definitions = append(definitions, definition)
