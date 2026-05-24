@@ -1,6 +1,33 @@
 import { Split } from '@gfazioli/mantine-split-pane';
-import { Box, Center, Flex, Paper, Stack, Text, Title } from '@mantine/core';
-import type { ReactNode } from 'react';
+import {
+  ActionIcon,
+  Badge,
+  Box,
+  Button,
+  Center,
+  Divider,
+  Flex,
+  Group,
+  Modal,
+  Paper,
+  PasswordInput,
+  ScrollArea,
+  Stack,
+  Text,
+  TextInput,
+  Title,
+} from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
+import {
+  IconCheck,
+  IconDatabasePlus,
+  IconPlug,
+  IconPlugConnected,
+  IconTrash,
+} from '@tabler/icons-react';
+import { useState, type ChangeEvent, type ReactNode } from 'react';
+
+import { useConnectionStore } from './features/connections/store';
 
 function PanelFrame({
   title,
@@ -76,6 +103,294 @@ function EmptyState({
   );
 }
 
+interface ConnectionFormState {
+  name: string;
+  host: string;
+  port: string;
+  database: string;
+  user: string;
+  password: string;
+}
+
+const initialConnectionForm: ConnectionFormState = {
+  name: '',
+  host: '127.0.0.1',
+  port: '5432',
+  database: '',
+  user: '',
+  password: '',
+};
+
+function ConnectionManager() {
+  const [opened, { open, close }] = useDisclosure(false);
+  const [form, setForm] = useState<ConnectionFormState>(initialConnectionForm);
+  const connections = useConnectionStore((state) => state.connections);
+  const selectedConnectionId = useConnectionStore(
+    (state) => state.selectedConnectionId,
+  );
+  const addConnection = useConnectionStore((state) => state.addConnection);
+  const removeConnection = useConnectionStore(
+    (state) => state.removeConnection,
+  );
+  const selectConnection = useConnectionStore(
+    (state) => state.selectConnection,
+  );
+  const toggleConnectionActive = useConnectionStore(
+    (state) => state.toggleConnectionActive,
+  );
+
+  const activeConnections = connections.filter(
+    (connection) => connection.isActive,
+  );
+
+  function handleFieldChange(event: ChangeEvent<HTMLInputElement>) {
+    const { name, value } = event.currentTarget;
+    setForm((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  }
+
+  function handleClose() {
+    setForm(initialConnectionForm);
+    close();
+  }
+
+  function handleSubmit() {
+    if (
+      !form.name.trim() ||
+      !form.host.trim() ||
+      !form.port.trim() ||
+      !form.database.trim() ||
+      !form.user.trim()
+    ) {
+      return;
+    }
+
+    addConnection({
+      ...form,
+      name: form.name.trim(),
+      host: form.host.trim(),
+      port: form.port.trim(),
+      database: form.database.trim(),
+      user: form.user.trim(),
+      isActive: true,
+    });
+    handleClose();
+  }
+
+  return (
+    <>
+      <Modal
+        opened={opened}
+        onClose={handleClose}
+        title="Add PostGIS connection"
+        centered
+      >
+        <Stack gap="sm">
+          <TextInput
+            label="Display name"
+            name="name"
+            placeholder="City DB"
+            value={form.name}
+            onChange={handleFieldChange}
+          />
+          <TextInput
+            label="Host"
+            name="host"
+            placeholder="127.0.0.1"
+            value={form.host}
+            onChange={handleFieldChange}
+          />
+          <Group grow>
+            <TextInput
+              label="Port"
+              name="port"
+              placeholder="5432"
+              value={form.port}
+              onChange={handleFieldChange}
+            />
+            <TextInput
+              label="Database"
+              name="database"
+              placeholder="geopanel_test"
+              value={form.database}
+              onChange={handleFieldChange}
+            />
+          </Group>
+          <TextInput
+            label="User"
+            name="user"
+            placeholder="geopanel"
+            value={form.user}
+            onChange={handleFieldChange}
+          />
+          <PasswordInput
+            label="Password"
+            name="password"
+            placeholder="Optional for now"
+            value={form.password}
+            onChange={handleFieldChange}
+          />
+          <Group justify="space-between" pt="xs">
+            <Text c="dimmed" size="xs">
+              UI only. No real connection test yet.
+            </Text>
+            <Button onClick={handleSubmit}>Save connection</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Stack h="100%" gap="md">
+        <Group justify="space-between" wrap="nowrap">
+          <div>
+            <Text fw={700} size="sm">
+              Connected Sources
+            </Text>
+            <Text c="dimmed" size="xs">
+              {activeConnections.length} active / {connections.length} saved
+            </Text>
+          </div>
+          <ActionIcon
+            aria-label="Add connection"
+            color="blue"
+            onClick={open}
+            radius="xl"
+            size="lg"
+            variant="light"
+          >
+            <IconDatabasePlus size={18} />
+          </ActionIcon>
+        </Group>
+
+        <ScrollArea
+          offsetScrollbars
+          scrollbarSize={6}
+          style={{
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <Stack gap="sm" pr="xs">
+            {connections.map((connection) => {
+              const isSelected = connection.id === selectedConnectionId;
+
+              return (
+                <Paper
+                  key={connection.id}
+                  p="sm"
+                  radius="md"
+                  shadow={isSelected ? 'sm' : 'xs'}
+                  style={{
+                    border: isSelected
+                      ? '1px solid var(--mantine-color-blue-4)'
+                      : '1px solid var(--mantine-color-gray-3)',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => selectConnection(connection.id)}
+                >
+                  <Stack gap={8}>
+                    <Group justify="space-between" wrap="nowrap">
+                      <Group gap="xs" wrap="nowrap">
+                        {connection.isActive ? (
+                          <IconPlugConnected
+                            color="var(--mantine-color-green-6)"
+                            size={16}
+                          />
+                        ) : (
+                          <IconPlug
+                            color="var(--mantine-color-gray-6)"
+                            size={16}
+                          />
+                        )}
+                        <Text fw={600} size="sm" truncate="end">
+                          {connection.name}
+                        </Text>
+                      </Group>
+
+                      <ActionIcon
+                        aria-label={`Delete ${connection.name}`}
+                        color="red"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          removeConnection(connection.id);
+                        }}
+                        size="sm"
+                        variant="subtle"
+                      >
+                        <IconTrash size={16} />
+                      </ActionIcon>
+                    </Group>
+
+                    <Text c="dimmed" size="xs">
+                      {connection.host}:{connection.port} /{' '}
+                      {connection.database}
+                    </Text>
+
+                    <Group gap="xs" justify="space-between" wrap="nowrap">
+                      <Group gap={6}>
+                        <Badge
+                          color={connection.isActive ? 'green' : 'gray'}
+                          radius="sm"
+                          variant="light"
+                        >
+                          {connection.isActive ? 'Active' : 'Saved'}
+                        </Badge>
+                        {isSelected ? (
+                          <Badge color="blue" radius="sm" variant="light">
+                            Selected
+                          </Badge>
+                        ) : null}
+                      </Group>
+
+                      <Button
+                        color={connection.isActive ? 'gray' : 'blue'}
+                        leftSection={
+                          connection.isActive ? (
+                            <IconCheck size={14} />
+                          ) : (
+                            <IconPlugConnected size={14} />
+                          )
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleConnectionActive(connection.id);
+                        }}
+                        size="compact-xs"
+                        variant={connection.isActive ? 'light' : 'filled'}
+                      >
+                        {connection.isActive ? 'Active' : 'Activate'}
+                      </Button>
+                    </Group>
+                  </Stack>
+                </Paper>
+              );
+            })}
+
+            {connections.length === 0 ? (
+              <EmptyState
+                detail="Save first PostGIS connection to start building data sources."
+                label="No Connections"
+              />
+            ) : null}
+          </Stack>
+        </ScrollArea>
+
+        <Divider />
+
+        <Stack gap={6}>
+          <Text fw={700} size="sm">
+            Imported Layers
+          </Text>
+          <Text c="dimmed" size="xs">
+            Placeholder for connected spatial tables and derived layers.
+          </Text>
+        </Stack>
+      </Stack>
+    </>
+  );
+}
+
 export function App() {
   return (
     <Flex
@@ -121,7 +436,7 @@ export function App() {
         >
           <Split.Pane initialWidth={280} minWidth={180} maxWidth={480}>
             <PanelFrame hint="Resizable" title="Data & Layers">
-              <EmptyState detail="Left workspace pane" label="Sidebar" />
+              <ConnectionManager />
             </PanelFrame>
           </Split.Pane>
 
