@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -58,6 +59,14 @@ type ListRowsRequest struct {
 	Offset int    `json:"offset"`
 }
 
+type ListLayerFeaturesRequest struct {
+	ConnectionTestRequest
+	Schema         string `json:"schema"`
+	Table          string `json:"table"`
+	GeometryColumn string `json:"geometryColumn"`
+	Limit          int    `json:"limit"`
+}
+
 type ColumnMeta struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
@@ -78,6 +87,21 @@ type ListRowsResult struct {
 	HasMore bool                     `json:"hasMore"`
 	Columns []ColumnMeta             `json:"columns"`
 	Rows    []map[string]interface{} `json:"rows"`
+}
+
+type GeoJSONFeatureCollection struct {
+	Type     string                   `json:"type"`
+	Features []map[string]interface{} `json:"features"`
+}
+
+type ListLayerFeaturesResult struct {
+	Schema         string                   `json:"schema"`
+	Table          string                   `json:"table"`
+	GeometryColumn string                   `json:"geometryColumn"`
+	GeometryType   string                   `json:"geometryType"`
+	SRID           int                      `json:"srid"`
+	FeatureCount   int                      `json:"featureCount"`
+	Data           GeoJSONFeatureCollection `json:"data"`
 }
 
 type columnDefinition struct {
@@ -142,6 +166,13 @@ func (request *ListRowsRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 }
 
+func (request *ListLayerFeaturesRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
+}
+
 func (request *ListRowsRequest) Normalize() {
 	if request.Limit <= 0 {
 		request.Limit = 100
@@ -151,6 +182,15 @@ func (request *ListRowsRequest) Normalize() {
 	}
 	if request.Offset < 0 {
 		request.Offset = 0
+	}
+}
+
+func (request *ListLayerFeaturesRequest) Normalize() {
+	if request.Limit <= 0 {
+		request.Limit = 1000
+	}
+	if request.Limit > 5000 {
+		request.Limit = 5000
 	}
 }
 
@@ -173,6 +213,30 @@ func (request ListRowsRequest) Validate() error {
 
 	if request.Offset < 0 {
 		return errors.New("Offset must be zero or greater.")
+	}
+
+	return nil
+}
+
+func (request ListLayerFeaturesRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	if request.GeometryColumn == "" {
+		return errors.New("Geometry column is required.")
+	}
+
+	if request.Limit < 1 || request.Limit > 5000 {
+		return errors.New("Limit must be between 1 and 5000.")
 	}
 
 	return nil
@@ -414,6 +478,95 @@ func (service *Service) ListRows(
 	}, nil
 }
 
+func (service *Service) ListLayerFeatures(
+	ctx context.Context,
+	request ListLayerFeaturesRequest,
+) (*ListLayerFeaturesResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	geometryColumns, err := service.listGeometryColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var selectedGeometryColumn *geometryColumnDefinition
+	for index := range geometryColumns {
+		if geometryColumns[index].Name == request.GeometryColumn {
+			selectedGeometryColumn = &geometryColumns[index]
+			break
+		}
+	}
+
+	if selectedGeometryColumn == nil {
+		return nil, fmt.Errorf(
+			"%w: selected geometry column not found on table",
+			ErrConnectionFailed,
+		)
+	}
+
+	propertyExpression := "to_jsonb(source_row)"
+	for _, geometryColumn := range geometryColumns {
+		propertyExpression += fmt.Sprintf(" - %s", quoteLiteral(geometryColumn.Name))
+	}
+
+	query := fmt.Sprintf(
+		`
+		with source_features as (
+		  select json_build_object(
+		    'type', 'Feature',
+		    'geometry', ST_AsGeoJSON(%s)::json,
+		    'properties', %s
+		  ) as feature
+		  from %s.%s as source_row
+		  where %s is not null
+		  limit $1
+		)
+		select coalesce(json_agg(feature), '[]'::json)
+		from source_features
+		`,
+		quoteIdentifier(request.GeometryColumn),
+		propertyExpression,
+		quoteIdentifier(request.Schema),
+		quoteIdentifier(request.Table),
+		quoteIdentifier(request.GeometryColumn),
+	)
+
+	var rawFeatures []byte
+	if err := conn.QueryRow(timeoutCtx, query, request.Limit).Scan(&rawFeatures); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+	}
+
+	features := make([]map[string]interface{}, 0)
+	if err := json.Unmarshal(rawFeatures, &features); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+	}
+
+	return &ListLayerFeaturesResult{
+		Schema:         request.Schema,
+		Table:          request.Table,
+		GeometryColumn: request.GeometryColumn,
+		GeometryType:   selectedGeometryColumn.GeometryType,
+		SRID:           selectedGeometryColumn.SRID,
+		FeatureCount:   len(features),
+		Data: GeoJSONFeatureCollection{
+			Type:     "FeatureCollection",
+			Features: features,
+		},
+	}, nil
+}
+
 func (service *Service) listColumnDefinitions(
 	ctx context.Context,
 	conn *pgx.Conn,
@@ -539,6 +692,10 @@ func columnSelectExpression(column columnDefinition) string {
 
 func quoteIdentifier(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func quoteLiteral(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
 }
 
 func normalizeValue(value interface{}) interface{} {

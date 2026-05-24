@@ -47,6 +47,10 @@ func (server *Server) routes() {
 		"POST /api/v1/database-connections/rows",
 		server.handleListRows,
 	)
+	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/layer-features",
+		server.handleListLayerFeatures,
+	)
 }
 
 func (server *Server) handleHealth(
@@ -181,6 +185,49 @@ func (server *Server) handleListRows(
 			writer,
 			err,
 			"database_row_fetch_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleListLayerFeatures(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.ListLayerFeaturesRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+	payload.Normalize()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_layer_request",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.ListLayerFeatures(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"database_layer_fetch_failed",
 			"Unexpected server error.",
 		)
 		return

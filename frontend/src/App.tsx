@@ -1192,6 +1192,9 @@ export function App() {
   const selectedConnectionImportedLayers = importedLayers.filter(
     (layer) => layer.connectionId === selectedConnectionId,
   );
+  const selectedVisibleImportedLayers = selectedConnectionImportedLayers.filter(
+    (layer) => layer.visible,
+  );
 
   useEffect(() => {
     if (!selectedConnection || selectedConnection.testStatus !== 'success') {
@@ -1302,7 +1305,10 @@ export function App() {
             >
               <Split.Pane grow minHeight={0}>
                 <PanelFrame hint="Resizable" title="Map">
-                  <MapPane />
+                  <MapPane
+                    connection={selectedConnection}
+                    visibleLayers={selectedVisibleImportedLayers}
+                  />
                 </PanelFrame>
               </Split.Pane>
 
