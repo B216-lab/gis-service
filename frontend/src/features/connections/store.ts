@@ -20,6 +20,7 @@ export interface DatabaseConnection {
 interface ConnectionStoreState {
   connections: DatabaseConnection[];
   selectedConnectionId: string | null;
+  selectedTableByConnectionId: Record<string, string | null>;
   addConnection: (
     connection: Omit<
       DatabaseConnection,
@@ -33,6 +34,7 @@ interface ConnectionStoreState {
   ) => void;
   removeConnection: (connectionId: string) => void;
   selectConnection: (connectionId: string) => void;
+  setSelectedTable: (connectionId: string, tableKey: string | null) => void;
   toggleConnectionActive: (connectionId: string) => void;
   setConnectionTestPending: (connectionId: string) => void;
   setConnectionTestSuccess: (
@@ -71,6 +73,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         },
       ],
       selectedConnectionId: null,
+      selectedTableByConnectionId: {},
       addConnection: (connection) =>
         set((state) => {
           const nextConnection: DatabaseConnection = {
@@ -86,6 +89,10 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           return {
             connections: [nextConnection, ...state.connections],
             selectedConnectionId: nextConnection.id,
+            selectedTableByConnectionId: {
+              ...state.selectedTableByConnectionId,
+              [nextConnection.id]: null,
+            },
           };
         }),
       removeConnection: (connectionId) =>
@@ -101,12 +108,24 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           return {
             connections: nextConnections,
             selectedConnectionId: nextSelectedId,
+            selectedTableByConnectionId: Object.fromEntries(
+              Object.entries(state.selectedTableByConnectionId).filter(
+                ([key]) => key !== connectionId,
+              ),
+            ),
           };
         }),
       selectConnection: (connectionId) =>
         set({
           selectedConnectionId: connectionId,
         }),
+      setSelectedTable: (connectionId, tableKey) =>
+        set((state) => ({
+          selectedTableByConnectionId: {
+            ...state.selectedTableByConnectionId,
+            [connectionId]: tableKey,
+          },
+        })),
       toggleConnectionActive: (connectionId) =>
         set((state) => ({
           connections: state.connections.map((connection) =>
@@ -162,6 +181,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
       partialize: (state) => ({
         connections: state.connections,
         selectedConnectionId: state.selectedConnectionId,
+        selectedTableByConnectionId: state.selectedTableByConnectionId,
       }),
     },
   ),

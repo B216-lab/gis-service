@@ -5,7 +5,6 @@ import {
   Box,
   Button,
   Center,
-  Divider,
   Flex,
   Group,
   Loader,
@@ -13,7 +12,9 @@ import {
   Paper,
   PasswordInput,
   ScrollArea,
+  Select,
   Stack,
+  Table,
   Text,
   TextInput,
   Title,
@@ -24,14 +25,23 @@ import {
   IconDatabasePlus,
   IconPlug,
   IconPlugConnected,
+  IconRefresh,
   IconTrash,
 } from '@tabler/icons-react';
-import { useState, type ChangeEvent, type ReactNode } from 'react';
+import { useEffect, useState, type ChangeEvent, type ReactNode } from 'react';
 
 import {
   type DatabaseConnection,
   useConnectionStore,
 } from './features/connections/store';
+import {
+  fetchInspectableTables,
+  fetchInspectorRows,
+  type InspectableTable,
+  type InspectorRowsResponse,
+} from './features/inspector/api';
+
+const pageSize = 100;
 
 function PanelFrame({
   title,
@@ -125,7 +135,7 @@ const initialConnectionForm: ConnectionFormState = {
   password: '',
 };
 
-function ConnectionManager() {
+function ConnectionManager({}: {}) {
   const [opened, { open, close }] = useDisclosure(false);
   const [form, setForm] = useState<ConnectionFormState>(initialConnectionForm);
   const connections = useConnectionStore((state) => state.connections);
@@ -250,55 +260,55 @@ function ConnectionManager() {
   return (
     <>
       <Modal
-        opened={opened}
-        onClose={handleClose}
-        title="Add PostGIS connection"
         centered
+        onClose={handleClose}
+        opened={opened}
+        title="Add PostGIS connection"
       >
         <Stack gap="sm">
           <TextInput
             label="Display name"
             name="name"
+            onChange={handleFieldChange}
             placeholder="City DB"
             value={form.name}
-            onChange={handleFieldChange}
           />
           <TextInput
             label="Host"
             name="host"
+            onChange={handleFieldChange}
             placeholder="127.0.0.1"
             value={form.host}
-            onChange={handleFieldChange}
           />
           <Group grow>
             <TextInput
               label="Port"
               name="port"
+              onChange={handleFieldChange}
               placeholder="5432"
               value={form.port}
-              onChange={handleFieldChange}
             />
             <TextInput
               label="Database"
               name="database"
+              onChange={handleFieldChange}
               placeholder="geopanel_test"
               value={form.database}
-              onChange={handleFieldChange}
             />
           </Group>
           <TextInput
             label="User"
             name="user"
+            onChange={handleFieldChange}
             placeholder="geopanel"
             value={form.user}
-            onChange={handleFieldChange}
           />
           <PasswordInput
             label="Password"
             name="password"
+            onChange={handleFieldChange}
             placeholder="Optional for now"
             value={form.password}
-            onChange={handleFieldChange}
           />
           <Group justify="space-between" pt="xs">
             <Text c="dimmed" size="xs">
@@ -346,6 +356,7 @@ function ConnectionManager() {
               return (
                 <Paper
                   key={connection.id}
+                  onClick={() => selectConnection(connection.id)}
                   p="sm"
                   radius="md"
                   shadow={isSelected ? 'sm' : 'xs'}
@@ -355,7 +366,6 @@ function ConnectionManager() {
                       : '1px solid var(--mantine-color-gray-3)',
                     cursor: 'pointer',
                   }}
-                  onClick={() => selectConnection(connection.id)}
                 >
                   <Stack gap={8}>
                     <Group justify="space-between" wrap="nowrap">
@@ -498,23 +508,384 @@ function ConnectionManager() {
             ) : null}
           </Stack>
         </ScrollArea>
-
-        <Divider />
-
-        <Stack gap={6}>
-          <Text fw={700} size="sm">
-            Imported Layers
-          </Text>
-          <Text c="dimmed" size="xs">
-            Placeholder for connected spatial tables and derived layers.
-          </Text>
-        </Stack>
       </Stack>
     </>
   );
 }
 
+function DataInspector({
+  connection,
+  tables,
+  selectedTableKey,
+  onSelectTable,
+}: {
+  connection: DatabaseConnection | null;
+  tables: InspectableTable[];
+  selectedTableKey: string | null;
+  onSelectTable: (tableKey: string | null) => void;
+}) {
+  const [rowsState, setRowsState] = useState<InspectorRowsResponse | null>(
+    null,
+  );
+  const [isLoadingRows, setIsLoadingRows] = useState(false);
+  const [rowsError, setRowsError] = useState('');
+  const [rowsRefreshToken, setRowsRefreshToken] = useState(0);
+
+  const selectedTable =
+    tables.find((table) => table.fullName === selectedTableKey) ?? null;
+
+  useEffect(() => {
+    if (!selectedTableKey && tables.length > 0) {
+      onSelectTable(tables[0].fullName);
+      return;
+    }
+
+    if (
+      selectedTableKey &&
+      !tables.some((table) => table.fullName === selectedTableKey)
+    ) {
+      onSelectTable(tables[0]?.fullName ?? null);
+    }
+  }, [onSelectTable, selectedTableKey, tables]);
+
+  useEffect(() => {
+    if (!connection || !selectedTable) {
+      setRowsState(null);
+      setRowsError('');
+      return;
+    }
+
+    const activeConnection = connection;
+    const activeTable = selectedTable;
+    let isActive = true;
+
+    async function loadRows(offset: number) {
+      setIsLoadingRows(true);
+      setRowsError('');
+
+      try {
+        const payload = await fetchInspectorRows(
+          activeConnection,
+          activeTable,
+          offset,
+          pageSize,
+        );
+
+        if (!isActive) {
+          return;
+        }
+
+        setRowsState(payload);
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+
+        setRowsError(
+          error instanceof Error ? error.message : 'Failed to load table rows.',
+        );
+      } finally {
+        if (isActive) {
+          setIsLoadingRows(false);
+        }
+      }
+    }
+
+    void loadRows(0);
+
+    return () => {
+      isActive = false;
+    };
+  }, [connection, rowsRefreshToken, selectedTable]);
+
+  async function handlePageChange(nextOffset: number) {
+    if (!connection || !selectedTable) {
+      return;
+    }
+
+    setIsLoadingRows(true);
+    setRowsError('');
+
+    try {
+      const payload = await fetchInspectorRows(
+        connection,
+        selectedTable,
+        nextOffset,
+        pageSize,
+      );
+      setRowsState(payload);
+    } catch (error) {
+      setRowsError(
+        error instanceof Error ? error.message : 'Failed to load table rows.',
+      );
+    } finally {
+      setIsLoadingRows(false);
+    }
+  }
+
+  if (!connection) {
+    return (
+      <EmptyState
+        detail="Select a connection to inspect table data."
+        label="No Connection"
+      />
+    );
+  }
+
+  if (connection.testStatus !== 'success') {
+    return (
+      <EmptyState
+        detail="Test selected connection first to load table data safely."
+        label="Connection Not Ready"
+      />
+    );
+  }
+
+  return (
+    <Stack h="100%" gap="sm">
+      <Group justify="space-between" wrap="nowrap">
+        <Group grow>
+          <Select
+            data={tables.map((table) => ({
+              label: table.fullName,
+              value: table.fullName,
+            }))}
+            onChange={onSelectTable}
+            placeholder="Select table"
+            value={selectedTableKey}
+          />
+        </Group>
+        <ActionIcon
+          aria-label="Refresh rows"
+          onClick={() => setRowsRefreshToken((value) => value + 1)}
+          size="md"
+          variant="subtle"
+        >
+          {isLoadingRows ? <Loader size={16} /> : <IconRefresh size={16} />}
+        </ActionIcon>
+      </Group>
+
+      {rowsError ? (
+        <Text c="red" size="sm">
+          {rowsError}
+        </Text>
+      ) : null}
+
+      {!selectedTable ? (
+        <EmptyState
+          detail="Choose one table from loaded database objects."
+          label="No Table Selected"
+        />
+      ) : null}
+
+      {selectedTable && rowsState ? (
+        <>
+          <Group justify="space-between">
+            <Text c="dimmed" size="xs">
+              {selectedTable.fullName} • {selectedTable.kind} • showing rows{' '}
+              {rowsState.offset + 1}-{rowsState.offset + rowsState.rows.length}
+            </Text>
+            <Text c="dimmed" size="xs">
+              page size {rowsState.limit}
+            </Text>
+          </Group>
+
+          <ScrollArea
+            offsetScrollbars
+            scrollbarSize={8}
+            style={{
+              flex: 1,
+              minHeight: 0,
+            }}
+          >
+            <Table
+              highlightOnHover
+              stickyHeader
+              stickyHeaderOffset={0}
+              striped
+              withColumnBorders
+            >
+              <Table.Thead>
+                <Table.Tr>
+                  {rowsState.columns.map((column) => (
+                    <Table.Th
+                      key={column.name}
+                      style={{
+                        minWidth: 160,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <Stack gap={0}>
+                        <Text fw={600} size="sm">
+                          {column.name}
+                        </Text>
+                        <Text c="dimmed" size="xs">
+                          {column.type}
+                        </Text>
+                      </Stack>
+                    </Table.Th>
+                  ))}
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {rowsState.rows.map((row, rowIndex) => (
+                  <Table.Tr key={`${rowsState.offset}-${rowIndex}`}>
+                    {rowsState.columns.map((column) => (
+                      <Table.Td
+                        key={`${rowIndex}-${column.name}`}
+                        style={{
+                          fontFamily: getCellFontFamily(
+                            column.name,
+                            column.type,
+                          ),
+                          maxWidth: 320,
+                          textAlign: getCellTextAlign(column.type),
+                          verticalAlign: 'top',
+                        }}
+                      >
+                        <Text
+                          lineClamp={3}
+                          size="sm"
+                          style={{
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {formatCellValue(row[column.name])}
+                        </Text>
+                      </Table.Td>
+                    ))}
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </ScrollArea>
+
+          <Group justify="space-between">
+            <Button
+              disabled={isLoadingRows || rowsState.offset === 0}
+              onClick={() =>
+                void handlePageChange(Math.max(rowsState.offset - pageSize, 0))
+              }
+              size="compact-sm"
+              variant="light"
+            >
+              Previous
+            </Button>
+            <Text c="dimmed" size="xs">
+              offset {rowsState.offset}
+            </Text>
+            <Button
+              disabled={isLoadingRows || !rowsState.hasMore}
+              onClick={() => void handlePageChange(rowsState.offset + pageSize)}
+              size="compact-sm"
+            >
+              Next
+            </Button>
+          </Group>
+        </>
+      ) : null}
+    </Stack>
+  );
+}
+
+function formatCellValue(value: unknown) {
+  if (value === null || value === undefined) {
+    return 'NULL';
+  }
+
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+
+  return String(value);
+}
+
+function getCellTextAlign(columnType: string) {
+  return isNumericColumnType(columnType) ? 'right' : 'left';
+}
+
+function getCellFontFamily(columnName: string, columnType: string) {
+  if (
+    isNumericColumnType(columnType) ||
+    /(^id$|_id$|uuid|geom|geo)/i.test(`${columnName} ${columnType}`)
+  ) {
+    return 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+  }
+
+  return 'var(--mantine-font-family)';
+}
+
+function isNumericColumnType(columnType: string) {
+  return /int|numeric|double|real|decimal|serial/i.test(columnType);
+}
+
 export function App() {
+  const connections = useConnectionStore((state) => state.connections);
+  const selectedConnectionId = useConnectionStore(
+    (state) => state.selectedConnectionId,
+  );
+  const selectedTableByConnectionId = useConnectionStore(
+    (state) => state.selectedTableByConnectionId,
+  );
+  const setSelectedTable = useConnectionStore(
+    (state) => state.setSelectedTable,
+  );
+  const [tables, setTables] = useState<InspectableTable[]>([]);
+
+  const selectedConnection =
+    connections.find((connection) => connection.id === selectedConnectionId) ??
+    null;
+  const selectedTableKey = selectedConnectionId
+    ? (selectedTableByConnectionId[selectedConnectionId] ?? null)
+    : null;
+
+  function handleSelectTable(tableKey: string | null) {
+    if (!selectedConnectionId) {
+      return;
+    }
+
+    setSelectedTable(selectedConnectionId, tableKey);
+  }
+
+  useEffect(() => {
+    if (!selectedConnection || selectedConnection.testStatus !== 'success') {
+      setTables([]);
+      return;
+    }
+
+    const activeConnection = selectedConnection;
+    let isActive = true;
+
+    async function loadTables() {
+      try {
+        const nextTables = await fetchInspectableTables(activeConnection);
+        if (!isActive) {
+          return;
+        }
+        setTables(nextTables);
+        const nextSelectedTableKey =
+          selectedTableKey &&
+          nextTables.some((table) => table.fullName === selectedTableKey)
+            ? selectedTableKey
+            : (nextTables[0]?.fullName ?? null);
+        handleSelectTable(nextSelectedTableKey);
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+        setTables([]);
+        handleSelectTable(null);
+      }
+    }
+
+    void loadTables();
+
+    return () => {
+      isActive = false;
+    };
+  }, [selectedConnection, selectedTableKey]);
+
   return (
     <Flex
       direction="column"
@@ -557,7 +928,7 @@ export function App() {
             width: '100%',
           }}
         >
-          <Split.Pane initialWidth={280} minWidth={180} maxWidth={480}>
+          <Split.Pane initialWidth={280} maxWidth={480} minWidth={180}>
             <PanelFrame hint="Resizable" title="Data & Layers">
               <ConnectionManager />
             </PanelFrame>
@@ -584,11 +955,13 @@ export function App() {
 
               <Split.Resizer />
 
-              <Split.Pane initialHeight={260} minHeight={160} maxHeight={420}>
+              <Split.Pane initialHeight={260} maxHeight={420} minHeight={160}>
                 <PanelFrame hint="Resizable" title="Table">
-                  <EmptyState
-                    detail="Center bottom pane"
-                    label="Tabular View"
+                  <DataInspector
+                    connection={selectedConnection}
+                    onSelectTable={handleSelectTable}
+                    selectedTableKey={selectedTableKey}
+                    tables={tables}
                   />
                 </PanelFrame>
               </Split.Pane>
@@ -597,7 +970,7 @@ export function App() {
 
           <Split.Resizer />
 
-          <Split.Pane initialWidth={340} minWidth={220} maxWidth={520}>
+          <Split.Pane initialWidth={340} maxWidth={520} minWidth={220}>
             <PanelFrame hint="Resizable" title="Analytics">
               <EmptyState detail="Right workspace pane" label="Insights" />
             </PanelFrame>

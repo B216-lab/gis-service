@@ -13,10 +13,10 @@ import (
 func main() {
 	addr := envOrDefault("API_ADDR", ":18080")
 
-	tester := postgres.NewConnectionTester(5 * time.Second)
+	service := postgres.NewService(5 * time.Second)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewServer(tester),
+		Handler:           httpapi.NewServer(service),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
