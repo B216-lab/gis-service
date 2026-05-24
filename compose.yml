@@ -1,0 +1,26 @@
+services:
+  postgis-test:
+    image: postgis/postgis:16-3.5-alpine
+    container_name: geopanel-postgis-test
+    ports:
+      - '127.0.0.1:55432:5432'
+    environment:
+      POSTGRES_DB: geopanel_test
+      POSTGRES_USER: geopanel
+      POSTGRES_PASSWORD: geopanel
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - postgis_test_data:/var/lib/postgresql/data
+      - ./docker/postgis/init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  postgis_test_data:

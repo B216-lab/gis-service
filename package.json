@@ -1,0 +1,33 @@
+{
+  "name": "geopanel",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "check": "biome check .",
+    "format": "biome format --write .",
+    "db:test:up": "docker compose -f docker-compose.postgis-test.yml up -d",
+    "db:test:down": "docker compose -f docker-compose.postgis-test.yml down",
+    "db:test:reset": "docker compose -f docker-compose.postgis-test.yml down -v && docker compose -f docker-compose.postgis-test.yml up -d",
+    "db:test:logs": "docker compose -f docker-compose.postgis-test.yml logs -f postgis-test"
+  },
+  "dependencies": {
+    "@gfazioli/mantine-split-pane": "^4.1.4",
+    "@mantine/core": "^9.2.1",
+    "@mantine/hooks": "^9.2.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.2",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.1"
+  }
+}
