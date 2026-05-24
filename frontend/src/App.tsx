@@ -61,7 +61,9 @@ function PanelFrame({
       style={{
         display: 'flex',
         flexDirection: 'column',
+        minWidth: 0,
         minHeight: 0,
+        overflow: 'hidden',
       }}
     >
       <Flex align="center" justify="space-between" mb="md">
@@ -76,7 +78,9 @@ function PanelFrame({
       <Box
         style={{
           flex: 1,
+          minWidth: 0,
           minHeight: 0,
+          overflow: 'hidden',
         }}
       >
         {children}
@@ -928,7 +932,7 @@ export function App() {
             width: '100%',
           }}
         >
-          <Split.Pane initialWidth={280} maxWidth={480} minWidth={180}>
+          <Split.Pane initialWidth={280} maxWidth={480} minWidth={0}>
             <PanelFrame hint="Resizable" title="Data & Layers">
               <ConnectionManager />
             </PanelFrame>
@@ -936,14 +940,14 @@ export function App() {
 
           <Split.Resizer />
 
-          <Split.Pane grow minWidth={420}>
+          <Split.Pane grow minWidth={0}>
             <Split
               orientation="horizontal"
               style={{
                 height: '100%',
               }}
             >
-              <Split.Pane grow minHeight={220}>
+              <Split.Pane grow minHeight={0}>
                 <PanelFrame hint="Resizable" title="Map">
                   <EmptyState
                     background="linear-gradient(135deg, rgba(228,240,255,0.9) 0%, rgba(231,245,255,0.9) 35%, rgba(255,249,219,0.85) 100%)"
@@ -955,7 +959,7 @@ export function App() {
 
               <Split.Resizer />
 
-              <Split.Pane initialHeight={260} maxHeight={420} minHeight={160}>
+              <Split.Pane initialHeight={260} maxHeight={420} minHeight={0}>
                 <PanelFrame hint="Resizable" title="Table">
                   <DataInspector
                     connection={selectedConnection}
@@ -970,7 +974,7 @@ export function App() {
 
           <Split.Resizer />
 
-          <Split.Pane initialWidth={340} maxWidth={520} minWidth={220}>
+          <Split.Pane initialWidth={340} maxWidth={520} minWidth={0}>
             <PanelFrame hint="Resizable" title="Analytics">
               <EmptyState detail="Right workspace pane" label="Insights" />
             </PanelFrame>
