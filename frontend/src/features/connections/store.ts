@@ -11,17 +11,39 @@ export interface DatabaseConnection {
   password: string;
   isActive: boolean;
   createdAt: string;
+  testStatus: 'idle' | 'testing' | 'success' | 'error';
+  testMessage: string;
+  postgresVersion: string;
+  postgisVersion: string;
 }
 
 interface ConnectionStoreState {
   connections: DatabaseConnection[];
   selectedConnectionId: string | null;
   addConnection: (
-    connection: Omit<DatabaseConnection, 'id' | 'createdAt'>,
+    connection: Omit<
+      DatabaseConnection,
+      | 'id'
+      | 'createdAt'
+      | 'testStatus'
+      | 'testMessage'
+      | 'postgresVersion'
+      | 'postgisVersion'
+    >,
   ) => void;
   removeConnection: (connectionId: string) => void;
   selectConnection: (connectionId: string) => void;
   toggleConnectionActive: (connectionId: string) => void;
+  setConnectionTestPending: (connectionId: string) => void;
+  setConnectionTestSuccess: (
+    connectionId: string,
+    payload: {
+      message: string;
+      postgresVersion: string;
+      postgisVersion: string;
+    },
+  ) => void;
+  setConnectionTestError: (connectionId: string, message: string) => void;
 }
 
 function createConnectionId() {
@@ -42,6 +64,10 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           password: '',
           isActive: true,
           createdAt: new Date().toISOString(),
+          testStatus: 'idle',
+          testMessage: 'Not tested yet.',
+          postgresVersion: '',
+          postgisVersion: '',
         },
       ],
       selectedConnectionId: null,
@@ -51,6 +77,10 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             ...connection,
             id: createConnectionId(),
             createdAt: new Date().toISOString(),
+            testStatus: 'idle',
+            testMessage: 'Not tested yet.',
+            postgresVersion: '',
+            postgisVersion: '',
           };
 
           return {
@@ -82,6 +112,46 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           connections: state.connections.map((connection) =>
             connection.id === connectionId
               ? { ...connection, isActive: !connection.isActive }
+              : connection,
+          ),
+        })),
+      setConnectionTestPending: (connectionId) =>
+        set((state) => ({
+          connections: state.connections.map((connection) =>
+            connection.id === connectionId
+              ? {
+                  ...connection,
+                  testStatus: 'testing',
+                  testMessage: 'Testing connection...',
+                }
+              : connection,
+          ),
+        })),
+      setConnectionTestSuccess: (connectionId, payload) =>
+        set((state) => ({
+          connections: state.connections.map((connection) =>
+            connection.id === connectionId
+              ? {
+                  ...connection,
+                  testStatus: 'success',
+                  testMessage: payload.message,
+                  postgresVersion: payload.postgresVersion,
+                  postgisVersion: payload.postgisVersion,
+                  isActive: true,
+                }
+              : connection,
+          ),
+        })),
+      setConnectionTestError: (connectionId, message) =>
+        set((state) => ({
+          connections: state.connections.map((connection) =>
+            connection.id === connectionId
+              ? {
+                  ...connection,
+                  testStatus: 'error',
+                  testMessage: message,
+                  isActive: false,
+                }
               : connection,
           ),
         })),

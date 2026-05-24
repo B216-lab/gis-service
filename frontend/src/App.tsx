@@ -8,6 +8,7 @@ import {
   Divider,
   Flex,
   Group,
+  Loader,
   Modal,
   Paper,
   PasswordInput,
@@ -27,7 +28,10 @@ import {
 } from '@tabler/icons-react';
 import { useState, type ChangeEvent, type ReactNode } from 'react';
 
-import { useConnectionStore } from './features/connections/store';
+import {
+  type DatabaseConnection,
+  useConnectionStore,
+} from './features/connections/store';
 
 function PanelFrame({
   title,
@@ -138,6 +142,15 @@ function ConnectionManager() {
   const toggleConnectionActive = useConnectionStore(
     (state) => state.toggleConnectionActive,
   );
+  const setConnectionTestPending = useConnectionStore(
+    (state) => state.setConnectionTestPending,
+  );
+  const setConnectionTestSuccess = useConnectionStore(
+    (state) => state.setConnectionTestSuccess,
+  );
+  const setConnectionTestError = useConnectionStore(
+    (state) => state.setConnectionTestError,
+  );
 
   const activeConnections = connections.filter(
     (connection) => connection.isActive,
@@ -177,6 +190,61 @@ function ConnectionManager() {
       isActive: true,
     });
     handleClose();
+  }
+
+  async function handleTestConnection(connection: DatabaseConnection) {
+    setConnectionTestPending(connection.id);
+
+    try {
+      const response = await fetch('/api/v1/database-connections/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: connection.name,
+          host: connection.host,
+          port: connection.port,
+          database: connection.database,
+          user: connection.user,
+          password: connection.password,
+        }),
+      });
+
+      const payload = (await response.json()) as
+        | {
+            success: boolean;
+            message: string;
+            postgresVersion: string;
+            postgisVersion: string;
+          }
+        | {
+            error: {
+              code: string;
+              message: string;
+            };
+          };
+
+      if (!response.ok || 'error' in payload) {
+        const message =
+          'error' in payload
+            ? payload.error.message
+            : 'Database connection test failed.';
+        setConnectionTestError(connection.id, message);
+        return;
+      }
+
+      setConnectionTestSuccess(connection.id, {
+        message: payload.message,
+        postgresVersion: payload.postgresVersion,
+        postgisVersion: payload.postgisVersion,
+      });
+    } catch {
+      setConnectionTestError(
+        connection.id,
+        'API unavailable. Start backend on :18080 first.',
+      );
+    }
   }
 
   return (
@@ -234,7 +302,7 @@ function ConnectionManager() {
           />
           <Group justify="space-between" pt="xs">
             <Text c="dimmed" size="xs">
-              UI only. No real connection test yet.
+              Saved locally. Real test runs through backend API.
             </Text>
             <Button onClick={handleSubmit}>Save connection</Button>
           </Group>
@@ -327,14 +395,42 @@ function ConnectionManager() {
                       {connection.database}
                     </Text>
 
+                    <Text c="dimmed" size="xs">
+                      {connection.testMessage}
+                    </Text>
+
+                    {connection.testStatus === 'success' ? (
+                      <Text c="dimmed" size="xs">
+                        PostGIS {connection.postgisVersion}
+                      </Text>
+                    ) : null}
+
                     <Group gap="xs" justify="space-between" wrap="nowrap">
                       <Group gap={6}>
                         <Badge
-                          color={connection.isActive ? 'green' : 'gray'}
+                          color={
+                            connection.testStatus === 'success'
+                              ? 'green'
+                              : connection.testStatus === 'error'
+                                ? 'red'
+                                : connection.testStatus === 'testing'
+                                  ? 'yellow'
+                                  : connection.isActive
+                                    ? 'green'
+                                    : 'gray'
+                          }
                           radius="sm"
                           variant="light"
                         >
-                          {connection.isActive ? 'Active' : 'Saved'}
+                          {connection.testStatus === 'success'
+                            ? 'Connected'
+                            : connection.testStatus === 'error'
+                              ? 'Failed'
+                              : connection.testStatus === 'testing'
+                                ? 'Testing'
+                                : connection.isActive
+                                  ? 'Active'
+                                  : 'Saved'}
                         </Badge>
                         {isSelected ? (
                           <Badge color="blue" radius="sm" variant="light">
@@ -344,12 +440,39 @@ function ConnectionManager() {
                       </Group>
 
                       <Button
-                        color={connection.isActive ? 'gray' : 'blue'}
+                        color="blue"
+                        leftSection={
+                          connection.testStatus === 'testing' ? (
+                            <Loader size={14} />
+                          ) : (
+                            <IconPlugConnected size={14} />
+                          )
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleTestConnection(connection);
+                        }}
+                        size="compact-xs"
+                        variant={
+                          connection.testStatus === 'success'
+                            ? 'light'
+                            : 'filled'
+                        }
+                      >
+                        {connection.testStatus === 'testing'
+                          ? 'Testing'
+                          : 'Test'}
+                      </Button>
+                    </Group>
+
+                    <Group justify="flex-end">
+                      <Button
+                        color={connection.isActive ? 'gray' : 'teal'}
                         leftSection={
                           connection.isActive ? (
                             <IconCheck size={14} />
                           ) : (
-                            <IconPlugConnected size={14} />
+                            <IconPlug size={14} />
                           )
                         }
                         onClick={(event) => {
@@ -357,9 +480,9 @@ function ConnectionManager() {
                           toggleConnectionActive(connection.id);
                         }}
                         size="compact-xs"
-                        variant={connection.isActive ? 'light' : 'filled'}
+                        variant="subtle"
                       >
-                        {connection.isActive ? 'Active' : 'Activate'}
+                        {connection.isActive ? 'Deactivate' : 'Activate'}
                       </Button>
                     </Group>
                   </Stack>
