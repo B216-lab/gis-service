@@ -6,6 +6,8 @@ export interface InspectableTable {
   fullName: string;
   kind: string;
   rowEstimate: number;
+  primaryKey: string[];
+  isEditable: boolean;
   columns: InspectorColumn[];
   geometryColumns: InspectorGeometryColumn[];
 }
@@ -28,8 +30,28 @@ export interface InspectorRowsResponse {
   limit: number;
   offset: number;
   hasMore: boolean;
+  primaryKey: string[];
+  isEditable: boolean;
   columns: InspectorColumn[];
-  rows: Array<Record<string, unknown>>;
+  rows: InspectorRow[];
+}
+
+export interface InspectorRow {
+  rowKey: Record<string, unknown> | null;
+  values: Record<string, unknown>;
+}
+
+export interface CommitTableChangesRequest {
+  schema: string;
+  table: string;
+  operations: TableChangeOperation[];
+}
+
+export interface TableChangeOperation {
+  type: 'insert' | 'update' | 'delete';
+  rowKey?: Record<string, unknown>;
+  changes?: Record<string, unknown>;
+  values?: Record<string, unknown>;
 }
 
 export async function fetchInspectableTables(connection: DatabaseConnection) {
@@ -107,6 +129,52 @@ export async function fetchInspectorRows(
   if (!response.ok || 'error' in payload) {
     throw new Error(
       'error' in payload ? payload.error.message : 'Failed to load table rows.',
+    );
+  }
+
+  return payload;
+}
+
+export async function commitInspectorRows(
+  connection: DatabaseConnection,
+  request: CommitTableChangesRequest,
+) {
+  const response = await fetch('/api/v1/database-connections/rows/commit', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: connection.name,
+      host: connection.host,
+      port: connection.port,
+      database: connection.database,
+      user: connection.user,
+      password: connection.password,
+      schema: request.schema,
+      table: request.table,
+      operations: request.operations,
+    }),
+  });
+
+  const payload = (await response.json()) as
+    | {
+        schema: string;
+        table: string;
+        applied: number;
+      }
+    | {
+        error: {
+          code: string;
+          message: string;
+        };
+      };
+
+  if (!response.ok || 'error' in payload) {
+    throw new Error(
+      'error' in payload
+        ? payload.error.message
+        : 'Failed to save table changes.',
     );
   }
 

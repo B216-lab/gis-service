@@ -1,10 +1,12 @@
 import { Split } from '@gfazioli/mantine-split-pane';
 import {
   ActionIcon,
+  Alert,
   Badge,
   Box,
   Button,
   Center,
+  Checkbox,
   Flex,
   Group,
   Loader,
@@ -24,14 +26,23 @@ import { useDisclosure } from '@mantine/hooks';
 import {
   IconCheck,
   IconDatabasePlus,
+  IconDeviceFloppy,
   IconEye,
   IconEyeOff,
   IconPlug,
   IconPlugConnected,
+  IconPlus,
   IconRefresh,
+  IconRestore,
   IconTrash,
 } from '@tabler/icons-react';
-import { useEffect, useState, type ChangeEvent, type ReactNode } from 'react';
+import {
+  type ChangeEvent,
+  type ReactNode,
+  startTransition,
+  useEffect,
+  useState,
+} from 'react';
 
 import {
   type DatabaseConnection,
@@ -39,14 +50,59 @@ import {
   useConnectionStore,
 } from './features/connections/store';
 import {
+  commitInspectorRows,
   fetchInspectableTables,
   fetchInspectorRows,
   type InspectableTable,
+  type InspectorColumn,
+  type InspectorRow,
   type InspectorRowsResponse,
+  type TableChangeOperation,
 } from './features/inspector/api';
 import { MapPane } from './features/map/MapPane';
 
 const pageSize = 100;
+const emptyCellLabel = 'NULL';
+
+interface DraftInsertRow {
+  id: string;
+  values: Record<string, unknown>;
+}
+
+function createDraftInsertId() {
+  return `draft-${crypto.randomUUID()}`;
+}
+
+function serializeRowKey(
+  rowKey: Record<string, unknown> | null,
+  primaryKey: string[],
+) {
+  if (!rowKey || primaryKey.length === 0) {
+    return null;
+  }
+
+  return JSON.stringify(
+    primaryKey.map((columnName) => [columnName, rowKey[columnName]]),
+  );
+}
+
+function createEmptyInsertRow(columns: InspectorColumn[]) {
+  const values: Record<string, unknown> = {};
+
+  for (const column of columns) {
+    if (isBooleanColumnType(column.type)) {
+      values[column.name] = false;
+      continue;
+    }
+
+    values[column.name] = '';
+  }
+
+  return {
+    id: createDraftInsertId(),
+    values,
+  } satisfies DraftInsertRow;
+}
 
 function PanelFrame({
   title,
@@ -783,9 +839,44 @@ function DataInspector({
   const [isLoadingRows, setIsLoadingRows] = useState(false);
   const [rowsError, setRowsError] = useState('');
   const [rowsRefreshToken, setRowsRefreshToken] = useState(0);
+  const [draftUpdates, setDraftUpdates] = useState<
+    Record<string, Record<string, unknown>>
+  >({});
+  const [draftDeletes, setDraftDeletes] = useState<Record<string, true>>({});
+  const [draftInserts, setDraftInserts] = useState<DraftInsertRow[]>([]);
+  const [isSavingChanges, setIsSavingChanges] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [saveMessage, setSaveMessage] = useState('');
 
   const selectedTable =
     tables.find((table) => table.fullName === selectedTableKey) ?? null;
+  const activePrimaryKey =
+    rowsState?.primaryKey ?? selectedTable?.primaryKey ?? [];
+  const hasDirtyChanges =
+    draftInserts.length > 0 ||
+    Object.keys(draftUpdates).length > 0 ||
+    Object.keys(draftDeletes).length > 0;
+  const touchedRowCount =
+    draftInserts.length +
+    Object.keys(draftUpdates).length +
+    Object.keys(draftDeletes).length;
+
+  function resetDraftState() {
+    setDraftUpdates({});
+    setDraftDeletes({});
+    setDraftInserts([]);
+    setSaveError('');
+  }
+
+  function confirmDraftReset(actionLabel: string) {
+    if (!hasDirtyChanges) {
+      return true;
+    }
+
+    return window.confirm(
+      `Discard unsaved table changes before ${actionLabel}?`,
+    );
+  }
 
   useEffect(() => {
     if (!selectedTableKey && tables.length > 0) {
@@ -805,12 +896,20 @@ function DataInspector({
     if (!connection || !selectedTable) {
       setRowsState(null);
       setRowsError('');
+      setDraftUpdates({});
+      setDraftDeletes({});
+      setDraftInserts([]);
+      setSaveError('');
+      setSaveMessage('');
       return;
     }
 
     const activeConnection = connection;
     const activeTable = selectedTable;
+    const refreshVersion = rowsRefreshToken;
     let isActive = true;
+
+    void refreshVersion;
 
     async function loadRows(offset: number) {
       setIsLoadingRows(true);
@@ -829,6 +928,7 @@ function DataInspector({
         }
 
         setRowsState(payload);
+        setSaveError('');
       } catch (error) {
         if (!isActive) {
           return;
@@ -856,6 +956,13 @@ function DataInspector({
       return;
     }
 
+    if (!confirmDraftReset(`changing to offset ${nextOffset}`)) {
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
+
     setIsLoadingRows(true);
     setRowsError('');
 
@@ -874,6 +981,219 @@ function DataInspector({
     } finally {
       setIsLoadingRows(false);
     }
+  }
+
+  function handleSelectTableChange(nextTableKey: string | null) {
+    if (nextTableKey === selectedTableKey) {
+      return;
+    }
+
+    if (!confirmDraftReset('switching table')) {
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
+    onSelectTable(nextTableKey);
+  }
+
+  function handleRefreshRows() {
+    if (!confirmDraftReset('refreshing rows')) {
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
+    startTransition(() => {
+      setRowsRefreshToken((value) => value + 1);
+    });
+  }
+
+  function handleAddDraftRow() {
+    if (!rowsState) {
+      return;
+    }
+
+    setDraftInserts((current) => [
+      createEmptyInsertRow(
+        rowsState.columns.filter((column) => isEditableColumnType(column.type)),
+      ),
+      ...current,
+    ]);
+    setSaveMessage('');
+  }
+
+  function handleDraftInsertChange(
+    draftId: string,
+    column: InspectorColumn,
+    nextValue: unknown,
+  ) {
+    setDraftInserts((current) =>
+      current.map((draftRow) =>
+        draftRow.id === draftId
+          ? {
+              ...draftRow,
+              values: {
+                ...draftRow.values,
+                [column.name]: normalizeEditorValue(column.type, nextValue),
+              },
+            }
+          : draftRow,
+      ),
+    );
+    setSaveMessage('');
+  }
+
+  function handleExistingCellChange(
+    row: InspectorRow,
+    column: InspectorColumn,
+    nextValue: unknown,
+  ) {
+    const rowToken = serializeRowKey(row.rowKey, activePrimaryKey);
+    if (!rowToken || draftDeletes[rowToken]) {
+      return;
+    }
+
+    const baseValue = row.values[column.name];
+    const normalizedValue = normalizeEditorValue(column.type, nextValue);
+
+    setDraftUpdates((current) => {
+      const currentRowPatch = current[rowToken] ?? {};
+      const nextRowPatch = {
+        ...currentRowPatch,
+      };
+
+      if (areEditorValuesEqual(baseValue, normalizedValue)) {
+        delete nextRowPatch[column.name];
+      } else {
+        nextRowPatch[column.name] = normalizedValue;
+      }
+
+      if (Object.keys(nextRowPatch).length === 0) {
+        const { [rowToken]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      return {
+        ...current,
+        [rowToken]: nextRowPatch,
+      };
+    });
+    setSaveMessage('');
+  }
+
+  function handleToggleDeleteExistingRow(row: InspectorRow) {
+    const rowToken = serializeRowKey(row.rowKey, activePrimaryKey);
+    if (!rowToken) {
+      return;
+    }
+
+    setDraftDeletes((current) => {
+      if (current[rowToken]) {
+        const { [rowToken]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      return {
+        ...current,
+        [rowToken]: true,
+      };
+    });
+    setDraftUpdates((current) => {
+      const { [rowToken]: _removed, ...rest } = current;
+      return rest;
+    });
+    setSaveMessage('');
+  }
+
+  function handleRemoveDraftInsertRow(draftId: string) {
+    setDraftInserts((current) =>
+      current.filter((draftRow) => draftRow.id !== draftId),
+    );
+    setSaveMessage('');
+  }
+
+  async function handleSaveChanges() {
+    if (!connection || !selectedTable || !rowsState || !hasDirtyChanges) {
+      return;
+    }
+
+    const operations: TableChangeOperation[] = [];
+
+    for (const draftRow of draftInserts) {
+      operations.push({
+        type: 'insert',
+        values: draftRow.values,
+      });
+    }
+
+    for (const row of rowsState.rows) {
+      const rowToken = serializeRowKey(row.rowKey, rowsState.primaryKey);
+      if (!rowToken) {
+        continue;
+      }
+
+      if (draftDeletes[rowToken]) {
+        operations.push({
+          type: 'delete',
+          rowKey: row.rowKey ?? undefined,
+        });
+        continue;
+      }
+
+      if (draftUpdates[rowToken]) {
+        operations.push({
+          type: 'update',
+          rowKey: row.rowKey ?? undefined,
+          changes: draftUpdates[rowToken],
+        });
+      }
+    }
+
+    if (operations.length === 0) {
+      return;
+    }
+
+    setIsSavingChanges(true);
+    setSaveError('');
+    setSaveMessage('');
+
+    try {
+      const payload = await commitInspectorRows(connection, {
+        schema: selectedTable.schema,
+        table: selectedTable.name,
+        operations,
+      });
+
+      resetDraftState();
+      setSaveMessage(
+        `Saved ${payload.applied} change${payload.applied === 1 ? '' : 's'}.`,
+      );
+      startTransition(() => {
+        setRowsRefreshToken((value) => value + 1);
+      });
+    } catch (error) {
+      setSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to save table changes.',
+      );
+    } finally {
+      setIsSavingChanges(false);
+    }
+  }
+
+  function handleDiscardChanges() {
+    if (!hasDirtyChanges) {
+      return;
+    }
+
+    if (!window.confirm('Discard all unsaved table changes?')) {
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
   }
 
   if (!connection) {
@@ -903,19 +1223,54 @@ function DataInspector({
               label: table.fullName,
               value: table.fullName,
             }))}
-            onChange={onSelectTable}
+            onChange={handleSelectTableChange}
             placeholder="Select table"
             value={selectedTableKey}
           />
         </Group>
-        <ActionIcon
-          aria-label="Refresh rows"
-          onClick={() => setRowsRefreshToken((value) => value + 1)}
-          size="md"
-          variant="subtle"
-        >
-          {isLoadingRows ? <Loader size={16} /> : <IconRefresh size={16} />}
-        </ActionIcon>
+        <Group gap="xs" wrap="nowrap">
+          {selectedTable?.isEditable ? (
+            <Button
+              leftSection={<IconPlus size={14} />}
+              onClick={handleAddDraftRow}
+              size="compact-sm"
+              variant="light"
+            >
+              Row
+            </Button>
+          ) : null}
+          <Button
+            disabled={!hasDirtyChanges || isSavingChanges}
+            leftSection={<IconRestore size={14} />}
+            onClick={handleDiscardChanges}
+            size="compact-sm"
+            variant="default"
+          >
+            Discard
+          </Button>
+          <Button
+            disabled={!hasDirtyChanges || isSavingChanges}
+            leftSection={
+              isSavingChanges ? (
+                <Loader size={14} />
+              ) : (
+                <IconDeviceFloppy size={14} />
+              )
+            }
+            onClick={() => void handleSaveChanges()}
+            size="compact-sm"
+          >
+            Save
+          </Button>
+          <ActionIcon
+            aria-label="Refresh rows"
+            onClick={handleRefreshRows}
+            size="md"
+            variant="subtle"
+          >
+            {isLoadingRows ? <Loader size={16} /> : <IconRefresh size={16} />}
+          </ActionIcon>
+        </Group>
       </Group>
 
       {tablesError ? (
@@ -930,6 +1285,18 @@ function DataInspector({
         </Text>
       ) : null}
 
+      {saveError ? (
+        <Alert color="red" title="Save failed" variant="light">
+          {saveError}
+        </Alert>
+      ) : null}
+
+      {saveMessage ? (
+        <Alert color="teal" title="Draft committed" variant="light">
+          {saveMessage}
+        </Alert>
+      ) : null}
+
       {!selectedTable ? (
         <EmptyState
           detail="Choose one table from loaded database objects."
@@ -940,14 +1307,48 @@ function DataInspector({
       {selectedTable && rowsState ? (
         <>
           <Group justify="space-between">
-            <Text c="dimmed" size="xs">
-              {selectedTable.fullName} • {selectedTable.kind} • showing rows{' '}
-              {rowsState.offset + 1}-{rowsState.offset + rowsState.rows.length}
-            </Text>
-            <Text c="dimmed" size="xs">
-              page size {rowsState.limit}
-            </Text>
+            <Group gap="xs">
+              <Text c="dimmed" size="xs">
+                {selectedTable.fullName} • {selectedTable.kind} • showing rows{' '}
+                {rowsState.offset + 1}-
+                {rowsState.offset + rowsState.rows.length}
+              </Text>
+              {rowsState.primaryKey.length > 0 ? (
+                <Badge color="gray" size="sm" variant="light">
+                  PK {rowsState.primaryKey.join(', ')}
+                </Badge>
+              ) : (
+                <Badge color="gray" size="sm" variant="outline">
+                  No primary key
+                </Badge>
+              )}
+              <Badge
+                color={rowsState.isEditable ? 'teal' : 'gray'}
+                size="sm"
+                variant="light"
+              >
+                {rowsState.isEditable ? 'Editable draft' : 'Read only'}
+              </Badge>
+            </Group>
+            <Group gap="xs">
+              {hasDirtyChanges ? (
+                <Badge color="orange" size="sm" variant="light">
+                  {touchedRowCount} pending
+                </Badge>
+              ) : null}
+              <Text c="dimmed" size="xs">
+                page size {rowsState.limit}
+              </Text>
+            </Group>
           </Group>
+
+          {!rowsState.isEditable ? (
+            <Alert color="gray" variant="light">
+              Editing enabled only for base tables with primary key and
+              insert/update/delete privileges. Geometry cells stay read-only in
+              this first pass.
+            </Alert>
+          ) : null}
 
           <ScrollArea
             offsetScrollbars
@@ -966,6 +1367,13 @@ function DataInspector({
             >
               <Table.Thead>
                 <Table.Tr>
+                  <Table.Th
+                    style={{
+                      minWidth: 120,
+                    }}
+                  >
+                    Row
+                  </Table.Th>
                   {rowsState.columns.map((column) => (
                     <Table.Th
                       key={column.name}
@@ -987,11 +1395,34 @@ function DataInspector({
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {rowsState.rows.map((row, rowIndex) => (
-                  <Table.Tr key={`${rowsState.offset}-${rowIndex}`}>
+                {draftInserts.map((draftRow) => (
+                  <Table.Tr
+                    key={draftRow.id}
+                    style={{
+                      background: 'rgba(18, 184, 134, 0.08)',
+                    }}
+                  >
+                    <Table.Td>
+                      <Group gap={6} wrap="nowrap">
+                        <Badge color="teal" size="xs" variant="light">
+                          New
+                        </Badge>
+                        <ActionIcon
+                          aria-label="Remove new row"
+                          color="red"
+                          onClick={() =>
+                            handleRemoveDraftInsertRow(draftRow.id)
+                          }
+                          size="sm"
+                          variant="subtle"
+                        >
+                          <IconTrash size={14} />
+                        </ActionIcon>
+                      </Group>
+                    </Table.Td>
                     {rowsState.columns.map((column) => (
                       <Table.Td
-                        key={`${rowIndex}-${column.name}`}
+                        key={`${draftRow.id}-${column.name}`}
                         style={{
                           fontFamily: getCellFontFamily(
                             column.name,
@@ -1002,20 +1433,151 @@ function DataInspector({
                           verticalAlign: 'top',
                         }}
                       >
-                        <Text
-                          lineClamp={3}
-                          size="sm"
-                          style={{
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {formatCellValue(row[column.name])}
-                        </Text>
+                        {isEditableColumnType(column.type) ? (
+                          renderEditableCell({
+                            column,
+                            onChange: (nextValue) =>
+                              handleDraftInsertChange(
+                                draftRow.id,
+                                column,
+                                nextValue,
+                              ),
+                            value: draftRow.values[column.name],
+                          })
+                        ) : (
+                          <Text c="dimmed" size="sm">
+                            Auto / read only
+                          </Text>
+                        )}
                       </Table.Td>
                     ))}
                   </Table.Tr>
                 ))}
+
+                {rowsState.rows.map((row) => {
+                  const rowToken = serializeRowKey(
+                    row.rowKey,
+                    rowsState.primaryKey,
+                  );
+                  const rowPatch = rowToken
+                    ? draftUpdates[rowToken]
+                    : undefined;
+                  const isDeleted = rowToken
+                    ? Boolean(draftDeletes[rowToken])
+                    : false;
+                  const rowRenderKey =
+                    rowToken ??
+                    JSON.stringify([
+                      rowsState.offset,
+                      rowsState.primaryKey,
+                      row.values,
+                    ]);
+
+                  return (
+                    <Table.Tr
+                      key={rowRenderKey}
+                      style={{
+                        background: isDeleted
+                          ? 'rgba(224, 49, 49, 0.08)'
+                          : rowPatch
+                            ? 'rgba(250, 176, 5, 0.08)'
+                            : undefined,
+                      }}
+                    >
+                      <Table.Td>
+                        <Group gap={6} wrap="nowrap">
+                          {isDeleted ? (
+                            <Badge color="red" size="xs" variant="light">
+                              Delete
+                            </Badge>
+                          ) : rowPatch ? (
+                            <Badge color="orange" size="xs" variant="light">
+                              Edit
+                            </Badge>
+                          ) : (
+                            <Badge color="gray" size="xs" variant="light">
+                              Live
+                            </Badge>
+                          )}
+                          {rowsState.isEditable && row.rowKey ? (
+                            <ActionIcon
+                              aria-label={
+                                isDeleted
+                                  ? 'Restore row'
+                                  : 'Mark row for delete'
+                              }
+                              color={isDeleted ? 'gray' : 'red'}
+                              onClick={() => handleToggleDeleteExistingRow(row)}
+                              size="sm"
+                              variant="subtle"
+                            >
+                              {isDeleted ? (
+                                <IconRestore size={14} />
+                              ) : (
+                                <IconTrash size={14} />
+                              )}
+                            </ActionIcon>
+                          ) : null}
+                        </Group>
+                      </Table.Td>
+                      {rowsState.columns.map((column) => {
+                        const displayValue =
+                          rowPatch && column.name in rowPatch
+                            ? rowPatch[column.name]
+                            : row.values[column.name];
+                        const isEditableCell =
+                          rowsState.isEditable &&
+                          Boolean(row.rowKey) &&
+                          isEditableColumnType(column.type) &&
+                          !rowsState.primaryKey.includes(column.name);
+
+                        return (
+                          <Table.Td
+                            key={`${rowRenderKey}-${column.name}`}
+                            style={{
+                              fontFamily: getCellFontFamily(
+                                column.name,
+                                column.type,
+                              ),
+                              maxWidth: 320,
+                              textAlign: getCellTextAlign(column.type),
+                              verticalAlign: 'top',
+                            }}
+                          >
+                            {isEditableCell ? (
+                              renderEditableCell({
+                                column,
+                                disabled: isDeleted || isSavingChanges,
+                                onChange: (nextValue) =>
+                                  handleExistingCellChange(
+                                    row,
+                                    column,
+                                    nextValue,
+                                  ),
+                                value: displayValue,
+                              })
+                            ) : (
+                              <Text
+                                lineClamp={3}
+                                size="sm"
+                                style={{
+                                  opacity: isDeleted ? 0.55 : 1,
+                                  textDecoration: isDeleted
+                                    ? 'line-through'
+                                    : undefined,
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                }}
+                              >
+                                {formatCellValue(displayValue)}
+                              </Text>
+                            )}
+                          </Table.Td>
+                        );
+                      })}
+                    </Table.Tr>
+                  );
+                })}
               </Table.Tbody>
             </Table>
           </ScrollArea>
@@ -1050,7 +1612,7 @@ function DataInspector({
 
 function formatCellValue(value: unknown) {
   if (value === null || value === undefined) {
-    return 'NULL';
+    return emptyCellLabel;
   }
 
   if (typeof value === 'object') {
@@ -1058,6 +1620,75 @@ function formatCellValue(value: unknown) {
   }
 
   return String(value);
+}
+
+function renderEditableCell({
+  column,
+  disabled,
+  onChange,
+  value,
+}: {
+  column: InspectorColumn;
+  disabled?: boolean;
+  onChange: (value: unknown) => void;
+  value: unknown;
+}) {
+  if (isBooleanColumnType(column.type)) {
+    return (
+      <Checkbox
+        checked={Boolean(value)}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+      />
+    );
+  }
+
+  return (
+    <TextInput
+      disabled={disabled}
+      onChange={(event) => onChange(event.currentTarget.value)}
+      size="xs"
+      styles={{
+        input: {
+          textAlign: getCellTextAlign(column.type),
+        },
+      }}
+      value={formatEditorValue(value)}
+    />
+  );
+}
+
+function formatEditorValue(value: unknown) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  return String(value);
+}
+
+function normalizeEditorValue(columnType: string, value: unknown) {
+  if (isBooleanColumnType(columnType)) {
+    return Boolean(value);
+  }
+
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  if (isNumericColumnType(columnType)) {
+    if (value.trim() === '') {
+      return value;
+    }
+
+    const numericValue = Number(value);
+    return Number.isNaN(numericValue) ? value : numericValue;
+  }
+
+  return value;
+}
+
+function areEditorValuesEqual(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function getCellTextAlign(columnType: string) {
@@ -1128,6 +1759,18 @@ function LayerGlyph({
 
 function isNumericColumnType(columnType: string) {
   return /int|numeric|double|real|decimal|serial/i.test(columnType);
+}
+
+function isBooleanColumnType(columnType: string) {
+  return /bool/i.test(columnType);
+}
+
+function isEditableColumnType(columnType: string) {
+  return (
+    isNumericColumnType(columnType) ||
+    isBooleanColumnType(columnType) ||
+    /text|character|uuid|date|timestamp/i.test(columnType)
+  );
 }
 
 export function App() {
@@ -1219,7 +1862,9 @@ export function App() {
           nextTables.some((table) => table.fullName === selectedTableKey)
             ? selectedTableKey
             : (nextTables[0]?.fullName ?? null);
-        handleSelectTable(nextSelectedTableKey);
+        if (selectedConnectionId) {
+          setSelectedTable(selectedConnectionId, nextSelectedTableKey);
+        }
       } catch (error) {
         if (!isActive) {
           return;
@@ -1230,7 +1875,9 @@ export function App() {
             ? error.message
             : 'Failed to load inspectable tables.',
         );
-        handleSelectTable(null);
+        if (selectedConnectionId) {
+          setSelectedTable(selectedConnectionId, null);
+        }
       }
     }
 
@@ -1239,7 +1886,12 @@ export function App() {
     return () => {
       isActive = false;
     };
-  }, [selectedConnection, selectedTableKey]);
+  }, [
+    selectedConnection,
+    selectedConnectionId,
+    selectedTableKey,
+    setSelectedTable,
+  ]);
 
   return (
     <Flex

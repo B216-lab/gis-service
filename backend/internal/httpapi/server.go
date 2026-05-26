@@ -48,6 +48,10 @@ func (server *Server) routes() {
 		server.handleListRows,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/rows/commit",
+		server.handleCommitTableChanges,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/layer-features",
 		server.handleListLayerFeatures,
 	)
@@ -236,6 +240,48 @@ func (server *Server) handleListLayerFeatures(
 	writeJSON(writer, http.StatusOK, result)
 }
 
+func (server *Server) handleCommitTableChanges(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.CommitTableChangesRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_table_commit_request",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.CommitTableChanges(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"database_table_commit_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
 func handleServiceError(
 	writer http.ResponseWriter,
 	err error,
@@ -247,6 +293,26 @@ func handleServiceError(
 			writer,
 			http.StatusServiceUnavailable,
 			serviceErrorCode,
+			err.Error(),
+		)
+		return
+	}
+
+	if errors.Is(err, postgres.ErrInvalidWriteRequest) {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			serviceErrorCode,
+			err.Error(),
+		)
+		return
+	}
+
+	if errors.Is(err, postgres.ErrWriteConflict) {
+		writeError(
+			writer,
+			http.StatusConflict,
+			"database_write_conflict",
 			err.Error(),
 		)
 		return
