@@ -47,6 +47,7 @@ import {
 import {
   type DatabaseConnection,
   type FlowmapMapLayer,
+  type GeoJsonMapLayer,
   type LayerGlyphIcon,
   type MapLayer,
   type MapSource,
@@ -892,315 +893,14 @@ function ConnectionManager({
                     </Text>
 
                     {isExpanded ? (
-                      <Stack
-                        gap="xs"
-                        pt="xs"
-                        style={{
-                          borderTop: '1px solid var(--mantine-color-gray-2)',
-                        }}
-                      >
-                        <TextInput
-                          label="Layer name"
-                          onChange={(event) => {
-                            if (layer.type === 'geojson') {
-                              updateGeoJsonLayer(layer.id, {
-                                name: event.currentTarget.value,
-                              });
-                              return;
-                            }
-
-                            updateFlowmapLayer(layer.id, {
-                              name: event.currentTarget.value,
-                            });
-                          }}
-                          size="xs"
-                          value={layer.name}
-                        />
-
-                        {layer.type === 'geojson' &&
-                        source.type === 'geojson-table' ? (
-                          <>
-                            <Select
-                              data={(sourceTable?.geometryColumns ?? []).map(
-                                (column) => ({
-                                  label: `${column.name} (${column.geometryType})`,
-                                  value: column.name,
-                                }),
-                              )}
-                              label="Geographic column"
-                              onChange={(value) => {
-                                const nextGeometryColumn =
-                                  sourceTable?.geometryColumns.find(
-                                    (column) => column.name === value,
-                                  ) ?? null;
-
-                                updateGeoJsonSource(source.id, {
-                                  geometryColumn:
-                                    value ?? source.geometryColumn,
-                                  geometryType:
-                                    nextGeometryColumn?.geometryType ??
-                                    source.geometryType,
-                                });
-                              }}
-                              size="xs"
-                              value={source.geometryColumn}
-                            />
-
-                            <Group align="end" grow>
-                              <Box>
-                                <Text c="dimmed" fw={500} mb={4} size="xs">
-                                  Color
-                                </Text>
-                                <input
-                                  aria-label={`Choose color for ${layer.name}`}
-                                  onChange={(event) =>
-                                    updateGeoJsonLayer(layer.id, {
-                                      color: event.currentTarget.value,
-                                    })
-                                  }
-                                  style={{
-                                    width: '100%',
-                                    height: 36,
-                                    border:
-                                      '1px solid var(--mantine-color-gray-4)',
-                                    borderRadius: 8,
-                                    background: 'transparent',
-                                    padding: 4,
-                                  }}
-                                  type="color"
-                                  value={layer.color}
-                                />
-                              </Box>
-
-                              <Select
-                                data={[
-                                  { label: 'Circle', value: 'circle' },
-                                  { label: 'Square', value: 'square' },
-                                  { label: 'Diamond', value: 'diamond' },
-                                  { label: 'Line', value: 'line' },
-                                ]}
-                                label="List icon"
-                                onChange={(value) => {
-                                  if (!value) {
-                                    return;
-                                  }
-
-                                  updateGeoJsonLayer(layer.id, {
-                                    icon: value as LayerGlyphIcon,
-                                  });
-                                }}
-                                size="xs"
-                                value={layer.icon}
-                              />
-                            </Group>
-
-                            <Stack gap={4}>
-                              <Group justify="space-between">
-                                <Text c="dimmed" fw={500} size="xs">
-                                  Opacity
-                                </Text>
-                                <Text c="dimmed" size="xs">
-                                  {layer.opacity}%
-                                </Text>
-                              </Group>
-                              <Slider
-                                max={100}
-                                min={0}
-                                onChange={(value) =>
-                                  updateGeoJsonLayer(layer.id, {
-                                    opacity: value,
-                                  })
-                                }
-                                size="sm"
-                                value={layer.opacity}
-                              />
-                            </Stack>
-                          </>
-                        ) : null}
-
-                        {layer.type === 'flowmap' ? (
-                          <>
-                            <Select
-                              data={[
-                                { label: 'Curved', value: 'curved' },
-                                { label: 'Straight', value: 'straight' },
-                                {
-                                  label: 'Animated straight',
-                                  value: 'animated-straight',
-                                },
-                              ]}
-                              label="Render mode"
-                              onChange={(value) => {
-                                if (!value) {
-                                  return;
-                                }
-
-                                updateFlowmapLayer(layer.id, {
-                                  style: {
-                                    flowLinesRenderingMode:
-                                      value as FlowmapMapLayer['style']['flowLinesRenderingMode'],
-                                  },
-                                });
-                              }}
-                              size="xs"
-                              value={layer.style.flowLinesRenderingMode}
-                            />
-
-                            <Stack gap={4}>
-                              <Group justify="space-between">
-                                <Text c="dimmed" fw={500} size="xs">
-                                  Thickness scale
-                                </Text>
-                                <Text c="dimmed" size="xs">
-                                  {layer.style.flowLineThicknessScale.toFixed(
-                                    1,
-                                  )}
-                                </Text>
-                              </Group>
-                              <Slider
-                                max={10}
-                                min={1}
-                                onChange={(value) =>
-                                  updateFlowmapLayer(layer.id, {
-                                    style: {
-                                      flowLineThicknessScale: value,
-                                    },
-                                  })
-                                }
-                                step={0.5}
-                                value={layer.style.flowLineThicknessScale}
-                              />
-                            </Stack>
-
-                            <Group grow>
-                              <Select
-                                data={[
-                                  { label: 'Teal', value: 'Teal' },
-                                  { label: 'Blue', value: 'Blue' },
-                                  { label: 'Red', value: 'Red' },
-                                  { label: 'Purp', value: 'Purp' },
-                                ]}
-                                label="Color scheme"
-                                onChange={(value) => {
-                                  if (!value) {
-                                    return;
-                                  }
-
-                                  updateFlowmapLayer(layer.id, {
-                                    style: {
-                                      colorScheme: value,
-                                    },
-                                  });
-                                }}
-                                size="xs"
-                                value={layer.style.colorScheme}
-                              />
-                              <Select
-                                data={[
-                                  { label: 'Flow', value: 'flow' },
-                                  { label: 'Line', value: 'line' },
-                                  { label: 'Diamond', value: 'diamond' },
-                                ]}
-                                label="List icon"
-                                onChange={(value) => {
-                                  if (!value) {
-                                    return;
-                                  }
-
-                                  updateFlowmapLayer(layer.id, {
-                                    icon: value as LayerGlyphIcon,
-                                  });
-                                }}
-                                size="xs"
-                                value={layer.icon}
-                              />
-                            </Group>
-
-                            <Checkbox
-                              checked={layer.style.locationsEnabled}
-                              label="Show locations"
-                              onChange={(event) =>
-                                updateFlowmapLayer(layer.id, {
-                                  style: {
-                                    locationsEnabled:
-                                      event.currentTarget.checked,
-                                  },
-                                })
-                              }
-                            />
-                            <Checkbox
-                              checked={layer.style.locationTotalsEnabled}
-                              label="Show totals"
-                              onChange={(event) =>
-                                updateFlowmapLayer(layer.id, {
-                                  style: {
-                                    locationTotalsEnabled:
-                                      event.currentTarget.checked,
-                                  },
-                                })
-                              }
-                            />
-                            <Checkbox
-                              checked={layer.style.locationLabelsEnabled}
-                              label="Show labels"
-                              onChange={(event) =>
-                                updateFlowmapLayer(layer.id, {
-                                  style: {
-                                    locationLabelsEnabled:
-                                      event.currentTarget.checked,
-                                  },
-                                })
-                              }
-                            />
-                            <Checkbox
-                              checked={layer.style.clusteringEnabled}
-                              label="Enable clustering"
-                              onChange={(event) =>
-                                updateFlowmapLayer(layer.id, {
-                                  style: {
-                                    clusteringEnabled:
-                                      event.currentTarget.checked,
-                                  },
-                                })
-                              }
-                            />
-                            <Checkbox
-                              checked={layer.style.darkMode}
-                              label="Dark mode palette"
-                              onChange={(event) =>
-                                updateFlowmapLayer(layer.id, {
-                                  style: {
-                                    darkMode: event.currentTarget.checked,
-                                  },
-                                })
-                              }
-                            />
-                            <Stack gap={4}>
-                              <Group justify="space-between">
-                                <Text c="dimmed" fw={500} size="xs">
-                                  Top flows
-                                </Text>
-                                <Text c="dimmed" size="xs">
-                                  {layer.style.maxTopFlowsDisplayNum}
-                                </Text>
-                              </Group>
-                              <Slider
-                                max={2000}
-                                min={50}
-                                onChange={(value) =>
-                                  updateFlowmapLayer(layer.id, {
-                                    style: {
-                                      maxTopFlowsDisplayNum: value,
-                                    },
-                                  })
-                                }
-                                step={50}
-                                value={layer.style.maxTopFlowsDisplayNum}
-                              />
-                            </Stack>
-                          </>
-                        ) : null}
-                      </Stack>
+                      <MapLayerEditor
+                        layer={layer}
+                        source={source}
+                        sourceTable={sourceTable}
+                        onUpdateFlowmapLayer={updateFlowmapLayer}
+                        onUpdateGeoJsonLayer={updateGeoJsonLayer}
+                        onUpdateGeoJsonSource={updateGeoJsonSource}
+                      />
                     ) : null}
                   </Stack>
                 </Paper>
@@ -1216,6 +916,409 @@ function ConnectionManager({
         </Stack>
       </Stack>
     </>
+  );
+}
+
+function MapLayerEditor({
+  layer,
+  source,
+  sourceTable,
+  onUpdateFlowmapLayer,
+  onUpdateGeoJsonLayer,
+  onUpdateGeoJsonSource,
+}: {
+  layer: MapLayer;
+  source: MapSource;
+  sourceTable: InspectableTable | null;
+  onUpdateFlowmapLayer: (
+    layerId: string,
+    patch: {
+      name?: string;
+      icon?: LayerGlyphIcon;
+      style?: Partial<FlowmapMapLayer['style']>;
+    },
+  ) => void;
+  onUpdateGeoJsonLayer: (
+    layerId: string,
+    patch: Partial<
+      Pick<GeoJsonMapLayer, 'name' | 'icon' | 'color' | 'opacity'>
+    >,
+  ) => void;
+  onUpdateGeoJsonSource: (
+    sourceId: string,
+    patch: Partial<Pick<MapSource & { type: 'geojson-table' }, never>> &
+      Partial<{ geometryColumn: string; geometryType: string }>,
+  ) => void;
+}) {
+  const [draftName, setDraftName] = useState(layer.name);
+  const [draftColor, setDraftColor] = useState(
+    layer.type === 'geojson' ? layer.color : '#0c8599',
+  );
+  const [draftOpacity, setDraftOpacity] = useState(
+    layer.type === 'geojson' ? layer.opacity : 80,
+  );
+  const [draftThicknessScale, setDraftThicknessScale] = useState(
+    layer.type === 'flowmap' ? layer.style.flowLineThicknessScale : 2,
+  );
+  const [draftTopFlows, setDraftTopFlows] = useState(
+    layer.type === 'flowmap' ? layer.style.maxTopFlowsDisplayNum : 500,
+  );
+
+  useEffect(() => {
+    setDraftName(layer.name);
+    if (layer.type === 'geojson') {
+      setDraftColor(layer.color);
+      setDraftOpacity(layer.opacity);
+      return;
+    }
+
+    setDraftThicknessScale(layer.style.flowLineThicknessScale);
+    setDraftTopFlows(layer.style.maxTopFlowsDisplayNum);
+  }, [layer]);
+
+  function commitLayerName() {
+    if (draftName === layer.name) {
+      return;
+    }
+
+    startTransition(() => {
+      if (layer.type === 'geojson') {
+        onUpdateGeoJsonLayer(layer.id, {
+          name: draftName,
+        });
+        return;
+      }
+
+      onUpdateFlowmapLayer(layer.id, {
+        name: draftName,
+      });
+    });
+  }
+
+  return (
+    <Stack
+      gap="xs"
+      pt="xs"
+      style={{
+        borderTop: '1px solid var(--mantine-color-gray-2)',
+      }}
+    >
+      <TextInput
+        label="Layer name"
+        onBlur={commitLayerName}
+        onChange={(event) => setDraftName(event.currentTarget.value)}
+        size="xs"
+        value={draftName}
+      />
+
+      {layer.type === 'geojson' && source.type === 'geojson-table' ? (
+        <>
+          <Select
+            data={(sourceTable?.geometryColumns ?? []).map((column) => ({
+              label: `${column.name} (${column.geometryType})`,
+              value: column.name,
+            }))}
+            label="Geographic column"
+            onChange={(value) => {
+              const nextGeometryColumn =
+                sourceTable?.geometryColumns.find(
+                  (column) => column.name === value,
+                ) ?? null;
+
+              startTransition(() => {
+                onUpdateGeoJsonSource(source.id, {
+                  geometryColumn: value ?? source.geometryColumn,
+                  geometryType:
+                    nextGeometryColumn?.geometryType ?? source.geometryType,
+                });
+              });
+            }}
+            size="xs"
+            value={source.geometryColumn}
+          />
+
+          <Group align="end" grow>
+            <Box>
+              <Text c="dimmed" fw={500} mb={4} size="xs">
+                Color
+              </Text>
+              <input
+                aria-label={`Choose color for ${layer.name}`}
+                onBlur={() => {
+                  if (draftColor === layer.color) {
+                    return;
+                  }
+
+                  startTransition(() => {
+                    onUpdateGeoJsonLayer(layer.id, {
+                      color: draftColor,
+                    });
+                  });
+                }}
+                onChange={(event) => setDraftColor(event.currentTarget.value)}
+                style={{
+                  width: '100%',
+                  height: 36,
+                  border: '1px solid var(--mantine-color-gray-4)',
+                  borderRadius: 8,
+                  background: 'transparent',
+                  padding: 4,
+                }}
+                type="color"
+                value={draftColor}
+              />
+            </Box>
+
+            <Select
+              data={[
+                { label: 'Circle', value: 'circle' },
+                { label: 'Square', value: 'square' },
+                { label: 'Diamond', value: 'diamond' },
+                { label: 'Line', value: 'line' },
+              ]}
+              label="List icon"
+              onChange={(value) => {
+                if (!value) {
+                  return;
+                }
+
+                startTransition(() => {
+                  onUpdateGeoJsonLayer(layer.id, {
+                    icon: value as LayerGlyphIcon,
+                  });
+                });
+              }}
+              size="xs"
+              value={layer.icon}
+            />
+          </Group>
+
+          <Stack gap={4}>
+            <Group justify="space-between">
+              <Text c="dimmed" fw={500} size="xs">
+                Opacity
+              </Text>
+              <Text c="dimmed" size="xs">
+                {draftOpacity}%
+              </Text>
+            </Group>
+            <Slider
+              max={100}
+              min={0}
+              onChange={setDraftOpacity}
+              onChangeEnd={(value) =>
+                startTransition(() => {
+                  onUpdateGeoJsonLayer(layer.id, {
+                    opacity: value,
+                  });
+                })
+              }
+              size="sm"
+              value={draftOpacity}
+            />
+          </Stack>
+        </>
+      ) : null}
+
+      {layer.type === 'flowmap' ? (
+        <>
+          <Select
+            data={[
+              { label: 'Curved', value: 'curved' },
+              { label: 'Straight', value: 'straight' },
+              {
+                label: 'Animated straight',
+                value: 'animated-straight',
+              },
+            ]}
+            label="Render mode"
+            onChange={(value) => {
+              if (!value) {
+                return;
+              }
+
+              startTransition(() => {
+                onUpdateFlowmapLayer(layer.id, {
+                  style: {
+                    flowLinesRenderingMode:
+                      value as FlowmapMapLayer['style']['flowLinesRenderingMode'],
+                  },
+                });
+              });
+            }}
+            size="xs"
+            value={layer.style.flowLinesRenderingMode}
+          />
+
+          <Stack gap={4}>
+            <Group justify="space-between">
+              <Text c="dimmed" fw={500} size="xs">
+                Thickness scale
+              </Text>
+              <Text c="dimmed" size="xs">
+                {draftThicknessScale.toFixed(1)}
+              </Text>
+            </Group>
+            <Slider
+              max={10}
+              min={1}
+              onChange={setDraftThicknessScale}
+              onChangeEnd={(value) =>
+                startTransition(() => {
+                  onUpdateFlowmapLayer(layer.id, {
+                    style: {
+                      flowLineThicknessScale: value,
+                    },
+                  });
+                })
+              }
+              step={0.5}
+              value={draftThicknessScale}
+            />
+          </Stack>
+
+          <Group grow>
+            <Select
+              data={[
+                { label: 'Teal', value: 'Teal' },
+                { label: 'Blue', value: 'Blue' },
+                { label: 'Red', value: 'Red' },
+                { label: 'Purp', value: 'Purp' },
+              ]}
+              label="Color scheme"
+              onChange={(value) => {
+                if (!value) {
+                  return;
+                }
+
+                startTransition(() => {
+                  onUpdateFlowmapLayer(layer.id, {
+                    style: {
+                      colorScheme: value,
+                    },
+                  });
+                });
+              }}
+              size="xs"
+              value={layer.style.colorScheme}
+            />
+            <Select
+              data={[
+                { label: 'Flow', value: 'flow' },
+                { label: 'Line', value: 'line' },
+                { label: 'Diamond', value: 'diamond' },
+              ]}
+              label="List icon"
+              onChange={(value) => {
+                if (!value) {
+                  return;
+                }
+
+                startTransition(() => {
+                  onUpdateFlowmapLayer(layer.id, {
+                    icon: value as LayerGlyphIcon,
+                  });
+                });
+              }}
+              size="xs"
+              value={layer.icon}
+            />
+          </Group>
+
+          <Checkbox
+            checked={layer.style.locationsEnabled}
+            label="Show locations"
+            onChange={(event) =>
+              startTransition(() => {
+                onUpdateFlowmapLayer(layer.id, {
+                  style: {
+                    locationsEnabled: event.currentTarget.checked,
+                  },
+                });
+              })
+            }
+          />
+          <Checkbox
+            checked={layer.style.locationTotalsEnabled}
+            label="Show totals"
+            onChange={(event) =>
+              startTransition(() => {
+                onUpdateFlowmapLayer(layer.id, {
+                  style: {
+                    locationTotalsEnabled: event.currentTarget.checked,
+                  },
+                });
+              })
+            }
+          />
+          <Checkbox
+            checked={layer.style.locationLabelsEnabled}
+            label="Show labels"
+            onChange={(event) =>
+              startTransition(() => {
+                onUpdateFlowmapLayer(layer.id, {
+                  style: {
+                    locationLabelsEnabled: event.currentTarget.checked,
+                  },
+                });
+              })
+            }
+          />
+          <Checkbox
+            checked={layer.style.clusteringEnabled}
+            label="Enable clustering"
+            onChange={(event) =>
+              startTransition(() => {
+                onUpdateFlowmapLayer(layer.id, {
+                  style: {
+                    clusteringEnabled: event.currentTarget.checked,
+                  },
+                });
+              })
+            }
+          />
+          <Checkbox
+            checked={layer.style.darkMode}
+            label="Dark mode palette"
+            onChange={(event) =>
+              startTransition(() => {
+                onUpdateFlowmapLayer(layer.id, {
+                  style: {
+                    darkMode: event.currentTarget.checked,
+                  },
+                });
+              })
+            }
+          />
+          <Stack gap={4}>
+            <Group justify="space-between">
+              <Text c="dimmed" fw={500} size="xs">
+                Top flows
+              </Text>
+              <Text c="dimmed" size="xs">
+                {draftTopFlows}
+              </Text>
+            </Group>
+            <Slider
+              max={2000}
+              min={50}
+              onChange={setDraftTopFlows}
+              onChangeEnd={(value) =>
+                startTransition(() => {
+                  onUpdateFlowmapLayer(layer.id, {
+                    style: {
+                      maxTopFlowsDisplayNum: value,
+                    },
+                  });
+                })
+              }
+              step={50}
+              value={draftTopFlows}
+            />
+          </Stack>
+        </>
+      ) : null}
+    </Stack>
   );
 }
 
