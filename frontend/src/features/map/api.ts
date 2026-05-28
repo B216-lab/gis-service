@@ -1,4 +1,8 @@
-import type { DatabaseConnection, ImportedLayer } from '../connections/store';
+import type {
+  DatabaseConnection,
+  FlowmapTableSource,
+  GeoJsonTableSource,
+} from '../connections/store';
 
 export interface GeoJsonGeometry {
   type: string;
@@ -26,9 +30,53 @@ export interface LayerFeaturesResponse {
   data: GeoJsonFeatureCollection;
 }
 
-export async function fetchLayerFeatures(
+export interface FlowmapLocation {
+  id: string;
+  lat: number;
+  lon: number;
+  name: string;
+}
+
+export interface FlowmapFlow {
+  originId: string;
+  destId: string;
+  magnitude: number;
+}
+
+export interface FlowmapDataResponse {
+  schema: string;
+  table: string;
+  flowCount: number;
+  locationCount: number;
+  locations: FlowmapLocation[];
+  flows: FlowmapFlow[];
+}
+
+interface ErrorResponse {
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
+async function decodePayload<T extends object>(
+  response: Response,
+  fallbackMessage: string,
+): Promise<T> {
+  const payload = (await response.json()) as T | ErrorResponse;
+
+  if (!response.ok || 'error' in payload) {
+    throw new Error(
+      'error' in payload ? payload.error.message : fallbackMessage,
+    );
+  }
+
+  return payload;
+}
+
+export async function fetchGeoJsonSourceData(
   connection: DatabaseConnection,
-  layer: ImportedLayer,
+  source: GeoJsonTableSource,
   signal?: AbortSignal,
 ) {
   const response = await fetch('/api/v1/database-connections/layer-features', {
@@ -44,29 +92,50 @@ export async function fetchLayerFeatures(
       database: connection.database,
       user: connection.user,
       password: connection.password,
-      schema: layer.schema,
-      table: layer.table,
-      geometryColumn: layer.geometryColumn,
+      schema: source.schema,
+      table: source.table,
+      geometryColumn: source.geometryColumn,
       limit: 2000,
     }),
   });
 
-  const payload = (await response.json()) as
-    | LayerFeaturesResponse
-    | {
-        error: {
-          code: string;
-          message: string;
-        };
-      };
+  return decodePayload<LayerFeaturesResponse>(
+    response,
+    'Failed to load layer features.',
+  );
+}
 
-  if (!response.ok || 'error' in payload) {
-    throw new Error(
-      'error' in payload
-        ? payload.error.message
-        : 'Failed to load layer features.',
-    );
-  }
+export async function fetchFlowmapSourceData(
+  connection: DatabaseConnection,
+  source: FlowmapTableSource,
+  signal?: AbortSignal,
+) {
+  const response = await fetch('/api/v1/database-connections/flowmap-data', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: connection.name,
+      host: connection.host,
+      port: connection.port,
+      database: connection.database,
+      user: connection.user,
+      password: connection.password,
+      schema: source.schema,
+      table: source.table,
+      startLonColumn: source.columns.startLon,
+      startLatColumn: source.columns.startLat,
+      endLonColumn: source.columns.endLon,
+      endLatColumn: source.columns.endLat,
+      magnitudeColumn: source.columns.magnitude,
+      limit: 5000,
+    }),
+  });
 
-  return payload;
+  return decodePayload<FlowmapDataResponse>(
+    response,
+    'Failed to load flowmap source data.',
+  );
 }

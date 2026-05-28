@@ -88,6 +88,18 @@ type ListLayerFeaturesRequest struct {
 	Limit          int    `json:"limit"`
 }
 
+type ListFlowmapDataRequest struct {
+	ConnectionTestRequest
+	Schema          string `json:"schema"`
+	Table           string `json:"table"`
+	StartLonColumn  string `json:"startLonColumn"`
+	StartLatColumn  string `json:"startLatColumn"`
+	EndLonColumn    string `json:"endLonColumn"`
+	EndLatColumn    string `json:"endLatColumn"`
+	MagnitudeColumn string `json:"magnitudeColumn"`
+	Limit           int    `json:"limit"`
+}
+
 type ColumnMeta struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
@@ -136,6 +148,28 @@ type ListLayerFeaturesResult struct {
 	SRID           int                      `json:"srid"`
 	FeatureCount   int                      `json:"featureCount"`
 	Data           GeoJSONFeatureCollection `json:"data"`
+}
+
+type FlowmapLocation struct {
+	ID   string  `json:"id"`
+	Lat  float64 `json:"lat"`
+	Lon  float64 `json:"lon"`
+	Name string  `json:"name"`
+}
+
+type FlowmapFlow struct {
+	OriginID  string  `json:"originId"`
+	DestID    string  `json:"destId"`
+	Magnitude float64 `json:"magnitude"`
+}
+
+type ListFlowmapDataResult struct {
+	Schema        string            `json:"schema"`
+	Table         string            `json:"table"`
+	FlowCount     int               `json:"flowCount"`
+	LocationCount int               `json:"locationCount"`
+	Locations     []FlowmapLocation `json:"locations"`
+	Flows         []FlowmapFlow     `json:"flows"`
 }
 
 type columnDefinition struct {
@@ -221,6 +255,17 @@ func (request *ListLayerFeaturesRequest) TrimSpaces() {
 	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
 }
 
+func (request *ListFlowmapDataRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.StartLonColumn = strings.TrimSpace(request.StartLonColumn)
+	request.StartLatColumn = strings.TrimSpace(request.StartLatColumn)
+	request.EndLonColumn = strings.TrimSpace(request.EndLonColumn)
+	request.EndLatColumn = strings.TrimSpace(request.EndLatColumn)
+	request.MagnitudeColumn = strings.TrimSpace(request.MagnitudeColumn)
+}
+
 func (request *ListRowsRequest) Normalize() {
 	if request.Limit <= 0 {
 		request.Limit = 100
@@ -234,6 +279,15 @@ func (request *ListRowsRequest) Normalize() {
 }
 
 func (request *ListLayerFeaturesRequest) Normalize() {
+	if request.Limit <= 0 {
+		request.Limit = 1000
+	}
+	if request.Limit > 5000 {
+		request.Limit = 5000
+	}
+}
+
+func (request *ListFlowmapDataRequest) Normalize() {
 	if request.Limit <= 0 {
 		request.Limit = 1000
 	}
@@ -313,6 +367,46 @@ func (request ListLayerFeaturesRequest) Validate() error {
 
 	if request.GeometryColumn == "" {
 		return errors.New("Geometry column is required.")
+	}
+
+	if request.Limit < 1 || request.Limit > 5000 {
+		return errors.New("Limit must be between 1 and 5000.")
+	}
+
+	return nil
+}
+
+func (request ListFlowmapDataRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	if request.StartLonColumn == "" {
+		return errors.New("Start longitude column is required.")
+	}
+
+	if request.StartLatColumn == "" {
+		return errors.New("Start latitude column is required.")
+	}
+
+	if request.EndLonColumn == "" {
+		return errors.New("End longitude column is required.")
+	}
+
+	if request.EndLatColumn == "" {
+		return errors.New("End latitude column is required.")
+	}
+
+	if request.MagnitudeColumn == "" {
+		return errors.New("Magnitude column is required.")
 	}
 
 	if request.Limit < 1 || request.Limit > 5000 {
@@ -832,6 +926,156 @@ func (service *Service) ListLayerFeatures(
 			Type:     "FeatureCollection",
 			Features: features,
 		},
+	}, nil
+}
+
+func (service *Service) ListFlowmapData(
+	ctx context.Context,
+	request ListFlowmapDataRequest,
+) (*ListFlowmapDataResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	columnDefinitions, err := service.listColumnDefinitions(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	requiredColumns := []string{
+		request.StartLonColumn,
+		request.StartLatColumn,
+		request.EndLonColumn,
+		request.EndLatColumn,
+		request.MagnitudeColumn,
+	}
+	if err := validateColumnNames(columnDefinitions, requiredColumns); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+	}
+
+	query := fmt.Sprintf(
+		`
+		select
+		  %s::double precision as start_lon,
+		  %s::double precision as start_lat,
+		  %s::double precision as end_lon,
+		  %s::double precision as end_lat,
+		  %s::double precision as magnitude
+		from %s.%s
+		where %s is not null
+		  and %s is not null
+		  and %s is not null
+		  and %s is not null
+		  and %s is not null
+		limit $1
+		`,
+		quoteIdentifier(request.StartLonColumn),
+		quoteIdentifier(request.StartLatColumn),
+		quoteIdentifier(request.EndLonColumn),
+		quoteIdentifier(request.EndLatColumn),
+		quoteIdentifier(request.MagnitudeColumn),
+		quoteIdentifier(request.Schema),
+		quoteIdentifier(request.Table),
+		quoteIdentifier(request.StartLonColumn),
+		quoteIdentifier(request.StartLatColumn),
+		quoteIdentifier(request.EndLonColumn),
+		quoteIdentifier(request.EndLatColumn),
+		quoteIdentifier(request.MagnitudeColumn),
+	)
+
+	rows, err := conn.Query(timeoutCtx, query, request.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	locationsByID := make(map[string]FlowmapLocation)
+	flows := make([]FlowmapFlow, 0)
+
+	for rows.Next() {
+		var startLon float64
+		var startLat float64
+		var endLon float64
+		var endLat float64
+		var magnitude float64
+
+		if err := rows.Scan(
+			&startLon,
+			&startLat,
+			&endLon,
+			&endLat,
+			&magnitude,
+		); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		}
+
+		if !isFiniteFloat(startLon) ||
+			!isFiniteFloat(startLat) ||
+			!isFiniteFloat(endLon) ||
+			!isFiniteFloat(endLat) ||
+			!isFiniteFloat(magnitude) ||
+			magnitude <= 0 {
+			continue
+		}
+
+		originID := makeFlowmapLocationID(startLon, startLat)
+		destID := makeFlowmapLocationID(endLon, endLat)
+
+		if _, exists := locationsByID[originID]; !exists {
+			locationsByID[originID] = FlowmapLocation{
+				ID:   originID,
+				Lat:  startLat,
+				Lon:  startLon,
+				Name: fmt.Sprintf("%.6f, %.6f", startLat, startLon),
+			}
+		}
+
+		if _, exists := locationsByID[destID]; !exists {
+			locationsByID[destID] = FlowmapLocation{
+				ID:   destID,
+				Lat:  endLat,
+				Lon:  endLon,
+				Name: fmt.Sprintf("%.6f, %.6f", endLat, endLon),
+			}
+		}
+
+		flows = append(flows, FlowmapFlow{
+			OriginID:  originID,
+			DestID:    destID,
+			Magnitude: magnitude,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+	}
+
+	locations := make([]FlowmapLocation, 0, len(locationsByID))
+	for _, location := range locationsByID {
+		locations = append(locations, location)
+	}
+
+	slices.SortFunc(locations, func(left, right FlowmapLocation) int {
+		return strings.Compare(left.ID, right.ID)
+	})
+
+	return &ListFlowmapDataResult{
+		Schema:        request.Schema,
+		Table:         request.Table,
+		FlowCount:     len(flows),
+		LocationCount: len(locations),
+		Locations:     locations,
+		Flows:         flows,
 	}, nil
 }
 
@@ -1422,6 +1666,36 @@ func convertFloatValue(columnName string, value interface{}) (float64, error) {
 	default:
 		return 0, fmt.Errorf("%w: column %q expects numeric value", ErrInvalidWriteRequest, columnName)
 	}
+}
+
+func validateColumnNames(
+	definitions []columnDefinition,
+	columnNames []string,
+) error {
+	definitionByName := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		definitionByName[definition.Name] = struct{}{}
+	}
+
+	for _, columnName := range columnNames {
+		if _, ok := definitionByName[columnName]; !ok {
+			return fmt.Errorf("column %q does not exist on selected table", columnName)
+		}
+	}
+
+	return nil
+}
+
+func makeFlowmapLocationID(lon float64, lat float64) string {
+	return fmt.Sprintf(
+		"loc:%s:%s",
+		strconv.FormatFloat(lon, 'f', 8, 64),
+		strconv.FormatFloat(lat, 'f', 8, 64),
+	)
+}
+
+func isFiniteFloat(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func sortedMapKeys(values map[string]interface{}) []string {

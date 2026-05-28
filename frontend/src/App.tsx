@@ -46,7 +46,10 @@ import {
 
 import {
   type DatabaseConnection,
-  type ImportedLayer,
+  type FlowmapMapLayer,
+  type LayerGlyphIcon,
+  type MapLayer,
+  type MapSource,
   useConnectionStore,
 } from './features/connections/store';
 import {
@@ -102,6 +105,45 @@ function createEmptyInsertRow(columns: InspectorColumn[]) {
     id: createDraftInsertId(),
     values,
   } satisfies DraftInsertRow;
+}
+
+function findLayerSource(sources: MapSource[], layer: MapLayer) {
+  return sources.find((source) => source.id === layer.sourceId) ?? null;
+}
+
+function guessColumnName(columns: InspectorColumn[], patterns: RegExp[]) {
+  return (
+    columns.find((column) =>
+      patterns.some((pattern) => pattern.test(column.name)),
+    )?.name ?? null
+  );
+}
+
+function createFlowLayerDefaults(table: InspectableTable | null) {
+  const columns = table?.columns ?? [];
+
+  return {
+    name: table ? `${table.name} flows` : 'Flow layer',
+    startLon: guessColumnName(columns, [
+      /(start|origin|from).*(lon|lng|long|x)/i,
+      /^src_?(lon|lng|long|x)$/i,
+    ]),
+    startLat: guessColumnName(columns, [
+      /(start|origin|from).*(lat|y)/i,
+      /^src_?(lat|y)$/i,
+    ]),
+    endLon: guessColumnName(columns, [
+      /(end|dest|to).*(lon|lng|long|x)/i,
+      /^dst_?(lon|lng|long|x)$/i,
+    ]),
+    endLat: guessColumnName(columns, [
+      /(end|dest|to).*(lat|y)/i,
+      /^dst_?(lat|y)$/i,
+    ]),
+    magnitude: guessColumnName(columns, [
+      /magnitude|count|weight|value|volume|amount|total/i,
+    ]),
+  };
 }
 
 function PanelFrame({
@@ -201,19 +243,34 @@ const initialConnectionForm: ConnectionFormState = {
 };
 
 function ConnectionManager({
-  importedLayers,
+  mapLayers,
+  mapSources,
   onImportSelectedTable,
+  onCreateFlowLayer,
   selectedInspectableTable,
   tables,
 }: {
-  importedLayers: ImportedLayer[];
+  mapLayers: MapLayer[];
+  mapSources: MapSource[];
   onImportSelectedTable: () => void;
+  onCreateFlowLayer: (payload: {
+    name: string;
+    startLon: string;
+    startLat: string;
+    endLon: string;
+    endLat: string;
+    magnitude: string;
+  }) => void;
   selectedInspectableTable: InspectableTable | null;
   tables: InspectableTable[];
 }) {
-  const [opened, { open, close }] = useDisclosure(false);
+  const [connectionOpened, connectionModal] = useDisclosure(false);
+  const [flowLayerOpened, flowLayerModal] = useDisclosure(false);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
   const [form, setForm] = useState<ConnectionFormState>(initialConnectionForm);
+  const [flowLayerForm, setFlowLayerForm] = useState(() =>
+    createFlowLayerDefaults(selectedInspectableTable),
+  );
   const connections = useConnectionStore((state) => state.connections);
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
@@ -237,11 +294,17 @@ function ConnectionManager({
   const setConnectionTestError = useConnectionStore(
     (state) => state.setConnectionTestError,
   );
-  const toggleImportedLayerVisibility = useConnectionStore(
-    (state) => state.toggleImportedLayerVisibility,
+  const toggleMapLayerVisibility = useConnectionStore(
+    (state) => state.toggleMapLayerVisibility,
   );
-  const updateImportedLayer = useConnectionStore(
-    (state) => state.updateImportedLayer,
+  const updateGeoJsonLayer = useConnectionStore(
+    (state) => state.updateGeoJsonLayer,
+  );
+  const updateGeoJsonSource = useConnectionStore(
+    (state) => state.updateGeoJsonSource,
+  );
+  const updateFlowmapLayer = useConnectionStore(
+    (state) => state.updateFlowmapLayer,
   );
 
   const activeConnections = connections.filter(
@@ -251,6 +314,17 @@ function ConnectionManager({
     selectedInspectableTable &&
       selectedInspectableTable.geometryColumns.length > 0,
   );
+  const flowColumnOptions = (selectedInspectableTable?.columns ?? []).map(
+    (column) => ({
+      label: `${column.name} (${column.type})`,
+      value: column.name,
+    }),
+  );
+  const canCreateFlowLayer = Boolean(selectedInspectableTable);
+
+  useEffect(() => {
+    setFlowLayerForm(createFlowLayerDefaults(selectedInspectableTable));
+  }, [selectedInspectableTable]);
 
   function handleFieldChange(event: ChangeEvent<HTMLInputElement>) {
     const { name, value } = event.currentTarget;
@@ -262,7 +336,16 @@ function ConnectionManager({
 
   function handleClose() {
     setForm(initialConnectionForm);
-    close();
+    connectionModal.close();
+  }
+
+  function handleOpenFlowLayerModal() {
+    setFlowLayerForm(createFlowLayerDefaults(selectedInspectableTable));
+    flowLayerModal.open();
+  }
+
+  function handleCloseFlowLayerModal() {
+    flowLayerModal.close();
   }
 
   function handleSubmit() {
@@ -286,6 +369,29 @@ function ConnectionManager({
       isActive: true,
     });
     handleClose();
+  }
+
+  function handleCreateFlowLayer() {
+    if (
+      !flowLayerForm.name.trim() ||
+      !flowLayerForm.startLon ||
+      !flowLayerForm.startLat ||
+      !flowLayerForm.endLon ||
+      !flowLayerForm.endLat ||
+      !flowLayerForm.magnitude
+    ) {
+      return;
+    }
+
+    onCreateFlowLayer({
+      name: flowLayerForm.name.trim(),
+      startLon: flowLayerForm.startLon,
+      startLat: flowLayerForm.startLat,
+      endLon: flowLayerForm.endLon,
+      endLat: flowLayerForm.endLat,
+      magnitude: flowLayerForm.magnitude,
+    });
+    handleCloseFlowLayerModal();
   }
 
   async function handleTestConnection(connection: DatabaseConnection) {
@@ -348,7 +454,7 @@ function ConnectionManager({
       <Modal
         centered
         onClose={handleClose}
-        opened={opened}
+        opened={connectionOpened}
         title="Add PostGIS connection"
       >
         <Stack gap="sm">
@@ -405,6 +511,87 @@ function ConnectionManager({
         </Stack>
       </Modal>
 
+      <Modal
+        centered
+        onClose={handleCloseFlowLayerModal}
+        opened={flowLayerOpened}
+        title="Create flow layer"
+      >
+        <Stack gap="sm">
+          <TextInput
+            label="Layer name"
+            onChange={(event) =>
+              setFlowLayerForm((current) => ({
+                ...current,
+                name: event.currentTarget.value,
+              }))
+            }
+            value={flowLayerForm.name}
+          />
+          <Select
+            data={flowColumnOptions}
+            label="Start longitude"
+            onChange={(value) =>
+              setFlowLayerForm((current) => ({
+                ...current,
+                startLon: value,
+              }))
+            }
+            value={flowLayerForm.startLon}
+          />
+          <Select
+            data={flowColumnOptions}
+            label="Start latitude"
+            onChange={(value) =>
+              setFlowLayerForm((current) => ({
+                ...current,
+                startLat: value,
+              }))
+            }
+            value={flowLayerForm.startLat}
+          />
+          <Select
+            data={flowColumnOptions}
+            label="End longitude"
+            onChange={(value) =>
+              setFlowLayerForm((current) => ({
+                ...current,
+                endLon: value,
+              }))
+            }
+            value={flowLayerForm.endLon}
+          />
+          <Select
+            data={flowColumnOptions}
+            label="End latitude"
+            onChange={(value) =>
+              setFlowLayerForm((current) => ({
+                ...current,
+                endLat: value,
+              }))
+            }
+            value={flowLayerForm.endLat}
+          />
+          <Select
+            data={flowColumnOptions}
+            label="Magnitude"
+            onChange={(value) =>
+              setFlowLayerForm((current) => ({
+                ...current,
+                magnitude: value,
+              }))
+            }
+            value={flowLayerForm.magnitude}
+          />
+          <Group justify="space-between" pt="xs">
+            <Text c="dimmed" size="xs">
+              One table. Static read-only flows from coordinate columns.
+            </Text>
+            <Button onClick={handleCreateFlowLayer}>Create layer</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
       <Stack h="100%" gap="md">
         <Group justify="space-between" wrap="nowrap">
           <div>
@@ -418,7 +605,7 @@ function ConnectionManager({
           <ActionIcon
             aria-label="Add connection"
             color="blue"
-            onClick={open}
+            onClick={connectionModal.open}
             radius="xl"
             size="lg"
             variant="light"
@@ -599,28 +786,44 @@ function ConnectionManager({
           <Group justify="space-between" wrap="nowrap">
             <div>
               <Text fw={700} size="sm">
-                Imported Layers
+                Map Layers
               </Text>
               <Text c="dimmed" size="xs">
-                {importedLayers.length} layer
-                {importedLayers.length === 1 ? '' : 's'}
+                {mapLayers.length} layer
+                {mapLayers.length === 1 ? '' : 's'}
               </Text>
             </div>
-            <Button
-              disabled={!canImportSelectedTable}
-              onClick={onImportSelectedTable}
-              size="compact-sm"
-            >
-              Import Layer
-            </Button>
+            <Group gap="xs" wrap="nowrap">
+              <Button
+                disabled={!canImportSelectedTable}
+                onClick={onImportSelectedTable}
+                size="compact-sm"
+              >
+                Import Layer
+              </Button>
+              <Button
+                disabled={!canCreateFlowLayer}
+                onClick={handleOpenFlowLayerModal}
+                size="compact-sm"
+                variant="light"
+              >
+                Create Flow
+              </Button>
+            </Group>
           </Group>
 
           <Stack gap={4}>
-            {importedLayers.map((layer) => {
-              const sourceTable =
-                tables.find((table) => table.fullName === layer.fullName) ??
-                null;
+            {mapLayers.map((layer) => {
+              const source = findLayerSource(mapSources, layer);
+              const sourceTable = source
+                ? (tables.find((table) => table.fullName === source.fullName) ??
+                  null)
+                : null;
               const isExpanded = expandedLayerId === layer.id;
+
+              if (!source) {
+                return null;
+              }
 
               return (
                 <Paper
@@ -637,7 +840,9 @@ function ConnectionManager({
                     <Group justify="space-between" wrap="nowrap">
                       <Group gap="xs" wrap="nowrap">
                         <LayerGlyph
-                          color={layer.color}
+                          color={
+                            layer.type === 'geojson' ? layer.color : '#0c8599'
+                          }
                           icon={layer.icon}
                           visible={layer.visible}
                         />
@@ -646,7 +851,9 @@ function ConnectionManager({
                             {layer.name}
                           </Text>
                           <Text c="dimmed" size="xs">
-                            {layer.geometryColumn} • {layer.kind}
+                            {source.type === 'geojson-table'
+                              ? `${source.geometryColumn} • ${source.kind}`
+                              : `${source.columns.startLat}/${source.columns.startLon} → ${source.columns.endLat}/${source.columns.endLon}`}
                           </Text>
                         </Stack>
                       </Group>
@@ -667,9 +874,7 @@ function ConnectionManager({
                           aria-label={
                             layer.visible ? 'Hide layer' : 'Show layer'
                           }
-                          onClick={() =>
-                            toggleImportedLayerVisibility(layer.id)
-                          }
+                          onClick={() => toggleMapLayerVisibility(layer.id)}
                           size="sm"
                           variant="subtle"
                         >
@@ -683,7 +888,7 @@ function ConnectionManager({
                     </Group>
 
                     <Text c="dimmed" size="xs">
-                      {layer.schema}.{layer.table}
+                      {source.schema}.{source.table}
                     </Text>
 
                     {isExpanded ? (
@@ -696,111 +901,305 @@ function ConnectionManager({
                       >
                         <TextInput
                           label="Layer name"
-                          onChange={(event) =>
-                            updateImportedLayer(layer.id, {
+                          onChange={(event) => {
+                            if (layer.type === 'geojson') {
+                              updateGeoJsonLayer(layer.id, {
+                                name: event.currentTarget.value,
+                              });
+                              return;
+                            }
+
+                            updateFlowmapLayer(layer.id, {
                               name: event.currentTarget.value,
-                            })
-                          }
+                            });
+                          }}
                           size="xs"
                           value={layer.name}
                         />
 
-                        <Select
-                          data={(sourceTable?.geometryColumns ?? []).map(
-                            (column) => ({
-                              label: `${column.name} (${column.geometryType})`,
-                              value: column.name,
-                            }),
-                          )}
-                          label="Geographic column"
-                          onChange={(value) => {
-                            const nextGeometryColumn =
-                              sourceTable?.geometryColumns.find(
-                                (column) => column.name === value,
-                              ) ?? null;
+                        {layer.type === 'geojson' &&
+                        source.type === 'geojson-table' ? (
+                          <>
+                            <Select
+                              data={(sourceTable?.geometryColumns ?? []).map(
+                                (column) => ({
+                                  label: `${column.name} (${column.geometryType})`,
+                                  value: column.name,
+                                }),
+                              )}
+                              label="Geographic column"
+                              onChange={(value) => {
+                                const nextGeometryColumn =
+                                  sourceTable?.geometryColumns.find(
+                                    (column) => column.name === value,
+                                  ) ?? null;
 
-                            updateImportedLayer(layer.id, {
-                              geometryColumn: value ?? layer.geometryColumn,
-                            });
+                                updateGeoJsonSource(source.id, {
+                                  geometryColumn:
+                                    value ?? source.geometryColumn,
+                                  geometryType:
+                                    nextGeometryColumn?.geometryType ??
+                                    source.geometryType,
+                                });
+                              }}
+                              size="xs"
+                              value={source.geometryColumn}
+                            />
 
-                            if (nextGeometryColumn) {
-                              updateImportedLayer(layer.id, {
-                                geometryType: nextGeometryColumn.geometryType,
-                              });
-                            }
-                          }}
-                          size="xs"
-                          value={layer.geometryColumn}
-                        />
+                            <Group align="end" grow>
+                              <Box>
+                                <Text c="dimmed" fw={500} mb={4} size="xs">
+                                  Color
+                                </Text>
+                                <input
+                                  aria-label={`Choose color for ${layer.name}`}
+                                  onChange={(event) =>
+                                    updateGeoJsonLayer(layer.id, {
+                                      color: event.currentTarget.value,
+                                    })
+                                  }
+                                  style={{
+                                    width: '100%',
+                                    height: 36,
+                                    border:
+                                      '1px solid var(--mantine-color-gray-4)',
+                                    borderRadius: 8,
+                                    background: 'transparent',
+                                    padding: 4,
+                                  }}
+                                  type="color"
+                                  value={layer.color}
+                                />
+                              </Box>
 
-                        <Group align="end" grow>
-                          <Box>
-                            <Text c="dimmed" fw={500} mb={4} size="xs">
-                              Color
-                            </Text>
-                            <input
-                              aria-label={`Choose color for ${layer.name}`}
+                              <Select
+                                data={[
+                                  { label: 'Circle', value: 'circle' },
+                                  { label: 'Square', value: 'square' },
+                                  { label: 'Diamond', value: 'diamond' },
+                                  { label: 'Line', value: 'line' },
+                                ]}
+                                label="List icon"
+                                onChange={(value) => {
+                                  if (!value) {
+                                    return;
+                                  }
+
+                                  updateGeoJsonLayer(layer.id, {
+                                    icon: value as LayerGlyphIcon,
+                                  });
+                                }}
+                                size="xs"
+                                value={layer.icon}
+                              />
+                            </Group>
+
+                            <Stack gap={4}>
+                              <Group justify="space-between">
+                                <Text c="dimmed" fw={500} size="xs">
+                                  Opacity
+                                </Text>
+                                <Text c="dimmed" size="xs">
+                                  {layer.opacity}%
+                                </Text>
+                              </Group>
+                              <Slider
+                                max={100}
+                                min={0}
+                                onChange={(value) =>
+                                  updateGeoJsonLayer(layer.id, {
+                                    opacity: value,
+                                  })
+                                }
+                                size="sm"
+                                value={layer.opacity}
+                              />
+                            </Stack>
+                          </>
+                        ) : null}
+
+                        {layer.type === 'flowmap' ? (
+                          <>
+                            <Select
+                              data={[
+                                { label: 'Curved', value: 'curved' },
+                                { label: 'Straight', value: 'straight' },
+                                {
+                                  label: 'Animated straight',
+                                  value: 'animated-straight',
+                                },
+                              ]}
+                              label="Render mode"
+                              onChange={(value) => {
+                                if (!value) {
+                                  return;
+                                }
+
+                                updateFlowmapLayer(layer.id, {
+                                  style: {
+                                    flowLinesRenderingMode:
+                                      value as FlowmapMapLayer['style']['flowLinesRenderingMode'],
+                                  },
+                                });
+                              }}
+                              size="xs"
+                              value={layer.style.flowLinesRenderingMode}
+                            />
+
+                            <Stack gap={4}>
+                              <Group justify="space-between">
+                                <Text c="dimmed" fw={500} size="xs">
+                                  Thickness scale
+                                </Text>
+                                <Text c="dimmed" size="xs">
+                                  {layer.style.flowLineThicknessScale.toFixed(
+                                    1,
+                                  )}
+                                </Text>
+                              </Group>
+                              <Slider
+                                max={10}
+                                min={1}
+                                onChange={(value) =>
+                                  updateFlowmapLayer(layer.id, {
+                                    style: {
+                                      flowLineThicknessScale: value,
+                                    },
+                                  })
+                                }
+                                step={0.5}
+                                value={layer.style.flowLineThicknessScale}
+                              />
+                            </Stack>
+
+                            <Group grow>
+                              <Select
+                                data={[
+                                  { label: 'Teal', value: 'Teal' },
+                                  { label: 'Blue', value: 'Blue' },
+                                  { label: 'Red', value: 'Red' },
+                                  { label: 'Purp', value: 'Purp' },
+                                ]}
+                                label="Color scheme"
+                                onChange={(value) => {
+                                  if (!value) {
+                                    return;
+                                  }
+
+                                  updateFlowmapLayer(layer.id, {
+                                    style: {
+                                      colorScheme: value,
+                                    },
+                                  });
+                                }}
+                                size="xs"
+                                value={layer.style.colorScheme}
+                              />
+                              <Select
+                                data={[
+                                  { label: 'Flow', value: 'flow' },
+                                  { label: 'Line', value: 'line' },
+                                  { label: 'Diamond', value: 'diamond' },
+                                ]}
+                                label="List icon"
+                                onChange={(value) => {
+                                  if (!value) {
+                                    return;
+                                  }
+
+                                  updateFlowmapLayer(layer.id, {
+                                    icon: value as LayerGlyphIcon,
+                                  });
+                                }}
+                                size="xs"
+                                value={layer.icon}
+                              />
+                            </Group>
+
+                            <Checkbox
+                              checked={layer.style.locationsEnabled}
+                              label="Show locations"
                               onChange={(event) =>
-                                updateImportedLayer(layer.id, {
-                                  color: event.currentTarget.value,
+                                updateFlowmapLayer(layer.id, {
+                                  style: {
+                                    locationsEnabled:
+                                      event.currentTarget.checked,
+                                  },
                                 })
                               }
-                              style={{
-                                width: '100%',
-                                height: 36,
-                                border: '1px solid var(--mantine-color-gray-4)',
-                                borderRadius: 8,
-                                background: 'transparent',
-                                padding: 4,
-                              }}
-                              type="color"
-                              value={layer.color}
                             />
-                          </Box>
-
-                          <Select
-                            data={[
-                              { label: 'Circle', value: 'circle' },
-                              { label: 'Square', value: 'square' },
-                              { label: 'Diamond', value: 'diamond' },
-                              { label: 'Line', value: 'line' },
-                            ]}
-                            label="List icon"
-                            onChange={(value) => {
-                              if (!value) {
-                                return;
+                            <Checkbox
+                              checked={layer.style.locationTotalsEnabled}
+                              label="Show totals"
+                              onChange={(event) =>
+                                updateFlowmapLayer(layer.id, {
+                                  style: {
+                                    locationTotalsEnabled:
+                                      event.currentTarget.checked,
+                                  },
+                                })
                               }
-
-                              updateImportedLayer(layer.id, {
-                                icon: value as ImportedLayer['icon'],
-                              });
-                            }}
-                            size="xs"
-                            value={layer.icon}
-                          />
-                        </Group>
-
-                        <Stack gap={4}>
-                          <Group justify="space-between">
-                            <Text c="dimmed" fw={500} size="xs">
-                              Opacity
-                            </Text>
-                            <Text c="dimmed" size="xs">
-                              {layer.opacity}%
-                            </Text>
-                          </Group>
-                          <Slider
-                            max={100}
-                            min={0}
-                            onChange={(value) =>
-                              updateImportedLayer(layer.id, {
-                                opacity: value,
-                              })
-                            }
-                            size="sm"
-                            value={layer.opacity}
-                          />
-                        </Stack>
+                            />
+                            <Checkbox
+                              checked={layer.style.locationLabelsEnabled}
+                              label="Show labels"
+                              onChange={(event) =>
+                                updateFlowmapLayer(layer.id, {
+                                  style: {
+                                    locationLabelsEnabled:
+                                      event.currentTarget.checked,
+                                  },
+                                })
+                              }
+                            />
+                            <Checkbox
+                              checked={layer.style.clusteringEnabled}
+                              label="Enable clustering"
+                              onChange={(event) =>
+                                updateFlowmapLayer(layer.id, {
+                                  style: {
+                                    clusteringEnabled:
+                                      event.currentTarget.checked,
+                                  },
+                                })
+                              }
+                            />
+                            <Checkbox
+                              checked={layer.style.darkMode}
+                              label="Dark mode palette"
+                              onChange={(event) =>
+                                updateFlowmapLayer(layer.id, {
+                                  style: {
+                                    darkMode: event.currentTarget.checked,
+                                  },
+                                })
+                              }
+                            />
+                            <Stack gap={4}>
+                              <Group justify="space-between">
+                                <Text c="dimmed" fw={500} size="xs">
+                                  Top flows
+                                </Text>
+                                <Text c="dimmed" size="xs">
+                                  {layer.style.maxTopFlowsDisplayNum}
+                                </Text>
+                              </Group>
+                              <Slider
+                                max={2000}
+                                min={50}
+                                onChange={(value) =>
+                                  updateFlowmapLayer(layer.id, {
+                                    style: {
+                                      maxTopFlowsDisplayNum: value,
+                                    },
+                                  })
+                                }
+                                step={50}
+                                value={layer.style.maxTopFlowsDisplayNum}
+                              />
+                            </Stack>
+                          </>
+                        ) : null}
                       </Stack>
                     ) : null}
                   </Stack>
@@ -808,9 +1207,9 @@ function ConnectionManager({
               );
             })}
 
-            {importedLayers.length === 0 ? (
+            {mapLayers.length === 0 ? (
               <Text c="dimmed" size="xs">
-                Select geometry table below, then import it as layer.
+                Select table below, then import geometry or create flow layer.
               </Text>
             ) : null}
           </Stack>
@@ -1710,11 +2109,49 @@ function LayerGlyph({
   color,
   icon,
   visible,
-}: Pick<ImportedLayer, 'color' | 'icon' | 'visible'>) {
+}: {
+  color: string;
+  icon: LayerGlyphIcon;
+  visible: boolean;
+}) {
   const sharedStyle = {
     flexShrink: 0,
     opacity: visible ? 1 : 0.5,
   } as const;
+
+  if (icon === 'flow') {
+    return (
+      <Group gap={2} wrap="nowrap">
+        <Box
+          style={{
+            ...sharedStyle,
+            width: 6,
+            height: 6,
+            borderRadius: 999,
+            background: color,
+          }}
+        />
+        <Box
+          style={{
+            ...sharedStyle,
+            width: 12,
+            height: 2,
+            borderRadius: 999,
+            background: color,
+          }}
+        />
+        <Box
+          style={{
+            ...sharedStyle,
+            width: 6,
+            height: 6,
+            borderRadius: 999,
+            background: color,
+          }}
+        />
+      </Group>
+    );
+  }
 
   if (icon === 'line') {
     return (
@@ -1775,7 +2212,8 @@ function isEditableColumnType(columnType: string) {
 
 export function App() {
   const connections = useConnectionStore((state) => state.connections);
-  const importedLayers = useConnectionStore((state) => state.importedLayers);
+  const mapSources = useConnectionStore((state) => state.mapSources);
+  const mapLayers = useConnectionStore((state) => state.mapLayers);
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
   );
@@ -1785,9 +2223,8 @@ export function App() {
   const setSelectedTable = useConnectionStore(
     (state) => state.setSelectedTable,
   );
-  const addImportedLayer = useConnectionStore(
-    (state) => state.addImportedLayer,
-  );
+  const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
+  const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
   const [tables, setTables] = useState<InspectableTable[]>([]);
   const [tablesError, setTablesError] = useState('');
 
@@ -1820,7 +2257,7 @@ export function App() {
       return;
     }
 
-    addImportedLayer({
+    addGeoJsonLayer({
       connectionId: selectedConnectionId,
       schema: selectedInspectableTable.schema,
       table: selectedInspectableTable.name,
@@ -1832,10 +2269,39 @@ export function App() {
     });
   }
 
-  const selectedConnectionImportedLayers = importedLayers.filter(
+  function handleCreateFlowLayer(payload: {
+    name: string;
+    startLon: string;
+    startLat: string;
+    endLon: string;
+    endLat: string;
+    magnitude: string;
+  }) {
+    if (!selectedConnectionId || !selectedInspectableTable) {
+      return;
+    }
+
+    addFlowmapLayer({
+      connectionId: selectedConnectionId,
+      schema: selectedInspectableTable.schema,
+      table: selectedInspectableTable.name,
+      fullName: selectedInspectableTable.fullName,
+      kind: selectedInspectableTable.kind,
+      name: payload.name,
+      columns: {
+        startLon: payload.startLon,
+        startLat: payload.startLat,
+        endLon: payload.endLon,
+        endLat: payload.endLat,
+        magnitude: payload.magnitude,
+      },
+    });
+  }
+
+  const selectedConnectionMapLayers = mapLayers.filter(
     (layer) => layer.connectionId === selectedConnectionId,
   );
-  const selectedVisibleImportedLayers = selectedConnectionImportedLayers.filter(
+  const selectedVisibleMapLayers = selectedConnectionMapLayers.filter(
     (layer) => layer.visible,
   );
 
@@ -1938,8 +2404,10 @@ export function App() {
           <Split.Pane initialWidth={280} maxWidth={480} minWidth={0}>
             <PanelFrame hint="Resizable" title="Data & Layers">
               <ConnectionManager
-                importedLayers={selectedConnectionImportedLayers}
+                mapLayers={selectedConnectionMapLayers}
+                mapSources={mapSources}
                 onImportSelectedTable={handleImportSelectedTable}
+                onCreateFlowLayer={handleCreateFlowLayer}
                 selectedInspectableTable={selectedInspectableTable}
                 tables={tables}
               />
@@ -1959,7 +2427,8 @@ export function App() {
                 <PanelFrame hint="Resizable" title="Map">
                   <MapPane
                     connection={selectedConnection}
-                    visibleLayers={selectedVisibleImportedLayers}
+                    sources={mapSources}
+                    visibleLayers={selectedVisibleMapLayers}
                   />
                 </PanelFrame>
               </Split.Pane>

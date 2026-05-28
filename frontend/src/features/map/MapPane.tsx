@@ -1,6 +1,7 @@
 import { GeoJsonLayer } from '@deck.gl/layers';
-import { Box, Center, Loader, Stack, Text } from '@mantine/core';
 import { MapboxOverlay } from '@deck.gl/mapbox';
+import { FlowmapLayer } from '@flowmap.gl/layers';
+import { Box, Center, Loader, Stack, Text } from '@mantine/core';
 import maplibregl, {
   LngLatBounds,
   NavigationControl,
@@ -9,8 +10,20 @@ import maplibregl, {
 import { Protocol } from 'pmtiles';
 import { useEffect, useRef, useState } from 'react';
 
-import type { DatabaseConnection, ImportedLayer } from '../connections/store';
-import { fetchLayerFeatures, type GeoJsonFeatureCollection } from './api';
+import type {
+  DatabaseConnection,
+  FlowmapMapLayer,
+  GeoJsonMapLayer,
+  GeoJsonTableSource,
+  MapLayer,
+  MapSource,
+} from '../connections/store';
+import {
+  type FlowmapDataResponse,
+  fetchFlowmapSourceData,
+  fetchGeoJsonSourceData,
+  type GeoJsonFeatureCollection,
+} from './api';
 
 const defaultCenter: [number, number] = [104.295, 52.302];
 
@@ -41,12 +54,26 @@ declare global {
   }
 }
 
-interface LoadedMapLayer {
-  layer: ImportedLayer;
+type GeoJsonSourceData = {
+  sourceType: 'geojson-table';
   data: GeoJsonFeatureCollection;
-}
+};
 
-type LayerSourceCache = Record<string, GeoJsonFeatureCollection>;
+type FlowmapSourceData = {
+  sourceType: 'flowmap-table';
+  data: FlowmapDataResponse;
+};
+
+type LoadedSourceData = GeoJsonSourceData | FlowmapSourceData;
+type SourceCacheEntry = {
+  signature: string;
+  payload: LoadedSourceData;
+};
+type SourceDataCache = Record<string, SourceCacheEntry>;
+
+function getSourceSignature(source: MapSource) {
+  return JSON.stringify(source);
+}
 
 function registerPmtilesProtocol() {
   if (window.__geopanelPmtilesProtocolRegistered) {
@@ -107,34 +134,56 @@ function visitCoordinates(
   }
 }
 
-function computeBounds(layers: LoadedMapLayer[]) {
-  const bounds = new LngLatBounds();
-  let hasCoordinates = false;
-
-  for (const loadedLayer of layers) {
-    for (const feature of loadedLayer.data.features) {
+function extendBoundsWithSourceData(
+  bounds: LngLatBounds,
+  sourceData: LoadedSourceData,
+) {
+  if (sourceData.sourceType === 'geojson-table') {
+    for (const feature of sourceData.data.features) {
       if (!feature.geometry) {
         continue;
       }
 
       visitCoordinates(feature.geometry.coordinates, (longitude, latitude) => {
         bounds.extend([longitude, latitude]);
-        hasCoordinates = true;
       });
+    }
+
+    return;
+  }
+
+  for (const location of sourceData.data.locations) {
+    bounds.extend([location.lon, location.lat]);
+  }
+}
+
+function computeBounds(loadedSources: LoadedSourceData[]) {
+  const bounds = new LngLatBounds();
+  let hasCoordinates = false;
+
+  for (const sourceData of loadedSources) {
+    const before = bounds.isEmpty();
+    extendBoundsWithSourceData(bounds, sourceData);
+    if (before !== bounds.isEmpty() || !bounds.isEmpty()) {
+      hasCoordinates = true;
     }
   }
 
   return hasCoordinates ? bounds : null;
 }
 
-function createGeoJsonDeckLayer(loadedLayer: LoadedMapLayer) {
-  const color = hexToRgba(loadedLayer.layer.color, loadedLayer.layer.opacity);
-  const isLineLayer = /line/i.test(loadedLayer.layer.geometryType);
-  const isPointLayer = /point/i.test(loadedLayer.layer.geometryType);
+function createGeoJsonDeckLayer(
+  layer: GeoJsonMapLayer,
+  source: GeoJsonTableSource,
+  sourceData: GeoJsonFeatureCollection,
+) {
+  const color = hexToRgba(layer.color, layer.opacity);
+  const isLineLayer = /line/i.test(source.geometryType);
+  const isPointLayer = /point/i.test(source.geometryType);
 
   return new GeoJsonLayer({
-    id: loadedLayer.layer.id,
-    data: loadedLayer.data as never,
+    id: layer.id,
+    data: sourceData as never,
     pickable: true,
     stroked: true,
     filled: !isLineLayer,
@@ -148,35 +197,90 @@ function createGeoJsonDeckLayer(loadedLayer: LoadedMapLayer) {
   });
 }
 
-function getLayerSourceKey(connectionId: string, layer: ImportedLayer) {
-  return [connectionId, layer.schema, layer.table, layer.geometryColumn].join(
-    ':',
-  );
+function createFlowmapDeckLayer(
+  layer: FlowmapMapLayer,
+  sourceData: FlowmapDataResponse,
+) {
+  return new FlowmapLayer({
+    id: layer.id,
+    data: {
+      locations: sourceData.locations,
+      flows: sourceData.flows,
+    },
+    getLocationId: (location: FlowmapDataResponse['locations'][number]) =>
+      location.id,
+    getLocationLat: (location: FlowmapDataResponse['locations'][number]) =>
+      location.lat,
+    getLocationLon: (location: FlowmapDataResponse['locations'][number]) =>
+      location.lon,
+    getLocationName: (location: FlowmapDataResponse['locations'][number]) =>
+      location.name,
+    getFlowOriginId: (flow: FlowmapDataResponse['flows'][number]) =>
+      flow.originId,
+    getFlowDestId: (flow: FlowmapDataResponse['flows'][number]) => flow.destId,
+    getFlowMagnitude: (flow: FlowmapDataResponse['flows'][number]) =>
+      flow.magnitude,
+    flowLinesRenderingMode: layer.style.flowLinesRenderingMode,
+    flowLineThicknessScale: layer.style.flowLineThicknessScale,
+    clusteringEnabled: layer.style.clusteringEnabled,
+    clusteringAuto: layer.style.clusteringAuto,
+    locationsEnabled: layer.style.locationsEnabled,
+    locationTotalsEnabled: layer.style.locationTotalsEnabled,
+    locationLabelsEnabled: layer.style.locationLabelsEnabled,
+    maxTopFlowsDisplayNum: layer.style.maxTopFlowsDisplayNum,
+    colorScheme: layer.style.colorScheme,
+    darkMode: layer.style.darkMode,
+    pickable: true,
+  });
+}
+
+async function fetchSourceData(
+  connection: DatabaseConnection,
+  source: MapSource,
+  signal?: AbortSignal,
+): Promise<LoadedSourceData> {
+  if (source.type === 'geojson-table') {
+    const response = await fetchGeoJsonSourceData(connection, source, signal);
+    return {
+      sourceType: 'geojson-table',
+      data: response.data,
+    };
+  }
+
+  const response = await fetchFlowmapSourceData(connection, source, signal);
+  return {
+    sourceType: 'flowmap-table',
+    data: response,
+  };
 }
 
 export function MapPane({
   connection,
   visibleLayers,
+  sources,
 }: {
   connection: DatabaseConnection | null;
-  visibleLayers: ImportedLayer[];
+  visibleLayers: MapLayer[];
+  sources: MapSource[];
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
-  const sourceCacheRef = useRef<LayerSourceCache>({});
-  const fittedSourceKeysRef = useRef<string>('');
+  const sourceCacheRef = useRef<SourceDataCache>({});
+  const fittedSourceIdsRef = useRef<string>('');
   const [isMapReady, setIsMapReady] = useState(false);
-  const [isLoadingLayers, setIsLoadingLayers] = useState(false);
+  const [isLoadingSources, setIsLoadingSources] = useState(false);
   const [layerError, setLayerError] = useState('');
   const [cacheVersion, setCacheVersion] = useState(0);
 
-  const visibleLayerSourceSignature = connection
-    ? visibleLayers
-        .map((layer) => getLayerSourceKey(connection.id, layer))
-        .sort()
-        .join('|')
-    : '';
+  const visibleSourceIds = Array.from(
+    new Set(visibleLayers.map((layer) => layer.sourceId)),
+  );
+  const visibleSources = visibleSourceIds.flatMap((sourceId) => {
+    const source = sources.find((candidate) => candidate.id === sourceId);
+    return source ? [source] : [];
+  });
+  const visibleSourceSignature = visibleSourceIds.sort().join('|');
 
   useEffect(() => {
     const container = containerRef.current;
@@ -230,49 +334,56 @@ export function MapPane({
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
       sourceCacheRef.current = {};
-      fittedSourceKeysRef.current = '';
+      fittedSourceIdsRef.current = '';
       setLayerError('');
-      setIsLoadingLayers(false);
+      setIsLoadingSources(false);
       return;
     }
 
-    if (visibleLayers.length === 0) {
+    if (visibleSources.length === 0) {
       overlayRef.current.setProps({ layers: [] });
-      fittedSourceKeysRef.current = '';
+      fittedSourceIdsRef.current = '';
       setLayerError('');
-      setIsLoadingLayers(false);
+      setIsLoadingSources(false);
+      return;
+    }
+
+    const missingSources = visibleSources.filter(
+      (source) =>
+        !sourceCacheRef.current[source.id] ||
+        sourceCacheRef.current[source.id].signature !==
+          getSourceSignature(source),
+    );
+
+    if (missingSources.length === 0) {
+      setLayerError('');
+      setIsLoadingSources(false);
       return;
     }
 
     const activeConnection = connection;
-    const missingLayers = visibleLayers.filter((layer) => {
-      const sourceKey = getLayerSourceKey(activeConnection.id, layer);
-      return !sourceCacheRef.current[sourceKey];
-    });
-
-    if (missingLayers.length === 0) {
-      setLayerError('');
-      setIsLoadingLayers(false);
-      return;
-    }
-
     let isActive = true;
     const abortController = new AbortController();
-    setIsLoadingLayers(true);
+    setIsLoadingSources(true);
     setLayerError('');
 
-    async function loadMissingLayers() {
+    async function loadMissingSources() {
       try {
         const loadedEntries = await Promise.all(
-          missingLayers.map(async (layer) => {
-            const sourceKey = getLayerSourceKey(activeConnection.id, layer);
-            const response = await fetchLayerFeatures(
+          missingSources.map(async (source) => {
+            const data = await fetchSourceData(
               activeConnection,
-              layer,
+              source,
               abortController.signal,
             );
 
-            return [sourceKey, response.data] as const;
+            return [
+              source.id,
+              {
+                signature: getSourceSignature(source),
+                payload: data,
+              },
+            ] as const;
           }),
         );
 
@@ -281,8 +392,8 @@ export function MapPane({
         }
 
         const nextCache = { ...sourceCacheRef.current };
-        for (const [sourceKey, data] of loadedEntries) {
-          nextCache[sourceKey] = data;
+        for (const [sourceId, data] of loadedEntries) {
+          nextCache[sourceId] = data;
         }
         sourceCacheRef.current = nextCache;
         setCacheVersion((value) => value + 1);
@@ -298,64 +409,98 @@ export function MapPane({
         );
       } finally {
         if (isActive) {
-          setIsLoadingLayers(false);
+          setIsLoadingSources(false);
         }
       }
     }
 
-    void loadMissingLayers();
+    void loadMissingSources();
 
     return () => {
       isActive = false;
       abortController.abort();
     };
-  }, [connection, isMapReady, visibleLayerSourceSignature, visibleLayers]);
+  }, [connection, isMapReady, visibleSources]);
 
   useEffect(() => {
     if (!isMapReady || !overlayRef.current) {
       return;
     }
 
+    void cacheVersion;
+
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
       return;
     }
 
-    const loadedLayers = visibleLayers.flatMap((layer) => {
-      const sourceKey = getLayerSourceKey(connection.id, layer);
-      const data = sourceCacheRef.current[sourceKey];
-
-      if (!data) {
-        return [];
+    const deckLayers = visibleLayers.reduce<unknown[]>((layersList, layer) => {
+      const source = sources.find(
+        (candidate) => candidate.id === layer.sourceId,
+      );
+      if (!source) {
+        return layersList;
       }
 
-      return [{ layer, data }];
-    });
+      const sourceData = sourceCacheRef.current[source.id];
+      if (!sourceData) {
+        return layersList;
+      }
+
+      if (
+        layer.type === 'geojson' &&
+        source.type === 'geojson-table' &&
+        sourceData.payload.sourceType === 'geojson-table'
+      ) {
+        layersList.push(
+          createGeoJsonDeckLayer(layer, source, sourceData.payload.data),
+        );
+        return layersList;
+      }
+
+      if (
+        layer.type === 'flowmap' &&
+        source.type === 'flowmap-table' &&
+        sourceData.payload.sourceType === 'flowmap-table'
+      ) {
+        layersList.push(createFlowmapDeckLayer(layer, sourceData.payload.data));
+        return layersList;
+      }
+
+      return layersList;
+    }, []);
 
     overlayRef.current.setProps({
-      layers: loadedLayers.map(createGeoJsonDeckLayer),
+      layers: deckLayers as never,
     });
 
-    if (loadedLayers.length === 0) {
+    const loadedSources = visibleSourceIds.flatMap((sourceId) => {
+      const sourceData = sourceCacheRef.current[sourceId];
+      return sourceData ? [sourceData.payload] : [];
+    });
+
+    if (loadedSources.length === 0) {
       return;
     }
 
-    if (visibleLayerSourceSignature !== fittedSourceKeysRef.current) {
-      const bounds = computeBounds(loadedLayers);
+    if (visibleSourceSignature !== fittedSourceIdsRef.current) {
+      const bounds = computeBounds(loadedSources);
       if (bounds && mapRef.current) {
         mapRef.current.fitBounds(bounds, {
           padding: 48,
           duration: 700,
         });
       }
-      fittedSourceKeysRef.current = visibleLayerSourceSignature;
+      fittedSourceIdsRef.current = visibleSourceSignature;
     }
   }, [
     cacheVersion,
     connection,
     isMapReady,
-    visibleLayerSourceSignature,
+    sources,
     visibleLayers,
+    visibleSourceIds,
+    visibleSourceSignature,
   ]);
 
   return (
@@ -396,7 +541,7 @@ export function MapPane({
         </Center>
       ) : null}
 
-      {isMapReady && (isLoadingLayers || layerError) ? (
+      {isMapReady && (isLoadingSources || layerError) ? (
         <Box
           style={{
             position: 'absolute',
@@ -416,7 +561,7 @@ export function MapPane({
             }}
           >
             <Stack gap={4}>
-              {isLoadingLayers ? (
+              {isLoadingSources ? (
                 <Text c="dimmed" size="xs">
                   Loading visible layers...
                 </Text>

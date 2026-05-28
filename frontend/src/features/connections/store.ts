@@ -17,7 +17,73 @@ export interface DatabaseConnection {
   postgisVersion: string;
 }
 
-export interface ImportedLayer {
+export type LayerGlyphIcon = 'circle' | 'square' | 'diamond' | 'line' | 'flow';
+
+export interface GeoJsonTableSource {
+  id: string;
+  type: 'geojson-table';
+  connectionId: string;
+  schema: string;
+  table: string;
+  fullName: string;
+  kind: string;
+  geometryColumn: string;
+  geometryType: string;
+}
+
+export interface FlowmapTableSource {
+  id: string;
+  type: 'flowmap-table';
+  connectionId: string;
+  schema: string;
+  table: string;
+  fullName: string;
+  kind: string;
+  columns: {
+    startLon: string;
+    startLat: string;
+    endLon: string;
+    endLat: string;
+    magnitude: string;
+  };
+}
+
+export type MapSource = GeoJsonTableSource | FlowmapTableSource;
+
+interface BaseMapLayer {
+  id: string;
+  connectionId: string;
+  sourceId: string;
+  name: string;
+  visible: boolean;
+  icon: LayerGlyphIcon;
+}
+
+export interface GeoJsonMapLayer extends BaseMapLayer {
+  type: 'geojson';
+  color: string;
+  opacity: number;
+}
+
+export interface FlowmapMapLayer extends BaseMapLayer {
+  type: 'flowmap';
+  style: {
+    flowLinesRenderingMode: 'straight' | 'curved' | 'animated-straight';
+    flowLineThicknessScale: number;
+    clusteringEnabled: boolean;
+    clusteringAuto: boolean;
+    locationsEnabled: boolean;
+    locationTotalsEnabled: boolean;
+    locationLabelsEnabled: boolean;
+    maxTopFlowsDisplayNum: number;
+    colorScheme: string;
+    darkMode: boolean;
+  };
+}
+
+export type MapLayer = GeoJsonMapLayer | FlowmapMapLayer;
+
+interface LegacyImportedLayer {
   id: string;
   connectionId: string;
   schema: string;
@@ -35,7 +101,8 @@ export interface ImportedLayer {
 
 interface ConnectionStoreState {
   connections: DatabaseConnection[];
-  importedLayers: ImportedLayer[];
+  mapSources: MapSource[];
+  mapLayers: MapLayer[];
   selectedConnectionId: string | null;
   selectedTableByConnectionId: Record<string, string | null>;
   addConnection: (
@@ -52,7 +119,7 @@ interface ConnectionStoreState {
   removeConnection: (connectionId: string) => void;
   selectConnection: (connectionId: string) => void;
   setSelectedTable: (connectionId: string, tableKey: string | null) => void;
-  addImportedLayer: (payload: {
+  addGeoJsonLayer: (payload: {
     connectionId: string;
     schema: string;
     table: string;
@@ -62,21 +129,33 @@ interface ConnectionStoreState {
     geometryColumn: string;
     geometryType: string;
   }) => void;
-  toggleImportedLayerVisibility: (layerId: string) => void;
-  updateImportedLayer: (
+  addFlowmapLayer: (payload: {
+    connectionId: string;
+    schema: string;
+    table: string;
+    fullName: string;
+    kind: string;
+    name: string;
+    columns: FlowmapTableSource['columns'];
+  }) => void;
+  toggleMapLayerVisibility: (layerId: string) => void;
+  updateGeoJsonLayer: (
     layerId: string,
     patch: Partial<
-      Pick<
-        ImportedLayer,
-        | 'name'
-        | 'icon'
-        | 'color'
-        | 'opacity'
-        | 'geometryColumn'
-        | 'geometryType'
-        | 'visible'
-      >
+      Pick<GeoJsonMapLayer, 'name' | 'icon' | 'color' | 'opacity'>
     >,
+  ) => void;
+  updateGeoJsonSource: (
+    sourceId: string,
+    patch: Partial<Pick<GeoJsonTableSource, 'geometryColumn' | 'geometryType'>>,
+  ) => void;
+  updateFlowmapLayer: (
+    layerId: string,
+    patch: {
+      name?: string;
+      icon?: LayerGlyphIcon;
+      style?: Partial<FlowmapMapLayer['style']>;
+    },
   ) => void;
   toggleConnectionActive: (connectionId: string) => void;
   setConnectionTestPending: (connectionId: string) => void;
@@ -95,7 +174,11 @@ function createConnectionId() {
   return `connection-${crypto.randomUUID()}`;
 }
 
-function createImportedLayerId() {
+function createMapSourceId() {
+  return `source-${crypto.randomUUID()}`;
+}
+
+function createMapLayerId() {
   return `layer-${crypto.randomUUID()}`;
 }
 
@@ -112,7 +195,7 @@ function getDefaultLayerColor(index: number) {
   return layerColors[index % layerColors.length];
 }
 
-function getDefaultLayerIcon(geometryType: string): ImportedLayer['icon'] {
+function getDefaultLayerIcon(geometryType: string): LayerGlyphIcon {
   if (/line/i.test(geometryType)) {
     return 'line';
   }
@@ -128,27 +211,18 @@ function getDefaultLayerIcon(geometryType: string): ImportedLayer['icon'] {
   return 'diamond';
 }
 
-function normalizeImportedLayer(
-  layer: Partial<ImportedLayer>,
-  index: number,
-): ImportedLayer {
-  const geometryType = layer.geometryType ?? '';
-
+function createDefaultFlowmapStyle(): FlowmapMapLayer['style'] {
   return {
-    id: layer.id ?? createImportedLayerId(),
-    connectionId: layer.connectionId ?? '',
-    schema: layer.schema ?? 'public',
-    table: layer.table ?? '',
-    fullName:
-      layer.fullName ?? `${layer.schema ?? 'public'}.${layer.table ?? ''}`,
-    kind: layer.kind ?? 'table',
-    name: layer.name ?? layer.table ?? 'Layer',
-    icon: layer.icon ?? getDefaultLayerIcon(geometryType),
-    color: layer.color ?? getDefaultLayerColor(index),
-    opacity: layer.opacity ?? 80,
-    visible: layer.visible ?? true,
-    geometryColumn: layer.geometryColumn ?? 'geom',
-    geometryType,
+    flowLinesRenderingMode: 'curved',
+    flowLineThicknessScale: 2,
+    clusteringEnabled: false,
+    clusteringAuto: true,
+    locationsEnabled: true,
+    locationTotalsEnabled: false,
+    locationLabelsEnabled: false,
+    maxTopFlowsDisplayNum: 500,
+    colorScheme: 'Teal',
+    darkMode: false,
   };
 }
 
@@ -172,6 +246,164 @@ function normalizeConnection(
   return connection;
 }
 
+function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
+  if (source.type === 'geojson-table') {
+    return {
+      id: source.id ?? createMapSourceId(),
+      type: 'geojson-table',
+      connectionId: source.connectionId ?? '',
+      schema: source.schema ?? 'public',
+      table: source.table ?? '',
+      fullName:
+        source.fullName ?? `${source.schema ?? 'public'}.${source.table ?? ''}`,
+      kind: source.kind ?? 'table',
+      geometryColumn: source.geometryColumn ?? 'geom',
+      geometryType: source.geometryType ?? '',
+    };
+  }
+
+  if (source.type === 'flowmap-table') {
+    const columns = source.columns ?? {
+      startLon: '',
+      startLat: '',
+      endLon: '',
+      endLat: '',
+      magnitude: '',
+    };
+
+    return {
+      id: source.id ?? createMapSourceId(),
+      type: 'flowmap-table',
+      connectionId: source.connectionId ?? '',
+      schema: source.schema ?? 'public',
+      table: source.table ?? '',
+      fullName:
+        source.fullName ?? `${source.schema ?? 'public'}.${source.table ?? ''}`,
+      kind: source.kind ?? 'table',
+      columns,
+    };
+  }
+
+  return null;
+}
+
+function normalizeMapLayer(layer: Partial<MapLayer>, index: number): MapLayer {
+  if (layer.type === 'flowmap') {
+    return {
+      id: layer.id ?? createMapLayerId(),
+      type: 'flowmap',
+      connectionId: layer.connectionId ?? '',
+      sourceId: layer.sourceId ?? '',
+      name: layer.name ?? 'Flow layer',
+      visible: layer.visible ?? true,
+      icon: layer.icon ?? 'flow',
+      style: layer.style ?? createDefaultFlowmapStyle(),
+    };
+  }
+
+  const geoJsonLayer = layer as Partial<GeoJsonMapLayer>;
+
+  return {
+    id: geoJsonLayer.id ?? createMapLayerId(),
+    type: 'geojson',
+    connectionId: geoJsonLayer.connectionId ?? '',
+    sourceId: geoJsonLayer.sourceId ?? '',
+    name: geoJsonLayer.name ?? 'Layer',
+    visible: geoJsonLayer.visible ?? true,
+    icon: geoJsonLayer.icon ?? getDefaultLayerIcon(''),
+    color: geoJsonLayer.color ?? getDefaultLayerColor(index),
+    opacity: geoJsonLayer.opacity ?? 80,
+  };
+}
+
+function findGeoJsonSource(
+  sources: MapSource[],
+  payload: {
+    connectionId: string;
+    schema: string;
+    table: string;
+    geometryColumn: string;
+  },
+) {
+  return sources.find(
+    (source): source is GeoJsonTableSource =>
+      source.type === 'geojson-table' &&
+      source.connectionId === payload.connectionId &&
+      source.schema === payload.schema &&
+      source.table === payload.table &&
+      source.geometryColumn === payload.geometryColumn,
+  );
+}
+
+function findFlowmapSource(
+  sources: MapSource[],
+  payload: {
+    connectionId: string;
+    schema: string;
+    table: string;
+    columns: FlowmapTableSource['columns'];
+  },
+) {
+  return sources.find(
+    (source): source is FlowmapTableSource =>
+      source.type === 'flowmap-table' &&
+      source.connectionId === payload.connectionId &&
+      source.schema === payload.schema &&
+      source.table === payload.table &&
+      JSON.stringify(source.columns) === JSON.stringify(payload.columns),
+  );
+}
+
+function migrateLegacyLayers(
+  legacyLayers: LegacyImportedLayer[],
+  currentSources: MapSource[],
+  currentLayers: MapLayer[],
+) {
+  const sources = [...currentSources];
+  const layers = [...currentLayers];
+
+  for (const legacyLayer of legacyLayers) {
+    let source = findGeoJsonSource(sources, legacyLayer);
+
+    if (!source) {
+      source = {
+        id: createMapSourceId(),
+        type: 'geojson-table',
+        connectionId: legacyLayer.connectionId,
+        schema: legacyLayer.schema,
+        table: legacyLayer.table,
+        fullName: legacyLayer.fullName,
+        kind: legacyLayer.kind,
+        geometryColumn: legacyLayer.geometryColumn,
+        geometryType: legacyLayer.geometryType,
+      };
+      sources.push(source);
+    }
+
+    if (
+      layers.some(
+        (layer) => layer.id === legacyLayer.id || layer.sourceId === source.id,
+      )
+    ) {
+      continue;
+    }
+
+    layers.push({
+      id: legacyLayer.id ?? createMapLayerId(),
+      type: 'geojson',
+      connectionId: legacyLayer.connectionId,
+      sourceId: source.id,
+      name: legacyLayer.name,
+      visible: legacyLayer.visible,
+      icon: legacyLayer.icon,
+      color: legacyLayer.color,
+      opacity: legacyLayer.opacity,
+    });
+  }
+
+  return { mapSources: sources, mapLayers: layers };
+}
+
 export const useConnectionStore = create<ConnectionStoreState>()(
   persist(
     (set) => ({
@@ -192,7 +424,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           postgisVersion: '',
         },
       ],
-      importedLayers: [],
+      mapSources: [],
+      mapLayers: [],
       selectedConnectionId: null,
       selectedTableByConnectionId: {},
       addConnection: (connection) =>
@@ -225,11 +458,18 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             state.selectedConnectionId === connectionId
               ? (nextConnections[0]?.id ?? null)
               : state.selectedConnectionId;
+          const nextSources = state.mapSources.filter(
+            (source) => source.connectionId !== connectionId,
+          );
+          const nextSourceIds = new Set(nextSources.map((source) => source.id));
 
           return {
             connections: nextConnections,
-            importedLayers: state.importedLayers.filter(
-              (layer) => layer.connectionId !== connectionId,
+            mapSources: nextSources,
+            mapLayers: state.mapLayers.filter(
+              (layer) =>
+                layer.connectionId !== connectionId &&
+                nextSourceIds.has(layer.sourceId),
             ),
             selectedConnectionId: nextSelectedId,
             selectedTableByConnectionId: Object.fromEntries(
@@ -250,24 +490,38 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             [connectionId]: tableKey,
           },
         })),
-      addImportedLayer: (payload) =>
+      addGeoJsonLayer: (payload) =>
         set((state) => {
-          const existingLayer = state.importedLayers.find(
-            (layer) =>
-              layer.connectionId === payload.connectionId &&
-              layer.fullName === payload.fullName,
+          let source = findGeoJsonSource(state.mapSources, payload);
+          const nextSources = [...state.mapSources];
+
+          if (!source) {
+            source = {
+              id: createMapSourceId(),
+              type: 'geojson-table',
+              connectionId: payload.connectionId,
+              schema: payload.schema,
+              table: payload.table,
+              fullName: payload.fullName,
+              kind: payload.kind,
+              geometryColumn: payload.geometryColumn,
+              geometryType: payload.geometryType,
+            };
+            nextSources.push(source);
+          }
+
+          const existingLayer = state.mapLayers.find(
+            (layer) => layer.type === 'geojson' && layer.sourceId === source.id,
           );
 
           if (existingLayer) {
             return {
-              importedLayers: state.importedLayers.map((layer) =>
+              mapSources: nextSources,
+              mapLayers: state.mapLayers.map((layer) =>
                 layer.id === existingLayer.id
                   ? {
                       ...layer,
                       visible: true,
-                      geometryColumn:
-                        payload.geometryColumn || layer.geometryColumn,
-                      geometryType: payload.geometryType || layer.geometryType,
                     }
                   : layer,
               ),
@@ -275,38 +529,116 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           }
 
           return {
-            importedLayers: [
-              ...state.importedLayers,
+            mapSources: nextSources,
+            mapLayers: [
+              ...state.mapLayers,
               {
-                id: createImportedLayerId(),
+                id: createMapLayerId(),
+                type: 'geojson',
                 connectionId: payload.connectionId,
-                schema: payload.schema,
-                table: payload.table,
-                fullName: payload.fullName,
-                kind: payload.kind,
+                sourceId: source.id,
                 name: payload.name,
-                icon: getDefaultLayerIcon(payload.geometryType),
-                color: getDefaultLayerColor(state.importedLayers.length),
-                opacity: 80,
                 visible: true,
-                geometryColumn: payload.geometryColumn,
-                geometryType: payload.geometryType,
+                icon: getDefaultLayerIcon(payload.geometryType),
+                color: getDefaultLayerColor(state.mapLayers.length),
+                opacity: 80,
               },
             ],
           };
         }),
-      toggleImportedLayerVisibility: (layerId) =>
+      addFlowmapLayer: (payload) =>
+        set((state) => {
+          let source = findFlowmapSource(state.mapSources, payload);
+          const nextSources = [...state.mapSources];
+
+          if (!source) {
+            source = {
+              id: createMapSourceId(),
+              type: 'flowmap-table',
+              connectionId: payload.connectionId,
+              schema: payload.schema,
+              table: payload.table,
+              fullName: payload.fullName,
+              kind: payload.kind,
+              columns: payload.columns,
+            };
+            nextSources.push(source);
+          }
+
+          const existingLayer = state.mapLayers.find(
+            (layer) => layer.type === 'flowmap' && layer.sourceId === source.id,
+          );
+
+          if (existingLayer) {
+            return {
+              mapSources: nextSources,
+              mapLayers: state.mapLayers.map((layer) =>
+                layer.id === existingLayer.id
+                  ? {
+                      ...layer,
+                      visible: true,
+                    }
+                  : layer,
+              ),
+            };
+          }
+
+          return {
+            mapSources: nextSources,
+            mapLayers: [
+              ...state.mapLayers,
+              {
+                id: createMapLayerId(),
+                type: 'flowmap',
+                connectionId: payload.connectionId,
+                sourceId: source.id,
+                name: payload.name,
+                visible: true,
+                icon: 'flow',
+                style: createDefaultFlowmapStyle(),
+              },
+            ],
+          };
+        }),
+      toggleMapLayerVisibility: (layerId) =>
         set((state) => ({
-          importedLayers: state.importedLayers.map((layer) =>
+          mapLayers: state.mapLayers.map((layer) =>
             layer.id === layerId
               ? { ...layer, visible: !layer.visible }
               : layer,
           ),
         })),
-      updateImportedLayer: (layerId, patch) =>
+      updateGeoJsonLayer: (layerId, patch) =>
         set((state) => ({
-          importedLayers: state.importedLayers.map((layer) =>
-            layer.id === layerId ? { ...layer, ...patch } : layer,
+          mapLayers: state.mapLayers.map((layer) =>
+            layer.id === layerId && layer.type === 'geojson'
+              ? { ...layer, ...patch }
+              : layer,
+          ),
+        })),
+      updateGeoJsonSource: (sourceId, patch) =>
+        set((state) => ({
+          mapSources: state.mapSources.map((source) =>
+            source.id === sourceId && source.type === 'geojson-table'
+              ? { ...source, ...patch }
+              : source,
+          ),
+        })),
+      updateFlowmapLayer: (layerId, patch) =>
+        set((state) => ({
+          mapLayers: state.mapLayers.map((layer) =>
+            layer.id === layerId && layer.type === 'flowmap'
+              ? {
+                  ...layer,
+                  ...patch,
+                  style: patch.style
+                    ? {
+                        ...layer.style,
+                        ...patch.style,
+                      }
+                    : layer.style,
+                }
+              : layer,
           ),
         })),
       toggleConnectionActive: (connectionId) =>
@@ -362,7 +694,25 @@ export const useConnectionStore = create<ConnectionStoreState>()(
       name: 'geopanel-connections',
       storage: createJSONStorage(() => localStorage),
       merge: (persistedState, currentState) => {
-        const state = persistedState as Partial<ConnectionStoreState>;
+        const state = persistedState as Partial<
+          ConnectionStoreState & {
+            importedLayers?: LegacyImportedLayer[];
+            mapSources?: Partial<MapSource>[];
+            mapLayers?: Partial<MapLayer>[];
+          }
+        >;
+
+        const nextMapSources = (state.mapSources ?? currentState.mapSources)
+          .map(normalizeMapSource)
+          .filter((source): source is MapSource => source !== null);
+        const nextMapLayers = (state.mapLayers ?? currentState.mapLayers).map(
+          (layer, index) => normalizeMapLayer(layer, index),
+        );
+        const migratedLegacy = migrateLegacyLayers(
+          state.importedLayers ?? [],
+          nextMapSources,
+          nextMapLayers,
+        );
 
         return {
           ...currentState,
@@ -370,14 +720,14 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           connections: (state.connections ?? currentState.connections).map(
             normalizeConnection,
           ),
-          importedLayers: (
-            state.importedLayers ?? currentState.importedLayers
-          ).map((layer, index) => normalizeImportedLayer(layer, index)),
+          mapSources: migratedLegacy.mapSources,
+          mapLayers: migratedLegacy.mapLayers,
         };
       },
       partialize: (state) => ({
         connections: state.connections,
-        importedLayers: state.importedLayers,
+        mapSources: state.mapSources,
+        mapLayers: state.mapLayers,
         selectedConnectionId: state.selectedConnectionId,
         selectedTableByConnectionId: state.selectedTableByConnectionId,
       }),

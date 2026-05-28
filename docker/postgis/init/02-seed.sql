@@ -253,6 +253,53 @@ VALUES
     )
   );
 
+INSERT INTO demo.site_flows (
+  id,
+  origin_site_id,
+  origin_name,
+  destination_site_id,
+  destination_name,
+  flow_group,
+  start_lon,
+  start_lat,
+  end_lon,
+  end_lat,
+  magnitude
+)
+SELECT
+  FORMAT('f_%s_%s', origin_site.id, destination_site.id) AS id,
+  origin_site.id AS origin_site_id,
+  origin_site.name AS origin_name,
+  destination_site.id AS destination_site_id,
+  destination_site.name AS destination_name,
+  CASE
+    WHEN origin_site.category = destination_site.category THEN 'peer'
+    WHEN origin_site.category IN ('transit', 'transport', 'logistics')
+      OR destination_site.category IN ('transit', 'transport', 'logistics')
+      THEN 'mobility'
+    WHEN origin_site.category IN ('school', 'education', 'library', 'culture')
+      OR destination_site.category IN ('school', 'education', 'library', 'culture')
+      THEN 'civic'
+    ELSE 'mixed'
+  END AS flow_group,
+  ST_X(origin_site.geom) AS start_lon,
+  ST_Y(origin_site.geom) AS start_lat,
+  ST_X(destination_site.geom) AS end_lon,
+  ST_Y(destination_site.geom) AS end_lat,
+  (
+    30
+    + (
+      ROW_NUMBER() OVER (ORDER BY origin_site.id, destination_site.id) * 17
+    ) % 160
+    + CASE
+      WHEN origin_site.category = destination_site.category THEN 40
+      ELSE 0
+    END
+  )::integer AS magnitude
+FROM demo.sites AS origin_site
+CROSS JOIN demo.sites AS destination_site
+WHERE origin_site.id <> destination_site.id;
+
 CREATE OR REPLACE VIEW demo.district_summary AS
 SELECT
   d.id,
