@@ -1324,12 +1324,14 @@ function MapLayerEditor({
 
 function DataInspector({
   connection,
+  isLoadingTables,
   tables,
   selectedTableKey,
   onSelectTable,
   tablesError,
 }: {
   connection: DatabaseConnection | null;
+  isLoadingTables: boolean;
   tables: InspectableTable[];
   selectedTableKey: string | null;
   onSelectTable: (tableKey: string | null) => void;
@@ -1725,8 +1727,12 @@ function DataInspector({
               label: table.fullName,
               value: table.fullName,
             }))}
+            disabled={isLoadingTables}
+            leftSection={isLoadingTables ? <Loader size={14} /> : null}
             onChange={handleSelectTableChange}
-            placeholder="Select table"
+            placeholder={
+              isLoadingTables ? 'Loading database tables...' : 'Select table'
+            }
             value={selectedTableKey}
           />
         </Group>
@@ -1776,9 +1782,21 @@ function DataInspector({
       </Group>
 
       {tablesError ? (
-        <Text c="red" size="sm">
+        <Alert color="red" title="Table discovery failed" variant="light">
           {tablesError}
-        </Text>
+        </Alert>
+      ) : null}
+
+      {isLoadingTables ? (
+        <Alert
+          color="blue"
+          icon={<Loader size={16} />}
+          title="Discovering database tables"
+          variant="light"
+        >
+          Remote databases can take a while while columns, primary keys,
+          privileges, and geometry metadata are inspected.
+        </Alert>
       ) : null}
 
       {rowsError ? (
@@ -1799,7 +1817,23 @@ function DataInspector({
         </Alert>
       ) : null}
 
-      {!selectedTable ? (
+      {!selectedTable && isLoadingTables ? (
+        <Center
+          style={{
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <Stack align="center" gap="xs">
+            <Loader size="sm" />
+            <Text c="dimmed" size="sm">
+              Reading table catalog...
+            </Text>
+          </Stack>
+        </Center>
+      ) : null}
+
+      {!selectedTable && !isLoadingTables ? (
         <EmptyState
           detail="Choose one table from loaded database objects."
           label="No Table Selected"
@@ -1841,6 +1875,11 @@ function DataInspector({
               <Text c="dimmed" size="xs">
                 page size {rowsState.limit}
               </Text>
+              {isLoadingRows ? (
+                <Badge color="blue" size="sm" variant="light">
+                  Loading rows
+                </Badge>
+              ) : null}
             </Group>
           </Group>
 
@@ -2108,6 +2147,22 @@ function DataInspector({
           </Group>
         </>
       ) : null}
+
+      {selectedTable && !rowsState && isLoadingRows ? (
+        <Center
+          style={{
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <Stack align="center" gap="xs">
+            <Loader size="sm" />
+            <Text c="dimmed" size="sm">
+              Loading first page from {selectedTable.fullName}...
+            </Text>
+          </Stack>
+        </Center>
+      ) : null}
     </Stack>
   );
 }
@@ -2329,6 +2384,7 @@ export function App() {
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
   const [tables, setTables] = useState<InspectableTable[]>([]);
+  const [isLoadingTables, setIsLoadingTables] = useState(false);
   const [tablesError, setTablesError] = useState('');
 
   const selectedConnection =
@@ -2411,6 +2467,7 @@ export function App() {
   useEffect(() => {
     if (!selectedConnection || selectedConnection.testStatus !== 'success') {
       setTables([]);
+      setIsLoadingTables(false);
       setTablesError('');
       return;
     }
@@ -2420,6 +2477,7 @@ export function App() {
 
     async function loadTables() {
       try {
+        setIsLoadingTables(true);
         setTablesError('');
         const nextTables = await fetchInspectableTables(activeConnection);
         if (!isActive) {
@@ -2446,6 +2504,10 @@ export function App() {
         );
         if (selectedConnectionId) {
           setSelectedTable(selectedConnectionId, null);
+        }
+      } finally {
+        if (isActive) {
+          setIsLoadingTables(false);
         }
       }
     }
@@ -2542,6 +2604,7 @@ export function App() {
                 <PanelFrame hint="Resizable" title="Table">
                   <DataInspector
                     connection={selectedConnection}
+                    isLoadingTables={isLoadingTables}
                     onSelectTable={handleSelectTable}
                     selectedTableKey={selectedTableKey}
                     tablesError={tablesError}

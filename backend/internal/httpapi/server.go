@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -335,6 +336,16 @@ func handleServiceError(
 	serviceErrorCode string,
 	fallbackMessage string,
 ) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeError(
+			writer,
+			http.StatusGatewayTimeout,
+			"database_operation_timeout",
+			"Database operation timed out. Remote database discovery and table loading can take longer on large or distant databases; try again or increase API_DB_TIMEOUT.",
+		)
+		return
+	}
+
 	if errors.Is(err, postgres.ErrConnectionFailed) {
 		writeError(
 			writer,

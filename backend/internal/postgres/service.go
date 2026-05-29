@@ -455,12 +455,12 @@ func (service *Service) TestConnection(
 
 	var postgresVersion string
 	if err := conn.QueryRow(timeoutCtx, "select version()").Scan(&postgresVersion); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	var postgisVersion string
 	if err := conn.QueryRow(timeoutCtx, "select postgis_version()").Scan(&postgisVersion); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return &ConnectionTestResult{
@@ -516,7 +516,7 @@ func (service *Service) ListTables(
 		`,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	defer rows.Close()
 
@@ -529,14 +529,14 @@ func (service *Service) ListTables(
 			&table.Kind,
 			&table.RowEstimate,
 		); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 		}
 		table.FullName = fmt.Sprintf("%s.%s", table.Schema, table.Name)
 		tables = append(tables, table)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	rows.Close()
 
@@ -689,7 +689,7 @@ func (service *Service) ListRows(
 
 	rows, err := conn.Query(timeoutCtx, query, request.Limit+1, request.Offset)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	defer rows.Close()
 
@@ -697,7 +697,7 @@ func (service *Service) ListRows(
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 		}
 
 		record := make(map[string]interface{}, len(columns))
@@ -714,7 +714,7 @@ func (service *Service) ListRows(
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	hasMore := false
@@ -801,7 +801,7 @@ func (service *Service) CommitTableChanges(
 
 	transaction, err := conn.Begin(timeoutCtx)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	committed := false
@@ -829,7 +829,7 @@ func (service *Service) CommitTableChanges(
 	}
 
 	if err := transaction.Commit(timeoutCtx); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	committed = true
 
@@ -907,12 +907,12 @@ func (service *Service) ListLayerFeatures(
 
 	var rawFeatures []byte
 	if err := conn.QueryRow(timeoutCtx, query, request.Limit).Scan(&rawFeatures); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	features := make([]map[string]interface{}, 0)
 	if err := json.Unmarshal(rawFeatures, &features); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return &ListLayerFeaturesResult{
@@ -960,7 +960,7 @@ func (service *Service) ListFlowmapData(
 		request.MagnitudeColumn,
 	}
 	if err := validateColumnNames(columnDefinitions, requiredColumns); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	query := fmt.Sprintf(
@@ -995,7 +995,7 @@ func (service *Service) ListFlowmapData(
 
 	rows, err := conn.Query(timeoutCtx, query, request.Limit)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	defer rows.Close()
 
@@ -1016,7 +1016,7 @@ func (service *Service) ListFlowmapData(
 			&endLat,
 			&magnitude,
 		); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 		}
 
 		if !isFiniteFloat(startLon) ||
@@ -1057,7 +1057,7 @@ func (service *Service) ListFlowmapData(
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	locations := make([]FlowmapLocation, 0, len(locationsByID))
@@ -1177,7 +1177,7 @@ func (service *Service) applyInsertOperation(
 	)
 
 	if _, err := transaction.Exec(ctx, query, parameters...); err != nil {
-		return fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return nil
@@ -1252,7 +1252,7 @@ func (service *Service) applyUpdateOperation(
 
 	commandTag, err := transaction.Exec(ctx, query, parameters...)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	if commandTag.RowsAffected() != 1 {
@@ -1294,7 +1294,7 @@ func (service *Service) applyDeleteOperation(
 
 	commandTag, err := transaction.Exec(ctx, query, parameters...)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	if commandTag.RowsAffected() != 1 {
@@ -1322,7 +1322,7 @@ func (service *Service) listColumnDefinitions(
 		table,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	defer rows.Close()
 
@@ -1330,13 +1330,13 @@ func (service *Service) listColumnDefinitions(
 	for rows.Next() {
 		var definition columnDefinition
 		if err := rows.Scan(&definition.Name, &definition.Type, &definition.UdtName); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 		}
 		definitions = append(definitions, definition)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return definitions, nil
@@ -1371,7 +1371,7 @@ func (service *Service) listGeometryColumns(
 		table,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	defer rows.Close()
 
@@ -1384,13 +1384,13 @@ func (service *Service) listGeometryColumns(
 			&definition.GeometryType,
 			&definition.SRID,
 		); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 		}
 		definitions = append(definitions, definition)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return definitions, nil
@@ -1422,7 +1422,7 @@ func (service *Service) listPrimaryKeyColumns(
 		table,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	defer rows.Close()
 
@@ -1430,13 +1430,13 @@ func (service *Service) listPrimaryKeyColumns(
 	for rows.Next() {
 		var columnName string
 		if err := rows.Scan(&columnName); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 		}
 		primaryKey = append(primaryKey, columnName)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return primaryKey, nil
@@ -1478,7 +1478,7 @@ func (service *Service) getTableAccess(
 		&access.CanUpdate,
 		&access.CanDelete,
 	); err != nil {
-		return tableAccess{}, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return tableAccess{}, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return access, nil
@@ -1499,7 +1499,7 @@ func (service *Service) connect(
 
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return conn, nil
