@@ -2538,7 +2538,7 @@ export function App() {
 
               <Split.Resizer />
 
-              <Split.Pane initialHeight={260} maxHeight={420} minHeight={0}>
+              <Split.Pane initialHeight={260} minHeight={0}>
                 <PanelFrame hint="Resizable" title="Table">
                   <DataInspector
                     connection={selectedConnection}
