@@ -12,6 +12,18 @@ export interface InspectableTable {
   geometryColumns: InspectorGeometryColumn[];
 }
 
+export interface InspectableSchema {
+  name: string;
+}
+
+export interface InspectableTableSummary {
+  schema: string;
+  name: string;
+  fullName: string;
+  kind: string;
+  rowEstimate: number;
+}
+
 export interface InspectorColumn {
   name: string;
   type: string;
@@ -54,26 +66,23 @@ export interface TableChangeOperation {
   values?: Record<string, unknown>;
 }
 
-export async function fetchInspectableTables(connection: DatabaseConnection) {
-  const response = await fetch('/api/v1/database-connections/tables', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      name: connection.name,
-      host: connection.host,
-      port: connection.port,
-      database: connection.database,
-      user: connection.user,
-      password: connection.password,
-    }),
-  });
+function connectionPayload(connection: DatabaseConnection) {
+  return {
+    name: connection.name,
+    host: connection.host,
+    port: connection.port,
+    database: connection.database,
+    user: connection.user,
+    password: connection.password,
+  };
+}
 
+async function decodePayload<T extends object>(
+  response: Response,
+  fallbackMessage: string,
+) {
   const payload = (await response.json()) as
-    | {
-        tables: InspectableTable[];
-      }
+    | T
     | {
         error: {
           code: string;
@@ -83,11 +92,89 @@ export async function fetchInspectableTables(connection: DatabaseConnection) {
 
   if (!response.ok || 'error' in payload) {
     throw new Error(
-      'error' in payload
-        ? payload.error.message
-        : 'Failed to load inspectable tables.',
+      'error' in payload ? payload.error.message : fallbackMessage,
     );
   }
+
+  return payload;
+}
+
+export async function fetchInspectableSchemas(connection: DatabaseConnection) {
+  const response = await fetch('/api/v1/database-connections/schemas', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(connectionPayload(connection)),
+  });
+
+  const payload = await decodePayload<{ schemas: InspectableSchema[] }>(
+    response,
+    'Failed to load database schemas.',
+  );
+
+  return payload.schemas;
+}
+
+export async function fetchInspectableSchemaTables(
+  connection: DatabaseConnection,
+  schema: string,
+) {
+  const response = await fetch('/api/v1/database-connections/schemas/tables', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...connectionPayload(connection),
+      schema,
+    }),
+  });
+
+  const payload = await decodePayload<{ tables: InspectableTableSummary[] }>(
+    response,
+    'Failed to load schema tables.',
+  );
+
+  return payload.tables;
+}
+
+export async function fetchTableMetadata(
+  connection: DatabaseConnection,
+  schema: string,
+  table: string,
+) {
+  const response = await fetch('/api/v1/database-connections/tables/metadata', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...connectionPayload(connection),
+      schema,
+      table,
+    }),
+  });
+
+  return await decodePayload<InspectableTable>(
+    response,
+    'Failed to load table metadata.',
+  );
+}
+
+export async function fetchInspectableTables(connection: DatabaseConnection) {
+  const response = await fetch('/api/v1/database-connections/tables', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(connectionPayload(connection)),
+  });
+
+  const payload = await decodePayload<{ tables: InspectableTable[] }>(
+    response,
+    'Failed to load inspectable tables.',
+  );
 
   return payload.tables;
 }
@@ -104,12 +191,7 @@ export async function fetchInspectorRows(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      name: connection.name,
-      host: connection.host,
-      port: connection.port,
-      database: connection.database,
-      user: connection.user,
-      password: connection.password,
+      ...connectionPayload(connection),
       schema: table.schema,
       table: table.name,
       offset,
@@ -117,22 +199,10 @@ export async function fetchInspectorRows(
     }),
   });
 
-  const payload = (await response.json()) as
-    | InspectorRowsResponse
-    | {
-        error: {
-          code: string;
-          message: string;
-        };
-      };
-
-  if (!response.ok || 'error' in payload) {
-    throw new Error(
-      'error' in payload ? payload.error.message : 'Failed to load table rows.',
-    );
-  }
-
-  return payload;
+  return await decodePayload<InspectorRowsResponse>(
+    response,
+    'Failed to load table rows.',
+  );
 }
 
 export async function commitInspectorRows(
@@ -145,38 +215,16 @@ export async function commitInspectorRows(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      name: connection.name,
-      host: connection.host,
-      port: connection.port,
-      database: connection.database,
-      user: connection.user,
-      password: connection.password,
+      ...connectionPayload(connection),
       schema: request.schema,
       table: request.table,
       operations: request.operations,
     }),
   });
 
-  const payload = (await response.json()) as
-    | {
-        schema: string;
-        table: string;
-        applied: number;
-      }
-    | {
-        error: {
-          code: string;
-          message: string;
-        };
-      };
-
-  if (!response.ok || 'error' in payload) {
-    throw new Error(
-      'error' in payload
-        ? payload.error.message
-        : 'Failed to save table changes.',
-    );
-  }
-
-  return payload;
+  return await decodePayload<{
+    schema: string;
+    table: string;
+    applied: number;
+  }>(response, 'Failed to save table changes.');
 }

@@ -7,6 +7,7 @@ import {
   Button,
   Center,
   Checkbox,
+  Collapse,
   Flex,
   Group,
   Loader,
@@ -25,15 +26,19 @@ import {
 import { useDisclosure } from '@mantine/hooks';
 import {
   IconCheck,
+  IconChevronDown,
+  IconChevronRight,
   IconDatabasePlus,
   IconDeviceFloppy,
   IconEye,
   IconEyeOff,
+  IconFolder,
   IconPlug,
   IconPlugConnected,
   IconPlus,
   IconRefresh,
   IconRestore,
+  IconTable,
   IconTrash,
 } from '@tabler/icons-react';
 import {
@@ -55,9 +60,13 @@ import {
 } from './features/connections/store';
 import {
   commitInspectorRows,
-  fetchInspectableTables,
+  fetchInspectableSchemas,
+  fetchInspectableSchemaTables,
   fetchInspectorRows,
+  fetchTableMetadata,
+  type InspectableSchema,
   type InspectableTable,
+  type InspectableTableSummary,
   type InspectorColumn,
   type InspectorRow,
   type InspectorRowsResponse,
@@ -71,6 +80,19 @@ const emptyCellLabel = 'NULL';
 interface DraftInsertRow {
   id: string;
   values: Record<string, unknown>;
+}
+
+type SchemaTablesByName = Record<string, InspectableTableSummary[]>;
+type LoadingSchemaTablesByName = Record<string, boolean>;
+
+interface CatalogState {
+  schemas: InspectableSchema[];
+  schemaTablesByName: SchemaTablesByName;
+  selectedSchemaNames: string[];
+  expandedSchemaNames: string[];
+  isLoadingSchemas: boolean;
+  loadingSchemaTablesByName: LoadingSchemaTablesByName;
+  error: string;
 }
 
 function createDraftInsertId() {
@@ -244,15 +266,23 @@ const initialConnectionForm: ConnectionFormState = {
 };
 
 function ConnectionManager({
+  catalog,
   mapLayers,
   mapSources,
+  onLoadSchemas,
   onImportSelectedTable,
   onCreateFlowLayer,
+  onSelectCatalogTable,
+  onToggleCatalogSchema,
+  onToggleCatalogSchemaExpanded,
   selectedInspectableTable,
+  selectedTableKey,
   tables,
 }: {
+  catalog: CatalogState;
   mapLayers: MapLayer[];
   mapSources: MapSource[];
+  onLoadSchemas: () => void;
   onImportSelectedTable: () => void;
   onCreateFlowLayer: (payload: {
     name: string;
@@ -262,11 +292,16 @@ function ConnectionManager({
     endLat: string;
     magnitude: string;
   }) => void;
+  onSelectCatalogTable: (tableKey: string) => void;
+  onToggleCatalogSchema: (schemaName: string) => void;
+  onToggleCatalogSchemaExpanded: (schemaName: string) => void;
   selectedInspectableTable: InspectableTable | null;
+  selectedTableKey: string | null;
   tables: InspectableTable[];
 }) {
   const [connectionOpened, connectionModal] = useDisclosure(false);
   const [flowLayerOpened, flowLayerModal] = useDisclosure(false);
+  const [catalogOpened, catalogDisclosure] = useDisclosure(false);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
   const [form, setForm] = useState<ConnectionFormState>(initialConnectionForm);
   const [flowLayerForm, setFlowLayerForm] = useState(() =>
@@ -347,6 +382,14 @@ function ConnectionManager({
 
   function handleCloseFlowLayerModal() {
     flowLayerModal.close();
+  }
+
+  function handleToggleCatalog() {
+    if (!catalogOpened && catalog.schemas.length === 0) {
+      onLoadSchemas();
+    }
+
+    catalogDisclosure.toggle();
   }
 
   function handleSubmit() {
@@ -749,6 +792,19 @@ function ConnectionManager({
                       </Button>
                     </Group>
 
+                    {isSelected && connection.testStatus === 'success' ? (
+                      <ConnectionCatalog
+                        catalog={catalog}
+                        opened={catalogOpened}
+                        selectedTableKey={selectedTableKey}
+                        onLoadSchemas={onLoadSchemas}
+                        onSelectTable={onSelectCatalogTable}
+                        onToggle={handleToggleCatalog}
+                        onToggleSchema={onToggleCatalogSchema}
+                        onToggleSchemaExpanded={onToggleCatalogSchemaExpanded}
+                      />
+                    ) : null}
+
                     <Group justify="flex-end">
                       <Button
                         color={connection.isActive ? 'gray' : 'teal'}
@@ -916,6 +972,183 @@ function ConnectionManager({
         </Stack>
       </Stack>
     </>
+  );
+}
+
+function ConnectionCatalog({
+  catalog,
+  opened,
+  selectedTableKey,
+  onLoadSchemas,
+  onSelectTable,
+  onToggle,
+  onToggleSchema,
+  onToggleSchemaExpanded,
+}: {
+  catalog: CatalogState;
+  opened: boolean;
+  selectedTableKey: string | null;
+  onLoadSchemas: () => void;
+  onSelectTable: (tableKey: string) => void;
+  onToggle: () => void;
+  onToggleSchema: (schemaName: string) => void;
+  onToggleSchemaExpanded: (schemaName: string) => void;
+}) {
+  const selectedSchemaNames = new Set(catalog.selectedSchemaNames);
+  const expandedSchemaNames = new Set(catalog.expandedSchemaNames);
+
+  return (
+    <Paper p="xs" radius="sm" withBorder>
+      <Stack gap="xs">
+        <Group justify="space-between" wrap="nowrap">
+          <Group gap={6} wrap="nowrap">
+            <IconFolder size={15} />
+            <Text fw={600} size="xs">
+              Catalog
+            </Text>
+          </Group>
+          <Group gap={4} wrap="nowrap">
+            <ActionIcon
+              aria-label="Refresh catalog schemas"
+              disabled={catalog.isLoadingSchemas}
+              onClick={(event) => {
+                event.stopPropagation();
+                onLoadSchemas();
+              }}
+              size="sm"
+              variant="subtle"
+            >
+              {catalog.isLoadingSchemas ? (
+                <Loader size={14} />
+              ) : (
+                <IconRefresh size={14} />
+              )}
+            </ActionIcon>
+            <Button
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggle();
+              }}
+              rightSection={
+                opened ? (
+                  <IconChevronDown size={14} />
+                ) : (
+                  <IconChevronRight size={14} />
+                )
+              }
+              size="compact-xs"
+              variant="subtle"
+            >
+              {opened ? 'Hide' : 'Open'}
+            </Button>
+          </Group>
+        </Group>
+
+        <Collapse expanded={opened}>
+          <Stack gap="xs">
+            {catalog.error ? (
+              <Alert color="red" title="Catalog failed" variant="light">
+                {catalog.error}
+              </Alert>
+            ) : null}
+
+            {catalog.isLoadingSchemas ? (
+              <Group gap="xs">
+                <Loader size={14} />
+                <Text c="dimmed" size="xs">
+                  Loading schemas...
+                </Text>
+              </Group>
+            ) : null}
+
+            {!catalog.isLoadingSchemas && catalog.schemas.length === 0 ? (
+              <Text c="dimmed" size="xs">
+                Open catalog to load schemas.
+              </Text>
+            ) : null}
+
+            {catalog.schemas.map((schema) => {
+              const isSelected = selectedSchemaNames.has(schema.name);
+              const isExpanded = expandedSchemaNames.has(schema.name);
+              const tables = catalog.schemaTablesByName[schema.name] ?? [];
+              const isLoadingTables =
+                catalog.loadingSchemaTablesByName[schema.name] ?? false;
+
+              return (
+                <Stack key={schema.name} gap={4}>
+                  <Group gap={4} wrap="nowrap">
+                    <ActionIcon
+                      aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${schema.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleSchemaExpanded(schema.name);
+                      }}
+                      size="sm"
+                      variant="subtle"
+                    >
+                      {isExpanded ? (
+                        <IconChevronDown size={14} />
+                      ) : (
+                        <IconChevronRight size={14} />
+                      )}
+                    </ActionIcon>
+                    <Checkbox
+                      checked={isSelected}
+                      label={
+                        <Text fw={500} size="xs">
+                          {schema.name}
+                        </Text>
+                      }
+                      onChange={() => onToggleSchema(schema.name)}
+                      size="xs"
+                    />
+                    {isLoadingTables ? <Loader size={12} /> : null}
+                  </Group>
+
+                  <Collapse expanded={isExpanded}>
+                    <Stack gap={2} pl="lg">
+                      {isLoadingTables ? (
+                        <Text c="dimmed" size="xs">
+                          Loading tables...
+                        </Text>
+                      ) : null}
+
+                      {!isLoadingTables && tables.length === 0 ? (
+                        <Text c="dimmed" size="xs">
+                          No loaded tables.
+                        </Text>
+                      ) : null}
+
+                      {tables.map((table) => (
+                        <Button
+                          key={table.fullName}
+                          color={
+                            selectedTableKey === table.fullName
+                              ? 'blue'
+                              : 'gray'
+                          }
+                          justify="flex-start"
+                          leftSection={<IconTable size={14} />}
+                          onClick={() => onSelectTable(table.fullName)}
+                          size="compact-xs"
+                          variant={
+                            selectedTableKey === table.fullName
+                              ? 'light'
+                              : 'subtle'
+                          }
+                        >
+                          {table.name}
+                        </Button>
+                      ))}
+                    </Stack>
+                  </Collapse>
+                </Stack>
+              );
+            })}
+          </Stack>
+        </Collapse>
+      </Stack>
+    </Paper>
   );
 }
 
@@ -1325,6 +1558,8 @@ function MapLayerEditor({
 function DataInspector({
   connection,
   isLoadingTables,
+  isLoadingTableMetadata,
+  selectedTable,
   tables,
   selectedTableKey,
   onSelectTable,
@@ -1332,7 +1567,9 @@ function DataInspector({
 }: {
   connection: DatabaseConnection | null;
   isLoadingTables: boolean;
-  tables: InspectableTable[];
+  isLoadingTableMetadata: boolean;
+  selectedTable: InspectableTable | null;
+  tables: InspectableTableSummary[];
   selectedTableKey: string | null;
   onSelectTable: (tableKey: string | null) => void;
   tablesError: string;
@@ -1352,8 +1589,6 @@ function DataInspector({
   const [saveError, setSaveError] = useState('');
   const [saveMessage, setSaveMessage] = useState('');
 
-  const selectedTable =
-    tables.find((table) => table.fullName === selectedTableKey) ?? null;
   const activePrimaryKey =
     rowsState?.primaryKey ?? selectedTable?.primaryKey ?? [];
   const hasDirtyChanges =
@@ -1728,7 +1963,11 @@ function DataInspector({
               value: table.fullName,
             }))}
             disabled={isLoadingTables}
-            leftSection={isLoadingTables ? <Loader size={14} /> : null}
+            leftSection={
+              isLoadingTables || isLoadingTableMetadata ? (
+                <Loader size={14} />
+              ) : null
+            }
             onChange={handleSelectTableChange}
             placeholder={
               isLoadingTables ? 'Loading database tables...' : 'Select table'
@@ -1799,6 +2038,17 @@ function DataInspector({
         </Alert>
       ) : null}
 
+      {isLoadingTableMetadata ? (
+        <Alert
+          color="blue"
+          icon={<Loader size={16} />}
+          title="Loading table metadata"
+          variant="light"
+        >
+          Reading selected table columns, primary key, privileges, and geometry.
+        </Alert>
+      ) : null}
+
       {rowsError ? (
         <Text c="red" size="sm">
           {rowsError}
@@ -1817,7 +2067,7 @@ function DataInspector({
         </Alert>
       ) : null}
 
-      {!selectedTable && isLoadingTables ? (
+      {!selectedTable && (isLoadingTables || isLoadingTableMetadata) ? (
         <Center
           style={{
             flex: 1,
@@ -1827,15 +2077,17 @@ function DataInspector({
           <Stack align="center" gap="xs">
             <Loader size="sm" />
             <Text c="dimmed" size="sm">
-              Reading table catalog...
+              {isLoadingTableMetadata
+                ? 'Reading table metadata...'
+                : 'Reading table catalog...'}
             </Text>
           </Stack>
         </Center>
       ) : null}
 
-      {!selectedTable && !isLoadingTables ? (
+      {!selectedTable && !isLoadingTables && !isLoadingTableMetadata ? (
         <EmptyState
-          detail="Choose one table from loaded database objects."
+          detail="Choose schemas from the selected connection catalog first."
           label="No Table Selected"
         />
       ) : null}
@@ -2383,9 +2635,19 @@ export function App() {
   );
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
-  const [tables, setTables] = useState<InspectableTable[]>([]);
-  const [isLoadingTables, setIsLoadingTables] = useState(false);
-  const [tablesError, setTablesError] = useState('');
+  const [schemas, setSchemas] = useState<InspectableSchema[]>([]);
+  const [schemaTablesByName, setSchemaTablesByName] =
+    useState<SchemaTablesByName>({});
+  const [tableMetadataByKey, setTableMetadataByKey] = useState<
+    Record<string, InspectableTable>
+  >({});
+  const [selectedSchemaNames, setSelectedSchemaNames] = useState<string[]>([]);
+  const [expandedSchemaNames, setExpandedSchemaNames] = useState<string[]>([]);
+  const [isLoadingSchemas, setIsLoadingSchemas] = useState(false);
+  const [loadingSchemaTablesByName, setLoadingSchemaTablesByName] =
+    useState<LoadingSchemaTablesByName>({});
+  const [isLoadingTableMetadata, setIsLoadingTableMetadata] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
 
   const selectedConnection =
     connections.find((connection) => connection.id === selectedConnectionId) ??
@@ -2393,8 +2655,22 @@ export function App() {
   const selectedTableKey = selectedConnectionId
     ? (selectedTableByConnectionId[selectedConnectionId] ?? null)
     : null;
-  const selectedInspectableTable =
-    tables.find((table) => table.fullName === selectedTableKey) ?? null;
+  const selectedInspectableTable = selectedTableKey
+    ? (tableMetadataByKey[selectedTableKey] ?? null)
+    : null;
+  const visibleTableOptions = selectedSchemaNames.flatMap(
+    (schemaName) => schemaTablesByName[schemaName] ?? [],
+  );
+  const metadataTables = Object.values(tableMetadataByKey);
+  const catalog: CatalogState = {
+    schemas,
+    schemaTablesByName,
+    selectedSchemaNames,
+    expandedSchemaNames,
+    isLoadingSchemas,
+    loadingSchemaTablesByName,
+    error: catalogError,
+  };
 
   function handleSelectTable(tableKey: string | null) {
     if (!selectedConnectionId) {
@@ -2402,6 +2678,90 @@ export function App() {
     }
 
     setSelectedTable(selectedConnectionId, tableKey);
+  }
+
+  async function loadCatalogSchemas() {
+    if (!selectedConnection || selectedConnection.testStatus !== 'success') {
+      return;
+    }
+
+    setIsLoadingSchemas(true);
+    setCatalogError('');
+
+    try {
+      const nextSchemas = await fetchInspectableSchemas(selectedConnection);
+      setSchemas(nextSchemas);
+    } catch (error) {
+      setCatalogError(
+        error instanceof Error ? error.message : 'Failed to load schemas.',
+      );
+    } finally {
+      setIsLoadingSchemas(false);
+    }
+  }
+
+  async function loadSchemaTables(schemaName: string) {
+    if (!selectedConnection || schemaTablesByName[schemaName]) {
+      return;
+    }
+
+    setLoadingSchemaTablesByName((current) => ({
+      ...current,
+      [schemaName]: true,
+    }));
+    setCatalogError('');
+
+    try {
+      const nextTables = await fetchInspectableSchemaTables(
+        selectedConnection,
+        schemaName,
+      );
+      setSchemaTablesByName((current) => ({
+        ...current,
+        [schemaName]: nextTables,
+      }));
+    } catch (error) {
+      setCatalogError(
+        error instanceof Error
+          ? error.message
+          : `Failed to load tables for ${schemaName}.`,
+      );
+    } finally {
+      setLoadingSchemaTablesByName((current) => ({
+        ...current,
+        [schemaName]: false,
+      }));
+    }
+  }
+
+  function handleToggleCatalogSchema(schemaName: string) {
+    setSelectedSchemaNames((current) => {
+      if (current.includes(schemaName)) {
+        if (selectedTableKey?.startsWith(`${schemaName}.`)) {
+          handleSelectTable(null);
+        }
+
+        return current.filter((name) => name !== schemaName);
+      }
+
+      void loadSchemaTables(schemaName);
+      return [...current, schemaName];
+    });
+
+    setExpandedSchemaNames((current) =>
+      current.includes(schemaName) ? current : [...current, schemaName],
+    );
+  }
+
+  function handleToggleCatalogSchemaExpanded(schemaName: string) {
+    setExpandedSchemaNames((current) => {
+      if (current.includes(schemaName)) {
+        return current.filter((name) => name !== schemaName);
+      }
+
+      void loadSchemaTables(schemaName);
+      return [...current, schemaName];
+    });
   }
 
   function handleImportSelectedTable() {
@@ -2465,63 +2825,98 @@ export function App() {
   );
 
   useEffect(() => {
+    void selectedConnectionId;
+    setSchemas([]);
+    setSchemaTablesByName({});
+    setTableMetadataByKey({});
+    setSelectedSchemaNames([]);
+    setExpandedSchemaNames([]);
+    setIsLoadingSchemas(false);
+    setLoadingSchemaTablesByName({});
+    setIsLoadingTableMetadata(false);
+    setCatalogError('');
+  }, [selectedConnectionId]);
+
+  useEffect(() => {
     if (!selectedConnection || selectedConnection.testStatus !== 'success') {
-      setTables([]);
-      setIsLoadingTables(false);
-      setTablesError('');
+      setSchemas([]);
+      setSchemaTablesByName({});
+      setTableMetadataByKey({});
+      setSelectedSchemaNames([]);
+      setExpandedSchemaNames([]);
+      setIsLoadingSchemas(false);
+      setLoadingSchemaTablesByName({});
+      setIsLoadingTableMetadata(false);
+      setCatalogError('');
+      return;
+    }
+
+    setCatalogError('');
+  }, [selectedConnection]);
+
+  useEffect(() => {
+    if (!selectedConnection || !selectedTableKey) {
+      setIsLoadingTableMetadata(false);
+      return;
+    }
+
+    const tableSummary = visibleTableOptions.find(
+      (table) => table.fullName === selectedTableKey,
+    );
+    if (!tableSummary || tableMetadataByKey[selectedTableKey]) {
       return;
     }
 
     const activeConnection = selectedConnection;
+    const activeTableSummary = tableSummary;
     let isActive = true;
 
-    async function loadTables() {
+    async function loadMetadata() {
+      setIsLoadingTableMetadata(true);
+      setCatalogError('');
+
       try {
-        setIsLoadingTables(true);
-        setTablesError('');
-        const nextTables = await fetchInspectableTables(activeConnection);
+        const metadata = await fetchTableMetadata(
+          activeConnection,
+          activeTableSummary.schema,
+          activeTableSummary.name,
+        );
         if (!isActive) {
           return;
         }
-        setTables(nextTables);
-        const nextSelectedTableKey =
-          selectedTableKey &&
-          nextTables.some((table) => table.fullName === selectedTableKey)
-            ? selectedTableKey
-            : (nextTables[0]?.fullName ?? null);
-        if (selectedConnectionId) {
-          setSelectedTable(selectedConnectionId, nextSelectedTableKey);
-        }
+        setTableMetadataByKey((current) => ({
+          ...current,
+          [metadata.fullName]: {
+            ...metadata,
+            rowEstimate: activeTableSummary.rowEstimate,
+          },
+        }));
       } catch (error) {
         if (!isActive) {
           return;
         }
-        setTables([]);
-        setTablesError(
+        setCatalogError(
           error instanceof Error
             ? error.message
-            : 'Failed to load inspectable tables.',
+            : 'Failed to load table metadata.',
         );
-        if (selectedConnectionId) {
-          setSelectedTable(selectedConnectionId, null);
-        }
       } finally {
         if (isActive) {
-          setIsLoadingTables(false);
+          setIsLoadingTableMetadata(false);
         }
       }
     }
 
-    void loadTables();
+    void loadMetadata();
 
     return () => {
       isActive = false;
     };
   }, [
     selectedConnection,
-    selectedConnectionId,
     selectedTableKey,
-    setSelectedTable,
+    tableMetadataByKey,
+    visibleTableOptions,
   ]);
 
   return (
@@ -2569,12 +2964,20 @@ export function App() {
           <Split.Pane initialWidth={280} maxWidth={480} minWidth={0}>
             <PanelFrame hint="Resizable" title="Data & Layers">
               <ConnectionManager
+                catalog={catalog}
                 mapLayers={selectedConnectionMapLayers}
                 mapSources={mapSources}
+                onLoadSchemas={() => void loadCatalogSchemas()}
                 onImportSelectedTable={handleImportSelectedTable}
                 onCreateFlowLayer={handleCreateFlowLayer}
+                onSelectCatalogTable={handleSelectTable}
+                onToggleCatalogSchema={handleToggleCatalogSchema}
+                onToggleCatalogSchemaExpanded={
+                  handleToggleCatalogSchemaExpanded
+                }
                 selectedInspectableTable={selectedInspectableTable}
-                tables={tables}
+                selectedTableKey={selectedTableKey}
+                tables={metadataTables}
               />
             </PanelFrame>
           </Split.Pane>
@@ -2604,11 +3007,16 @@ export function App() {
                 <PanelFrame hint="Resizable" title="Table">
                   <DataInspector
                     connection={selectedConnection}
-                    isLoadingTables={isLoadingTables}
+                    isLoadingTableMetadata={isLoadingTableMetadata}
+                    isLoadingTables={
+                      isLoadingSchemas ||
+                      Object.values(loadingSchemaTablesByName).some(Boolean)
+                    }
                     onSelectTable={handleSelectTable}
+                    selectedTable={selectedInspectableTable}
                     selectedTableKey={selectedTableKey}
-                    tablesError={tablesError}
-                    tables={tables}
+                    tablesError={catalogError}
+                    tables={visibleTableOptions}
                   />
                 </PanelFrame>
               </Split.Pane>

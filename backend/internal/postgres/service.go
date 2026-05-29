@@ -58,6 +58,25 @@ type ListTablesResult struct {
 	Tables []TableSummary `json:"tables"`
 }
 
+type SchemaSummary struct {
+	Name string `json:"name"`
+}
+
+type ListSchemasResult struct {
+	Schemas []SchemaSummary `json:"schemas"`
+}
+
+type SchemaTablesRequest struct {
+	ConnectionTestRequest
+	Schema string `json:"schema"`
+}
+
+type TableMetadataRequest struct {
+	ConnectionTestRequest
+	Schema string `json:"schema"`
+	Table  string `json:"table"`
+}
+
 type ListRowsRequest struct {
 	ConnectionTestRequest
 	Schema string `json:"schema"`
@@ -248,6 +267,17 @@ func (request *ListRowsRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 }
 
+func (request *SchemaTablesRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+}
+
+func (request *TableMetadataRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+}
+
 func (request *ListLayerFeaturesRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
@@ -315,6 +345,34 @@ func (request ListRowsRequest) Validate() error {
 
 	if request.Offset < 0 {
 		return errors.New("Offset must be zero or greater.")
+	}
+
+	return nil
+}
+
+func (request SchemaTablesRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	return nil
+}
+
+func (request TableMetadataRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
 	}
 
 	return nil
@@ -474,6 +532,92 @@ func (service *Service) TestConnection(
 	}, nil
 }
 
+func (service *Service) ListSchemas(
+	ctx context.Context,
+	request ConnectionTestRequest,
+) (*ListSchemasResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	rows, err := conn.Query(
+		timeoutCtx,
+		`
+		select n.nspname as schema_name
+		from pg_namespace n
+		where n.nspname not in ('pg_catalog', 'information_schema')
+		  and n.nspname not like 'pg_toast%'
+		  and n.nspname not like 'pg_temp_%'
+		  and exists (
+		    select 1
+		    from pg_class c
+		    where c.relnamespace = n.oid
+		      and c.relkind in ('r', 'p', 'v', 'm')
+		      and has_table_privilege(format('%I.%I', n.nspname, c.relname), 'SELECT')
+		  )
+		order by n.nspname
+		`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	schemas := make([]SchemaSummary, 0)
+	for rows.Next() {
+		var schema SchemaSummary
+		if err := rows.Scan(&schema.Name); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+		schemas = append(schemas, schema)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return &ListSchemasResult{
+		Schemas: schemas,
+	}, nil
+}
+
+func (service *Service) ListSchemaTables(
+	ctx context.Context,
+	request SchemaTablesRequest,
+) (*ListTablesResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	return service.listTableSummaries(timeoutCtx, conn, request.Schema)
+}
+
+func (service *Service) GetTableMetadata(
+	ctx context.Context,
+	request TableMetadataRequest,
+) (*TableSummary, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	return service.getTableMetadata(timeoutCtx, conn, request.Schema, request.Table)
+}
+
 func (service *Service) ListTables(
 	ctx context.Context,
 	request ConnectionTestRequest,
@@ -487,8 +631,45 @@ func (service *Service) ListTables(
 	}
 	defer conn.Close(context.Background())
 
-	rows, err := conn.Query(
-		timeoutCtx,
+	result, err := service.listTableSummaries(timeoutCtx, conn, "")
+	if err != nil {
+		return nil, err
+	}
+
+	tables := result.Tables
+	for index := range tables {
+		metadata, err := service.getTableMetadata(
+			timeoutCtx,
+			conn,
+			tables[index].Schema,
+			tables[index].Name,
+		)
+		if err != nil {
+			return nil, err
+		}
+		metadata.RowEstimate = tables[index].RowEstimate
+		tables[index] = *metadata
+	}
+
+	return &ListTablesResult{
+		Tables: tables,
+	}, nil
+}
+
+func (service *Service) listTableSummaries(
+	ctx context.Context,
+	runner queryRunner,
+	schema string,
+) (*ListTablesResult, error) {
+	schemaFilter := ""
+	parameters := make([]interface{}, 0, 1)
+	if schema != "" {
+		schemaFilter = " and n.nspname = $1"
+		parameters = append(parameters, schema)
+	}
+
+	rows, err := runner.Query(
+		ctx,
 		`
 		select
 		  n.nspname as schema_name,
@@ -512,8 +693,10 @@ func (service *Service) ListTables(
 		    and c.relname in ('spatial_ref_sys', 'geometry_columns', 'geography_columns')
 		  )
 		  and has_table_privilege(format('%I.%I', n.nspname, c.relname), 'SELECT')
+		`+schemaFilter+`
 		order by n.nspname, c.relname
 		`,
+		parameters...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
@@ -538,77 +721,65 @@ func (service *Service) ListTables(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
-	rows.Close()
-
-	for index := range tables {
-		access, err := service.getTableAccess(
-			timeoutCtx,
-			conn,
-			tables[index].Schema,
-			tables[index].Name,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		columnDefinitions, err := service.listColumnDefinitions(
-			timeoutCtx,
-			conn,
-			tables[index].Schema,
-			tables[index].Name,
-		)
-		if err != nil {
-			return nil, err
-		}
-		tables[index].Columns = make([]ColumnMeta, 0, len(columnDefinitions))
-		for _, column := range columnDefinitions {
-			tables[index].Columns = append(tables[index].Columns, ColumnMeta{
-				Name: column.Name,
-				Type: column.Type,
-			})
-		}
-
-		primaryKey, err := service.listPrimaryKeyColumns(
-			timeoutCtx,
-			conn,
-			tables[index].Schema,
-			tables[index].Name,
-		)
-		if err != nil {
-			return nil, err
-		}
-		tables[index].PrimaryKey = primaryKey
-		tables[index].IsEditable = isEditableTable(access, primaryKey)
-
-		geometryDefinitions, err := service.listGeometryColumns(
-			timeoutCtx,
-			conn,
-			tables[index].Schema,
-			tables[index].Name,
-		)
-		if err != nil {
-			return nil, err
-		}
-		tables[index].GeometryColumns = make(
-			[]GeometryColumnMeta,
-			0,
-			len(geometryDefinitions),
-		)
-		for _, geometryColumn := range geometryDefinitions {
-			tables[index].GeometryColumns = append(
-				tables[index].GeometryColumns,
-				GeometryColumnMeta{
-					Name:         geometryColumn.Name,
-					StorageType:  geometryColumn.StorageType,
-					GeometryType: geometryColumn.GeometryType,
-					SRID:         geometryColumn.SRID,
-				},
-			)
-		}
-	}
 
 	return &ListTablesResult{
 		Tables: tables,
+	}, nil
+}
+
+func (service *Service) getTableMetadata(
+	ctx context.Context,
+	runner queryRunner,
+	schema string,
+	table string,
+) (*TableSummary, error) {
+	access, err := service.getTableAccess(ctx, runner, schema, table)
+	if err != nil {
+		return nil, err
+	}
+
+	columnDefinitions, err := service.listColumnDefinitions(ctx, runner, schema, table)
+	if err != nil {
+		return nil, err
+	}
+
+	columns := make([]ColumnMeta, 0, len(columnDefinitions))
+	for _, column := range columnDefinitions {
+		columns = append(columns, ColumnMeta{
+			Name: column.Name,
+			Type: column.Type,
+		})
+	}
+
+	primaryKey, err := service.listPrimaryKeyColumns(ctx, runner, schema, table)
+	if err != nil {
+		return nil, err
+	}
+
+	geometryDefinitions, err := service.listGeometryColumns(ctx, runner, schema, table)
+	if err != nil {
+		return nil, err
+	}
+
+	geometryColumns := make([]GeometryColumnMeta, 0, len(geometryDefinitions))
+	for _, geometryColumn := range geometryDefinitions {
+		geometryColumns = append(geometryColumns, GeometryColumnMeta{
+			Name:         geometryColumn.Name,
+			StorageType:  geometryColumn.StorageType,
+			GeometryType: geometryColumn.GeometryType,
+			SRID:         geometryColumn.SRID,
+		})
+	}
+
+	return &TableSummary{
+		Schema:          schema,
+		Name:            table,
+		FullName:        fmt.Sprintf("%s.%s", schema, table),
+		Kind:            access.Kind,
+		PrimaryKey:      primaryKey,
+		IsEditable:      isEditableTable(access, primaryKey),
+		Columns:         columns,
+		GeometryColumns: geometryColumns,
 	}, nil
 }
 
