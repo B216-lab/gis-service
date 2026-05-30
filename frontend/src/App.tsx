@@ -47,13 +47,16 @@ import {
   IconRestore,
   IconRoute,
   IconSettings,
+  IconSearch,
   IconTable,
   IconTrash,
+  IconX,
 } from '@tabler/icons-react';
 import {
   type ChangeEvent,
   type ReactNode,
   startTransition,
+  useDeferredValue,
   useEffect,
   useState,
 } from 'react';
@@ -2100,6 +2103,9 @@ function DataInspector({
   const [isSavingChanges, setIsSavingChanges] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveMessage, setSaveMessage] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [appliedSearch, setAppliedSearch] = useState('');
+  const deferredSearchInput = useDeferredValue(searchInput);
 
   const activePrimaryKey =
     rowsState?.primaryKey ?? selectedTable?.primaryKey ?? [];
@@ -2144,6 +2150,11 @@ function DataInspector({
   }, [onSelectTable, selectedTableKey, tables]);
 
   useEffect(() => {
+    setSearchInput('');
+    setAppliedSearch('');
+  }, [selectedTableKey]);
+
+  useEffect(() => {
     if (!connection || !selectedTable) {
       setRowsState(null);
       setRowsError('');
@@ -2172,6 +2183,7 @@ function DataInspector({
           activeTable,
           offset,
           pageSize,
+          appliedSearch,
         );
 
         if (!isActive) {
@@ -2200,7 +2212,23 @@ function DataInspector({
     return () => {
       isActive = false;
     };
-  }, [connection, rowsRefreshToken, selectedTable]);
+  }, [appliedSearch, connection, rowsRefreshToken, selectedTable]);
+
+  useEffect(() => {
+    const nextSearch = deferredSearchInput.trim();
+    if (nextSearch === appliedSearch) {
+      return;
+    }
+
+    if (!confirmDraftReset('changing search filter')) {
+      setSearchInput(appliedSearch);
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
+    setAppliedSearch(nextSearch);
+  }, [appliedSearch, deferredSearchInput]);
 
   async function handlePageChange(nextOffset: number) {
     if (!connection || !selectedTable) {
@@ -2223,6 +2251,7 @@ function DataInspector({
         selectedTable,
         nextOffset,
         pageSize,
+        appliedSearch,
       );
       setRowsState(payload);
     } catch (error) {
@@ -2468,7 +2497,7 @@ function DataInspector({
   return (
     <Stack h="100%" gap="sm">
       <Group justify="space-between" wrap="nowrap">
-        <Group grow>
+        <Group grow wrap="nowrap">
           <Select
             data={tables.map((table) => ({
               label: table.fullName,
@@ -2485,6 +2514,26 @@ function DataInspector({
               isLoadingTables ? 'Loading database tables...' : 'Select table'
             }
             value={selectedTableKey}
+          />
+          <TextInput
+            clearable
+            leftSection={<IconSearch size={14} />}
+            onChange={(event) => setSearchInput(event.currentTarget.value)}
+            placeholder="Search rows"
+            rightSection={
+              searchInput ? (
+                <ActionIcon
+                  aria-label="Clear search"
+                  color="gray"
+                  onClick={() => setSearchInput('')}
+                  size="sm"
+                  variant="subtle"
+                >
+                  <IconX size={14} />
+                </ActionIcon>
+              ) : null
+            }
+            value={searchInput}
           />
         </Group>
         <Group gap="xs" wrap="nowrap">
@@ -2629,6 +2678,11 @@ function DataInspector({
               >
                 {rowsState.isEditable ? 'Editable draft' : 'Read only'}
               </Badge>
+              {appliedSearch ? (
+                <Badge color="blue" size="sm" variant="light">
+                  Search: {appliedSearch}
+                </Badge>
+              ) : null}
             </Group>
             <Group gap="xs">
               {hasDirtyChanges ? (
@@ -2655,237 +2709,250 @@ function DataInspector({
             </Alert>
           ) : null}
 
-          <ScrollArea
-            offsetScrollbars
-            scrollbarSize={8}
-            style={{
-              flex: 1,
-              minHeight: 0,
-            }}
-          >
-            <Table
-              highlightOnHover
-              stickyHeader
-              stickyHeaderOffset={0}
-              striped
-              withColumnBorders
+          {rowsState.rows.length === 0 && draftInserts.length === 0 ? (
+            <EmptyState
+              detail={
+                appliedSearch
+                  ? 'No rows match current search.'
+                  : 'Selected page has no rows.'
+              }
+              label={appliedSearch ? 'No Matches' : 'No Rows'}
+            />
+          ) : (
+            <ScrollArea
+              offsetScrollbars
+              scrollbarSize={8}
+              style={{
+                flex: 1,
+                minHeight: 0,
+              }}
             >
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th
-                    style={{
-                      minWidth: 120,
-                    }}
-                  >
-                    Row
-                  </Table.Th>
-                  {rowsState.columns.map((column) => (
+              <Table
+                highlightOnHover
+                stickyHeader
+                stickyHeaderOffset={0}
+                striped
+                withColumnBorders
+              >
+                <Table.Thead>
+                  <Table.Tr>
                     <Table.Th
-                      key={column.name}
                       style={{
-                        minWidth: 160,
-                        whiteSpace: 'nowrap',
+                        minWidth: 120,
                       }}
                     >
-                      <Stack gap={0}>
-                        <Text fw={600} size="sm">
-                          {column.name}
-                        </Text>
-                        <Text c="dimmed" size="xs">
-                          {column.type}
-                        </Text>
-                      </Stack>
+                      Row
                     </Table.Th>
-                  ))}
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {draftInserts.map((draftRow) => (
-                  <Table.Tr
-                    key={draftRow.id}
-                    style={{
-                      background: 'rgba(18, 184, 134, 0.08)',
-                    }}
-                  >
-                    <Table.Td>
-                      <Group gap={6} wrap="nowrap">
-                        <Badge color="teal" size="xs" variant="light">
-                          New
-                        </Badge>
-                        <ActionIcon
-                          aria-label="Remove new row"
-                          color="red"
-                          onClick={() =>
-                            handleRemoveDraftInsertRow(draftRow.id)
-                          }
-                          size="sm"
-                          variant="subtle"
-                        >
-                          <IconTrash size={14} />
-                        </ActionIcon>
-                      </Group>
-                    </Table.Td>
                     {rowsState.columns.map((column) => (
-                      <Table.Td
-                        key={`${draftRow.id}-${column.name}`}
+                      <Table.Th
+                        key={column.name}
                         style={{
-                          fontFamily: getCellFontFamily(
-                            column.name,
-                            column.type,
-                          ),
-                          maxWidth: 320,
-                          textAlign: getCellTextAlign(column.type),
-                          verticalAlign: 'top',
+                          minWidth: 160,
+                          whiteSpace: 'nowrap',
                         }}
                       >
-                        {isEditableColumnType(column.type) ? (
-                          renderEditableCell({
-                            column,
-                            onChange: (nextValue) =>
-                              handleDraftInsertChange(
-                                draftRow.id,
-                                column,
-                                nextValue,
-                              ),
-                            value: draftRow.values[column.name],
-                          })
-                        ) : (
-                          <Text c="dimmed" size="sm">
-                            Auto / read only
+                        <Stack gap={0}>
+                          <Text fw={600} size="sm">
+                            {column.name}
                           </Text>
-                        )}
-                      </Table.Td>
+                          <Text c="dimmed" size="xs">
+                            {column.type}
+                          </Text>
+                        </Stack>
+                      </Table.Th>
                     ))}
                   </Table.Tr>
-                ))}
-
-                {rowsState.rows.map((row) => {
-                  const rowToken = serializeRowKey(
-                    row.rowKey,
-                    rowsState.primaryKey,
-                  );
-                  const rowPatch = rowToken
-                    ? draftUpdates[rowToken]
-                    : undefined;
-                  const isDeleted = rowToken
-                    ? Boolean(draftDeletes[rowToken])
-                    : false;
-                  const rowRenderKey =
-                    rowToken ??
-                    JSON.stringify([
-                      rowsState.offset,
-                      rowsState.primaryKey,
-                      row.values,
-                    ]);
-
-                  return (
+                </Table.Thead>
+                <Table.Tbody>
+                  {draftInserts.map((draftRow) => (
                     <Table.Tr
-                      key={rowRenderKey}
+                      key={draftRow.id}
                       style={{
-                        background: isDeleted
-                          ? 'rgba(224, 49, 49, 0.08)'
-                          : rowPatch
-                            ? 'rgba(250, 176, 5, 0.08)'
-                            : undefined,
+                        background: 'rgba(18, 184, 134, 0.08)',
                       }}
                     >
                       <Table.Td>
                         <Group gap={6} wrap="nowrap">
-                          {isDeleted ? (
-                            <Badge color="red" size="xs" variant="light">
-                              Delete
-                            </Badge>
-                          ) : rowPatch ? (
-                            <Badge color="orange" size="xs" variant="light">
-                              Edit
-                            </Badge>
-                          ) : (
-                            <Badge color="gray" size="xs" variant="light">
-                              Live
-                            </Badge>
-                          )}
-                          {rowsState.isEditable && row.rowKey ? (
-                            <ActionIcon
-                              aria-label={
-                                isDeleted
-                                  ? 'Restore row'
-                                  : 'Mark row for delete'
-                              }
-                              color={isDeleted ? 'gray' : 'red'}
-                              onClick={() => handleToggleDeleteExistingRow(row)}
-                              size="sm"
-                              variant="subtle"
-                            >
-                              {isDeleted ? (
-                                <IconRestore size={14} />
-                              ) : (
-                                <IconTrash size={14} />
-                              )}
-                            </ActionIcon>
-                          ) : null}
+                          <Badge color="teal" size="xs" variant="light">
+                            New
+                          </Badge>
+                          <ActionIcon
+                            aria-label="Remove new row"
+                            color="red"
+                            onClick={() =>
+                              handleRemoveDraftInsertRow(draftRow.id)
+                            }
+                            size="sm"
+                            variant="subtle"
+                          >
+                            <IconTrash size={14} />
+                          </ActionIcon>
                         </Group>
                       </Table.Td>
-                      {rowsState.columns.map((column) => {
-                        const displayValue =
-                          rowPatch && column.name in rowPatch
-                            ? rowPatch[column.name]
-                            : row.values[column.name];
-                        const isEditableCell =
-                          rowsState.isEditable &&
-                          Boolean(row.rowKey) &&
-                          isEditableColumnType(column.type) &&
-                          !rowsState.primaryKey.includes(column.name);
-
-                        return (
-                          <Table.Td
-                            key={`${rowRenderKey}-${column.name}`}
-                            style={{
-                              fontFamily: getCellFontFamily(
-                                column.name,
-                                column.type,
-                              ),
-                              maxWidth: 320,
-                              textAlign: getCellTextAlign(column.type),
-                              verticalAlign: 'top',
-                            }}
-                          >
-                            {isEditableCell ? (
-                              renderEditableCell({
-                                column,
-                                disabled: isDeleted || isSavingChanges,
-                                onChange: (nextValue) =>
-                                  handleExistingCellChange(
-                                    row,
-                                    column,
-                                    nextValue,
-                                  ),
-                                value: displayValue,
-                              })
-                            ) : (
-                              <Text
-                                lineClamp={3}
-                                size="sm"
-                                style={{
-                                  opacity: isDeleted ? 0.55 : 1,
-                                  textDecoration: isDeleted
-                                    ? 'line-through'
-                                    : undefined,
-                                  whiteSpace: 'pre-wrap',
-                                  wordBreak: 'break-word',
-                                }}
-                              >
-                                {formatCellValue(displayValue)}
-                              </Text>
-                            )}
-                          </Table.Td>
-                        );
-                      })}
+                      {rowsState.columns.map((column) => (
+                        <Table.Td
+                          key={`${draftRow.id}-${column.name}`}
+                          style={{
+                            fontFamily: getCellFontFamily(
+                              column.name,
+                              column.type,
+                            ),
+                            maxWidth: 320,
+                            textAlign: getCellTextAlign(column.type),
+                            verticalAlign: 'top',
+                          }}
+                        >
+                          {isEditableColumnType(column.type) ? (
+                            renderEditableCell({
+                              column,
+                              onChange: (nextValue) =>
+                                handleDraftInsertChange(
+                                  draftRow.id,
+                                  column,
+                                  nextValue,
+                                ),
+                              value: draftRow.values[column.name],
+                            })
+                          ) : (
+                            <Text c="dimmed" size="sm">
+                              Auto / read only
+                            </Text>
+                          )}
+                        </Table.Td>
+                      ))}
                     </Table.Tr>
-                  );
-                })}
-              </Table.Tbody>
-            </Table>
-          </ScrollArea>
+                  ))}
+
+                  {rowsState.rows.map((row) => {
+                    const rowToken = serializeRowKey(
+                      row.rowKey,
+                      rowsState.primaryKey,
+                    );
+                    const rowPatch = rowToken
+                      ? draftUpdates[rowToken]
+                      : undefined;
+                    const isDeleted = rowToken
+                      ? Boolean(draftDeletes[rowToken])
+                      : false;
+                    const rowRenderKey =
+                      rowToken ??
+                      JSON.stringify([
+                        rowsState.offset,
+                        rowsState.primaryKey,
+                        row.values,
+                      ]);
+
+                    return (
+                      <Table.Tr
+                        key={rowRenderKey}
+                        style={{
+                          background: isDeleted
+                            ? 'rgba(224, 49, 49, 0.08)'
+                            : rowPatch
+                              ? 'rgba(250, 176, 5, 0.08)'
+                              : undefined,
+                        }}
+                      >
+                        <Table.Td>
+                          <Group gap={6} wrap="nowrap">
+                            {isDeleted ? (
+                              <Badge color="red" size="xs" variant="light">
+                                Delete
+                              </Badge>
+                            ) : rowPatch ? (
+                              <Badge color="orange" size="xs" variant="light">
+                                Edit
+                              </Badge>
+                            ) : (
+                              <Badge color="gray" size="xs" variant="light">
+                                Live
+                              </Badge>
+                            )}
+                            {rowsState.isEditable && row.rowKey ? (
+                              <ActionIcon
+                                aria-label={
+                                  isDeleted
+                                    ? 'Restore row'
+                                    : 'Mark row for delete'
+                                }
+                                color={isDeleted ? 'gray' : 'red'}
+                                onClick={() =>
+                                  handleToggleDeleteExistingRow(row)
+                                }
+                                size="sm"
+                                variant="subtle"
+                              >
+                                {isDeleted ? (
+                                  <IconRestore size={14} />
+                                ) : (
+                                  <IconTrash size={14} />
+                                )}
+                              </ActionIcon>
+                            ) : null}
+                          </Group>
+                        </Table.Td>
+                        {rowsState.columns.map((column) => {
+                          const displayValue =
+                            rowPatch && column.name in rowPatch
+                              ? rowPatch[column.name]
+                              : row.values[column.name];
+                          const isEditableCell =
+                            rowsState.isEditable &&
+                            Boolean(row.rowKey) &&
+                            isEditableColumnType(column.type) &&
+                            !rowsState.primaryKey.includes(column.name);
+
+                          return (
+                            <Table.Td
+                              key={`${rowRenderKey}-${column.name}`}
+                              style={{
+                                fontFamily: getCellFontFamily(
+                                  column.name,
+                                  column.type,
+                                ),
+                                maxWidth: 320,
+                                textAlign: getCellTextAlign(column.type),
+                                verticalAlign: 'top',
+                              }}
+                            >
+                              {isEditableCell ? (
+                                renderEditableCell({
+                                  column,
+                                  disabled: isDeleted || isSavingChanges,
+                                  onChange: (nextValue) =>
+                                    handleExistingCellChange(
+                                      row,
+                                      column,
+                                      nextValue,
+                                    ),
+                                  value: displayValue,
+                                })
+                              ) : (
+                                <Text
+                                  lineClamp={3}
+                                  size="sm"
+                                  style={{
+                                    opacity: isDeleted ? 0.55 : 1,
+                                    textDecoration: isDeleted
+                                      ? 'line-through'
+                                      : undefined,
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-word',
+                                  }}
+                                >
+                                  {formatCellValue(displayValue)}
+                                </Text>
+                              )}
+                            </Table.Td>
+                          );
+                        })}
+                      </Table.Tr>
+                    );
+                  })}
+                </Table.Tbody>
+              </Table>
+            </ScrollArea>
+          )}
 
           <Group justify="space-between">
             <Button
