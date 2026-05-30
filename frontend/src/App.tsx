@@ -12,6 +12,7 @@ import {
   Group,
   Loader,
   Modal,
+  NumberInput,
   Paper,
   PasswordInput,
   ScrollArea,
@@ -52,6 +53,7 @@ import {
 import {
   type DatabaseConnection,
   type FlowmapMapLayer,
+  type FlowmapTableSource,
   type GeoJsonMapLayer,
   type LayerGlyphIcon,
   type MapLayer,
@@ -134,10 +136,26 @@ function findLayerSource(sources: MapSource[], layer: MapLayer) {
   return sources.find((source) => source.id === layer.sourceId) ?? null;
 }
 
-function guessColumnName(columns: InspectorColumn[], patterns: RegExp[]) {
+function formatFlowmapSourceColumns(columns: FlowmapTableSource['columns']) {
+  const departure =
+    columns.startMode === 'geometry'
+      ? columns.startGeometry
+      : `${columns.startLat}/${columns.startLon}`;
+  const destination =
+    columns.endMode === 'geometry'
+      ? columns.endGeometry
+      : `${columns.endLat}/${columns.endLon}`;
+  const density = columns.magnitude || columns.defaultMagnitude;
+
+  return `${departure} -> ${destination} • density ${density}`;
+}
+
+function findNumericColumnName(columns: InspectorColumn[], patterns: RegExp[]) {
   return (
-    columns.find((column) =>
-      patterns.some((pattern) => pattern.test(column.name)),
+    columns.find(
+      (column) =>
+        isNumericColumnType(column.type) &&
+        patterns.some((pattern) => pattern.test(column.name)),
     )?.name ?? null
   );
 }
@@ -147,26 +165,105 @@ function createFlowLayerDefaults(table: InspectableTable | null) {
 
   return {
     name: table ? `${table.name} flows` : 'Flow layer',
-    startLon: guessColumnName(columns, [
+    startMode: 'coordinates',
+    startLon: findNumericColumnName(columns, [
       /(start|origin|from).*(lon|lng|long|x)/i,
       /^src_?(lon|lng|long|x)$/i,
     ]),
-    startLat: guessColumnName(columns, [
+    startLat: findNumericColumnName(columns, [
       /(start|origin|from).*(lat|y)/i,
       /^src_?(lat|y)$/i,
     ]),
-    endLon: guessColumnName(columns, [
+    startGeometry: table?.geometryColumns[0]?.name ?? null,
+    endMode: 'coordinates',
+    endLon: findNumericColumnName(columns, [
       /(end|dest|to).*(lon|lng|long|x)/i,
       /^dst_?(lon|lng|long|x)$/i,
     ]),
-    endLat: guessColumnName(columns, [
+    endLat: findNumericColumnName(columns, [
       /(end|dest|to).*(lat|y)/i,
       /^dst_?(lat|y)$/i,
     ]),
-    magnitude: guessColumnName(columns, [
-      /magnitude|count|weight|value|volume|amount|total/i,
-    ]),
-  };
+    endGeometry: table?.geometryColumns[0]?.name ?? null,
+    magnitude: null,
+    defaultMagnitude: 1,
+  } satisfies FlowLayerFormState;
+}
+
+type FlowPointMode = 'coordinates' | 'geometry';
+
+interface FlowLayerFormState {
+  name: string;
+  startMode: FlowPointMode;
+  startLon: string | null;
+  startLat: string | null;
+  startGeometry: string | null;
+  endMode: FlowPointMode;
+  endLon: string | null;
+  endLat: string | null;
+  endGeometry: string | null;
+  magnitude: string | null;
+  defaultMagnitude: number;
+}
+
+function validateFlowLayerForm(
+  form: FlowLayerFormState,
+  table: InspectableTable | null,
+) {
+  const messages: string[] = [];
+  const columnByName = new Map(
+    (table?.columns ?? []).map((column) => [column.name, column]),
+  );
+  const numericFields: Array<[string, string | null]> = [];
+
+  if (!table) {
+    messages.push('Select a table with numeric coordinate columns first.');
+    return messages;
+  }
+
+  if (!form.name.trim()) {
+    messages.push('Layer name is required.');
+  }
+
+  if (!form.magnitude && form.defaultMagnitude <= 0) {
+    messages.push('Default density must be greater than zero.');
+  }
+
+  if (form.startMode === 'geometry') {
+    if (!form.startGeometry) {
+      messages.push('Departure geometry column is required.');
+    }
+  } else {
+    numericFields.push(
+      ['Departure longitude', form.startLon],
+      ['Departure latitude', form.startLat],
+    );
+  }
+
+  if (form.endMode === 'geometry') {
+    if (!form.endGeometry) {
+      messages.push('Destination geometry column is required.');
+    }
+  } else {
+    numericFields.push(
+      ['Destination longitude', form.endLon],
+      ['Destination latitude', form.endLat],
+    );
+  }
+
+  for (const [label, columnName] of numericFields) {
+    if (!columnName) {
+      messages.push(`${label} column is required.`);
+      continue;
+    }
+
+    const column = columnByName.get(columnName);
+    if (!column || !isNumericColumnType(column.type)) {
+      messages.push(`${label} must use a numeric column.`);
+    }
+  }
+
+  return messages;
 }
 
 function PanelFrame({
@@ -286,11 +383,16 @@ function ConnectionManager({
   onImportSelectedTable: () => void;
   onCreateFlowLayer: (payload: {
     name: string;
+    startMode: 'coordinates' | 'geometry';
     startLon: string;
     startLat: string;
+    startGeometry: string;
+    endMode: 'coordinates' | 'geometry';
     endLon: string;
     endLat: string;
+    endGeometry: string;
     magnitude: string;
+    defaultMagnitude: number;
   }) => void;
   onSelectCatalogTable: (tableKey: string) => void;
   onToggleCatalogSchema: (schemaName: string) => void;
@@ -304,9 +406,10 @@ function ConnectionManager({
   const [catalogOpened, catalogDisclosure] = useDisclosure(false);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
   const [form, setForm] = useState<ConnectionFormState>(initialConnectionForm);
-  const [flowLayerForm, setFlowLayerForm] = useState(() =>
+  const [flowLayerForm, setFlowLayerForm] = useState<FlowLayerFormState>(() =>
     createFlowLayerDefaults(selectedInspectableTable),
   );
+  const [flowLayerError, setFlowLayerError] = useState('');
   const connections = useConnectionStore((state) => state.connections);
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
@@ -339,9 +442,13 @@ function ConnectionManager({
   const updateGeoJsonSource = useConnectionStore(
     (state) => state.updateGeoJsonSource,
   );
+  const updateFlowmapSource = useConnectionStore(
+    (state) => state.updateFlowmapSource,
+  );
   const updateFlowmapLayer = useConnectionStore(
     (state) => state.updateFlowmapLayer,
   );
+  const removeMapLayer = useConnectionStore((state) => state.removeMapLayer);
 
   const activeConnections = connections.filter(
     (connection) => connection.isActive,
@@ -350,16 +457,37 @@ function ConnectionManager({
     selectedInspectableTable &&
       selectedInspectableTable.geometryColumns.length > 0,
   );
-  const flowColumnOptions = (selectedInspectableTable?.columns ?? []).map(
-    (column) => ({
+  const numericColumnOptions = (selectedInspectableTable?.columns ?? [])
+    .filter((column) => isNumericColumnType(column.type))
+    .map((column) => ({
       label: `${column.name} (${column.type})`,
       value: column.name,
-    }),
-  );
+    }));
   const canCreateFlowLayer = Boolean(selectedInspectableTable);
+  const canSubmitFlowLayer = Boolean(
+    flowLayerForm.name.trim() &&
+      (flowLayerForm.startMode === 'geometry'
+        ? flowLayerForm.startGeometry
+        : flowLayerForm.startLon && flowLayerForm.startLat) &&
+      (flowLayerForm.endMode === 'geometry'
+        ? flowLayerForm.endGeometry
+        : flowLayerForm.endLon && flowLayerForm.endLat) &&
+      (flowLayerForm.magnitude || flowLayerForm.defaultMagnitude > 0),
+  );
+  const geometryColumnOptions = (
+    selectedInspectableTable?.geometryColumns ?? []
+  ).map((column) => ({
+    label: `${column.name} (${column.geometryType})`,
+    value: column.name,
+  }));
+  const flowValidationMessages = validateFlowLayerForm(
+    flowLayerForm,
+    selectedInspectableTable,
+  );
 
   useEffect(() => {
     setFlowLayerForm(createFlowLayerDefaults(selectedInspectableTable));
+    setFlowLayerError('');
   }, [selectedInspectableTable]);
 
   function handleFieldChange(event: ChangeEvent<HTMLInputElement>) {
@@ -377,6 +505,7 @@ function ConnectionManager({
 
   function handleOpenFlowLayerModal() {
     setFlowLayerForm(createFlowLayerDefaults(selectedInspectableTable));
+    setFlowLayerError('');
     flowLayerModal.open();
   }
 
@@ -416,24 +545,31 @@ function ConnectionManager({
   }
 
   function handleCreateFlowLayer() {
-    if (
-      !flowLayerForm.name.trim() ||
-      !flowLayerForm.startLon ||
-      !flowLayerForm.startLat ||
-      !flowLayerForm.endLon ||
-      !flowLayerForm.endLat ||
-      !flowLayerForm.magnitude
-    ) {
+    const validationMessages = validateFlowLayerForm(
+      flowLayerForm,
+      selectedInspectableTable,
+    );
+    if (validationMessages.length > 0) {
+      setFlowLayerError(validationMessages[0]);
+      return;
+    }
+
+    if (!canSubmitFlowLayer) {
       return;
     }
 
     onCreateFlowLayer({
       name: flowLayerForm.name.trim(),
-      startLon: flowLayerForm.startLon,
-      startLat: flowLayerForm.startLat,
-      endLon: flowLayerForm.endLon,
-      endLat: flowLayerForm.endLat,
-      magnitude: flowLayerForm.magnitude,
+      startMode: flowLayerForm.startMode,
+      startLon: flowLayerForm.startLon ?? '',
+      startLat: flowLayerForm.startLat ?? '',
+      startGeometry: flowLayerForm.startGeometry ?? '',
+      endMode: flowLayerForm.endMode,
+      endLon: flowLayerForm.endLon ?? '',
+      endLat: flowLayerForm.endLat ?? '',
+      endGeometry: flowLayerForm.endGeometry ?? '',
+      magnitude: flowLayerForm.magnitude ?? '',
+      defaultMagnitude: flowLayerForm.defaultMagnitude,
     });
     handleCloseFlowLayerModal();
   }
@@ -572,66 +708,198 @@ function ConnectionManager({
             }
             value={flowLayerForm.name}
           />
+
+          <Stack gap="xs">
+            <Group grow>
+              <Select
+                data={[
+                  { label: 'Lon/lat columns', value: 'coordinates' },
+                  { label: 'Geometry column', value: 'geometry' },
+                ]}
+                label="Departure point"
+                onChange={(value) =>
+                  setFlowLayerForm((current) => ({
+                    ...current,
+                    startMode:
+                      value === 'geometry' ? 'geometry' : 'coordinates',
+                  }))
+                }
+                value={flowLayerForm.startMode}
+              />
+              <Select
+                data={[
+                  { label: 'Lon/lat columns', value: 'coordinates' },
+                  { label: 'Geometry column', value: 'geometry' },
+                ]}
+                label="Destination point"
+                onChange={(value) =>
+                  setFlowLayerForm((current) => ({
+                    ...current,
+                    endMode: value === 'geometry' ? 'geometry' : 'coordinates',
+                  }))
+                }
+                value={flowLayerForm.endMode}
+              />
+            </Group>
+
+            {flowLayerForm.startMode === 'geometry' ? (
+              <Select
+                data={geometryColumnOptions}
+                error={flowValidationMessages.some((message) =>
+                  message.includes('Departure geometry'),
+                )}
+                label="Departure geometry"
+                onChange={(value) =>
+                  setFlowLayerForm((current) => ({
+                    ...current,
+                    startGeometry: value,
+                  }))
+                }
+                placeholder="Geometry point column"
+                searchable
+                value={flowLayerForm.startGeometry}
+              />
+            ) : (
+              <Group grow>
+                <Select
+                  data={numericColumnOptions}
+                  error={flowValidationMessages.some((message) =>
+                    message.includes('Departure longitude'),
+                  )}
+                  label="Departure longitude"
+                  onChange={(value) =>
+                    setFlowLayerForm((current) => ({
+                      ...current,
+                      startLon: value,
+                    }))
+                  }
+                  placeholder="Numeric lon/x column"
+                  searchable
+                  value={flowLayerForm.startLon}
+                />
+                <Select
+                  data={numericColumnOptions}
+                  error={flowValidationMessages.some((message) =>
+                    message.includes('Departure latitude'),
+                  )}
+                  label="Departure latitude"
+                  onChange={(value) =>
+                    setFlowLayerForm((current) => ({
+                      ...current,
+                      startLat: value,
+                    }))
+                  }
+                  placeholder="Numeric lat/y column"
+                  searchable
+                  value={flowLayerForm.startLat}
+                />
+              </Group>
+            )}
+
+            {flowLayerForm.endMode === 'geometry' ? (
+              <Select
+                data={geometryColumnOptions}
+                error={flowValidationMessages.some((message) =>
+                  message.includes('Destination geometry'),
+                )}
+                label="Destination geometry"
+                onChange={(value) =>
+                  setFlowLayerForm((current) => ({
+                    ...current,
+                    endGeometry: value,
+                  }))
+                }
+                placeholder="Geometry point column"
+                searchable
+                value={flowLayerForm.endGeometry}
+              />
+            ) : (
+              <Group grow>
+                <Select
+                  data={numericColumnOptions}
+                  error={flowValidationMessages.some((message) =>
+                    message.includes('Destination longitude'),
+                  )}
+                  label="Destination longitude"
+                  onChange={(value) =>
+                    setFlowLayerForm((current) => ({
+                      ...current,
+                      endLon: value,
+                    }))
+                  }
+                  placeholder="Numeric lon/x column"
+                  searchable
+                  value={flowLayerForm.endLon}
+                />
+                <Select
+                  data={numericColumnOptions}
+                  error={flowValidationMessages.some((message) =>
+                    message.includes('Destination latitude'),
+                  )}
+                  label="Destination latitude"
+                  onChange={(value) =>
+                    setFlowLayerForm((current) => ({
+                      ...current,
+                      endLat: value,
+                    }))
+                  }
+                  placeholder="Numeric lat/y column"
+                  searchable
+                  value={flowLayerForm.endLat}
+                />
+              </Group>
+            )}
+          </Stack>
+
           <Select
-            data={flowColumnOptions}
-            label="Start longitude"
-            onChange={(value) =>
-              setFlowLayerForm((current) => ({
-                ...current,
-                startLon: value,
-              }))
-            }
-            value={flowLayerForm.startLon}
-          />
-          <Select
-            data={flowColumnOptions}
-            label="Start latitude"
-            onChange={(value) =>
-              setFlowLayerForm((current) => ({
-                ...current,
-                startLat: value,
-              }))
-            }
-            value={flowLayerForm.startLat}
-          />
-          <Select
-            data={flowColumnOptions}
-            label="End longitude"
-            onChange={(value) =>
-              setFlowLayerForm((current) => ({
-                ...current,
-                endLon: value,
-              }))
-            }
-            value={flowLayerForm.endLon}
-          />
-          <Select
-            data={flowColumnOptions}
-            label="End latitude"
-            onChange={(value) =>
-              setFlowLayerForm((current) => ({
-                ...current,
-                endLat: value,
-              }))
-            }
-            value={flowLayerForm.endLat}
-          />
-          <Select
-            data={flowColumnOptions}
-            label="Magnitude"
+            data={numericColumnOptions}
+            error={flowValidationMessages.some((message) =>
+              message.includes('Density'),
+            )}
+            label="Density column"
             onChange={(value) =>
               setFlowLayerForm((current) => ({
                 ...current,
                 magnitude: value,
               }))
             }
+            placeholder="Optional numeric weight/count column"
+            clearable
+            searchable
             value={flowLayerForm.magnitude}
           />
+          <NumberInput
+            decimalScale={3}
+            disabled={Boolean(flowLayerForm.magnitude)}
+            error={flowValidationMessages.some((message) =>
+              message.includes('Default density'),
+            )}
+            label="Default density"
+            min={0.001}
+            onChange={(value) =>
+              setFlowLayerForm((current) => ({
+                ...current,
+                defaultMagnitude: typeof value === 'number' ? value : 1,
+              }))
+            }
+            value={flowLayerForm.defaultMagnitude}
+          />
+
+          {flowLayerError ? (
+            <Alert color="red" title="Flow setup incomplete" variant="light">
+              {flowLayerError}
+            </Alert>
+          ) : null}
           <Group justify="space-between" pt="xs">
             <Text c="dimmed" size="xs">
-              One table. Static read-only flows from coordinate columns.
+              One table. Static read-only flows from selected point columns.
             </Text>
-            <Button onClick={handleCreateFlowLayer}>Create layer</Button>
+            <Button
+              disabled={!canSubmitFlowLayer}
+              onClick={handleCreateFlowLayer}
+            >
+              Create layer
+            </Button>
           </Group>
         </Stack>
       </Modal>
@@ -910,7 +1178,7 @@ function ConnectionManager({
                           <Text c="dimmed" size="xs">
                             {source.type === 'geojson-table'
                               ? `${source.geometryColumn} • ${source.kind}`
-                              : `${source.columns.startLat}/${source.columns.startLon} → ${source.columns.endLat}/${source.columns.endLon}`}
+                              : formatFlowmapSourceColumns(source.columns)}
                           </Text>
                         </Stack>
                       </Group>
@@ -941,6 +1209,23 @@ function ConnectionManager({
                             <IconEyeOff size={16} />
                           )}
                         </ActionIcon>
+                        <ActionIcon
+                          aria-label={`Delete ${layer.name}`}
+                          color="red"
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Delete layer "${layer.name}" from map?`,
+                              )
+                            ) {
+                              removeMapLayer(layer.id);
+                            }
+                          }}
+                          size="sm"
+                          variant="subtle"
+                        >
+                          <IconTrash size={16} />
+                        </ActionIcon>
                       </Group>
                     </Group>
 
@@ -954,6 +1239,7 @@ function ConnectionManager({
                         source={source}
                         sourceTable={sourceTable}
                         onUpdateFlowmapLayer={updateFlowmapLayer}
+                        onUpdateFlowmapSource={updateFlowmapSource}
                         onUpdateGeoJsonLayer={updateGeoJsonLayer}
                         onUpdateGeoJsonSource={updateGeoJsonSource}
                       />
@@ -1152,11 +1438,156 @@ function ConnectionCatalog({
   );
 }
 
+function FlowmapSetupFields({
+  columns,
+  table,
+  onChange,
+}: {
+  columns: FlowmapTableSource['columns'];
+  table: InspectableTable | null;
+  onChange: (patch: Partial<FlowmapTableSource['columns']>) => void;
+}) {
+  const numericColumnOptions = (table?.columns ?? [])
+    .filter((column) => isNumericColumnType(column.type))
+    .map((column) => ({
+      label: `${column.name} (${column.type})`,
+      value: column.name,
+    }));
+  const geometryColumnOptions = (table?.geometryColumns ?? []).map(
+    (column) => ({
+      label: `${column.name} (${column.geometryType})`,
+      value: column.name,
+    }),
+  );
+
+  return (
+    <Stack gap="xs">
+      <Group grow>
+        <Select
+          data={[
+            { label: 'Lon/lat columns', value: 'coordinates' },
+            { label: 'Geometry column', value: 'geometry' },
+          ]}
+          label="Departure point"
+          onChange={(value) =>
+            onChange({
+              startMode: value === 'geometry' ? 'geometry' : 'coordinates',
+            })
+          }
+          size="xs"
+          value={columns.startMode}
+        />
+        <Select
+          data={[
+            { label: 'Lon/lat columns', value: 'coordinates' },
+            { label: 'Geometry column', value: 'geometry' },
+          ]}
+          label="Destination point"
+          onChange={(value) =>
+            onChange({
+              endMode: value === 'geometry' ? 'geometry' : 'coordinates',
+            })
+          }
+          size="xs"
+          value={columns.endMode}
+        />
+      </Group>
+
+      {columns.startMode === 'geometry' ? (
+        <Select
+          data={geometryColumnOptions}
+          label="Departure geometry"
+          onChange={(value) => onChange({ startGeometry: value ?? '' })}
+          searchable
+          size="xs"
+          value={columns.startGeometry}
+        />
+      ) : (
+        <Group grow>
+          <Select
+            data={numericColumnOptions}
+            label="Departure longitude"
+            onChange={(value) => onChange({ startLon: value ?? '' })}
+            searchable
+            size="xs"
+            value={columns.startLon}
+          />
+          <Select
+            data={numericColumnOptions}
+            label="Departure latitude"
+            onChange={(value) => onChange({ startLat: value ?? '' })}
+            searchable
+            size="xs"
+            value={columns.startLat}
+          />
+        </Group>
+      )}
+
+      {columns.endMode === 'geometry' ? (
+        <Select
+          data={geometryColumnOptions}
+          label="Destination geometry"
+          onChange={(value) => onChange({ endGeometry: value ?? '' })}
+          searchable
+          size="xs"
+          value={columns.endGeometry}
+        />
+      ) : (
+        <Group grow>
+          <Select
+            data={numericColumnOptions}
+            label="Destination longitude"
+            onChange={(value) => onChange({ endLon: value ?? '' })}
+            searchable
+            size="xs"
+            value={columns.endLon}
+          />
+          <Select
+            data={numericColumnOptions}
+            label="Destination latitude"
+            onChange={(value) => onChange({ endLat: value ?? '' })}
+            searchable
+            size="xs"
+            value={columns.endLat}
+          />
+        </Group>
+      )}
+
+      <Group grow>
+        <Select
+          data={numericColumnOptions}
+          label="Density column"
+          onChange={(value) => onChange({ magnitude: value ?? '' })}
+          placeholder="Optional"
+          clearable
+          searchable
+          size="xs"
+          value={columns.magnitude}
+        />
+        <NumberInput
+          decimalScale={3}
+          disabled={Boolean(columns.magnitude)}
+          label="Default density"
+          min={0.001}
+          onChange={(value) =>
+            onChange({
+              defaultMagnitude: typeof value === 'number' ? value : 1,
+            })
+          }
+          size="xs"
+          value={columns.defaultMagnitude}
+        />
+      </Group>
+    </Stack>
+  );
+}
+
 function MapLayerEditor({
   layer,
   source,
   sourceTable,
   onUpdateFlowmapLayer,
+  onUpdateFlowmapSource,
   onUpdateGeoJsonLayer,
   onUpdateGeoJsonSource,
 }: {
@@ -1170,6 +1601,10 @@ function MapLayerEditor({
       icon?: LayerGlyphIcon;
       style?: Partial<FlowmapMapLayer['style']>;
     },
+  ) => void;
+  onUpdateFlowmapSource: (
+    sourceId: string,
+    patch: Partial<FlowmapTableSource['columns']>,
   ) => void;
   onUpdateGeoJsonLayer: (
     layerId: string,
@@ -1355,6 +1790,26 @@ function MapLayerEditor({
 
       {layer.type === 'flowmap' ? (
         <>
+          {source.type === 'flowmap-table' ? (
+            <>
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                Data setup
+              </Text>
+              <FlowmapSetupFields
+                columns={source.columns}
+                onChange={(patch) =>
+                  startTransition(() => {
+                    onUpdateFlowmapSource(source.id, patch);
+                  })
+                }
+                table={sourceTable}
+              />
+            </>
+          ) : null}
+
+          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+            Visuals
+          </Text>
           <Select
             data={[
               { label: 'Curved', value: 'curved' },
@@ -2776,6 +3231,8 @@ export function App() {
       return;
     }
 
+    const geometryColumn = selectedInspectableTable.geometryColumns[0];
+
     addGeoJsonLayer({
       connectionId: selectedConnectionId,
       schema: selectedInspectableTable.schema,
@@ -2783,18 +3240,23 @@ export function App() {
       fullName: selectedInspectableTable.fullName,
       kind: selectedInspectableTable.kind,
       name: selectedInspectableTable.name,
-      geometryColumn: selectedInspectableTable.geometryColumns[0].name,
-      geometryType: selectedInspectableTable.geometryColumns[0].geometryType,
+      geometryColumn: geometryColumn.name,
+      geometryType: geometryColumn.geometryType,
     });
   }
 
   function handleCreateFlowLayer(payload: {
     name: string;
+    startMode: 'coordinates' | 'geometry';
     startLon: string;
     startLat: string;
+    startGeometry: string;
+    endMode: 'coordinates' | 'geometry';
     endLon: string;
     endLat: string;
+    endGeometry: string;
     magnitude: string;
+    defaultMagnitude: number;
   }) {
     if (!selectedConnectionId || !selectedInspectableTable) {
       return;
@@ -2808,11 +3270,16 @@ export function App() {
       kind: selectedInspectableTable.kind,
       name: payload.name,
       columns: {
+        startMode: payload.startMode,
         startLon: payload.startLon,
         startLat: payload.startLat,
+        startGeometry: payload.startGeometry,
+        endMode: payload.endMode,
         endLon: payload.endLon,
         endLat: payload.endLat,
+        endGeometry: payload.endGeometry,
         magnitude: payload.magnitude,
+        defaultMagnitude: payload.defaultMagnitude,
       },
     });
   }

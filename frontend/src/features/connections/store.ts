@@ -40,11 +40,16 @@ export interface FlowmapTableSource {
   fullName: string;
   kind: string;
   columns: {
+    startMode: 'coordinates' | 'geometry';
     startLon: string;
     startLat: string;
+    startGeometry: string;
+    endMode: 'coordinates' | 'geometry';
     endLon: string;
     endLat: string;
+    endGeometry: string;
     magnitude: string;
+    defaultMagnitude: number;
   };
 }
 
@@ -138,6 +143,7 @@ interface ConnectionStoreState {
     name: string;
     columns: FlowmapTableSource['columns'];
   }) => void;
+  removeMapLayer: (layerId: string) => void;
   toggleMapLayerVisibility: (layerId: string) => void;
   updateGeoJsonLayer: (
     layerId: string,
@@ -148,6 +154,10 @@ interface ConnectionStoreState {
   updateGeoJsonSource: (
     sourceId: string,
     patch: Partial<Pick<GeoJsonTableSource, 'geometryColumn' | 'geometryType'>>,
+  ) => void;
+  updateFlowmapSource: (
+    sourceId: string,
+    patch: Partial<FlowmapTableSource['columns']>,
   ) => void;
   updateFlowmapLayer: (
     layerId: string,
@@ -264,11 +274,16 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
 
   if (source.type === 'flowmap-table') {
     const columns = source.columns ?? {
+      startMode: 'coordinates',
       startLon: '',
       startLat: '',
+      startGeometry: '',
+      endMode: 'coordinates',
       endLon: '',
       endLat: '',
+      endGeometry: '',
       magnitude: '',
+      defaultMagnitude: 1,
     };
 
     return {
@@ -280,7 +295,18 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
       fullName:
         source.fullName ?? `${source.schema ?? 'public'}.${source.table ?? ''}`,
       kind: source.kind ?? 'table',
-      columns,
+      columns: {
+        startMode: columns.startMode ?? 'coordinates',
+        startLon: columns.startLon ?? '',
+        startLat: columns.startLat ?? '',
+        startGeometry: columns.startGeometry ?? '',
+        endMode: columns.endMode ?? 'coordinates',
+        endLon: columns.endLon ?? '',
+        endLat: columns.endLat ?? '',
+        endGeometry: columns.endGeometry ?? '',
+        magnitude: columns.magnitude ?? '',
+        defaultMagnitude: columns.defaultMagnitude ?? 1,
+      },
     };
   }
 
@@ -600,6 +626,31 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             ],
           };
         }),
+      removeMapLayer: (layerId) =>
+        set((state) => {
+          const removedLayer = state.mapLayers.find(
+            (layer) => layer.id === layerId,
+          );
+          const nextLayers = state.mapLayers.filter(
+            (layer) => layer.id !== layerId,
+          );
+
+          if (
+            !removedLayer ||
+            nextLayers.some((layer) => layer.sourceId === removedLayer.sourceId)
+          ) {
+            return {
+              mapLayers: nextLayers,
+            };
+          }
+
+          return {
+            mapLayers: nextLayers,
+            mapSources: state.mapSources.filter(
+              (source) => source.id !== removedLayer.sourceId,
+            ),
+          };
+        }),
       toggleMapLayerVisibility: (layerId) =>
         set((state) => ({
           mapLayers: state.mapLayers.map((layer) =>
@@ -621,6 +672,20 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           mapSources: state.mapSources.map((source) =>
             source.id === sourceId && source.type === 'geojson-table'
               ? { ...source, ...patch }
+              : source,
+          ),
+        })),
+      updateFlowmapSource: (sourceId, patch) =>
+        set((state) => ({
+          mapSources: state.mapSources.map((source) =>
+            source.id === sourceId && source.type === 'flowmap-table'
+              ? {
+                  ...source,
+                  columns: {
+                    ...source.columns,
+                    ...patch,
+                  },
+                }
               : source,
           ),
         })),
