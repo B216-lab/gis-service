@@ -81,6 +81,7 @@ type ListRowsRequest struct {
 	ConnectionTestRequest
 	Schema string `json:"schema"`
 	Table  string `json:"table"`
+	Search string `json:"search"`
 	Limit  int    `json:"limit"`
 	Offset int    `json:"offset"`
 }
@@ -270,6 +271,7 @@ func (request *ListRowsRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
+	request.Search = strings.TrimSpace(request.Search)
 }
 
 func (request *SchemaTablesRequest) TrimSpaces() {
@@ -862,6 +864,7 @@ func (service *Service) ListRows(
 
 	selectExpressions := make([]string, 0, len(columnDefinitions))
 	columns := make([]ColumnMeta, 0, len(columnDefinitions))
+	searchExpressions := make([]string, 0, len(columnDefinitions))
 
 	for _, column := range columnDefinitions {
 		selectExpressions = append(selectExpressions, columnSelectExpression(column))
@@ -869,6 +872,26 @@ func (service *Service) ListRows(
 			Name: column.Name,
 			Type: column.Type,
 		})
+		if isColumnSearchable(column) {
+			searchExpressions = append(searchExpressions, columnSearchExpression(column))
+		}
+	}
+
+	parameters := make([]interface{}, 0, 3)
+	whereClause := ""
+	if request.Search != "" && len(searchExpressions) > 0 {
+		parameters = append(parameters, "%"+request.Search+"%")
+		searchPlaceholder := fmt.Sprintf("$%d", len(parameters))
+		searchTerms := make([]string, 0, len(searchExpressions))
+
+		for _, expression := range searchExpressions {
+			searchTerms = append(
+				searchTerms,
+				fmt.Sprintf("%s ILIKE %s", expression, searchPlaceholder),
+			)
+		}
+
+		whereClause = fmt.Sprintf(" where (%s)", strings.Join(searchTerms, " or "))
 	}
 
 	orderByClause := ""
@@ -880,15 +903,22 @@ func (service *Service) ListRows(
 		orderByClause = fmt.Sprintf(" order by %s", strings.Join(orderedPrimaryKey, ", "))
 	}
 
+	parameters = append(parameters, request.Limit+1, request.Offset)
+	limitPlaceholder := fmt.Sprintf("$%d", len(parameters)-1)
+	offsetPlaceholder := fmt.Sprintf("$%d", len(parameters))
+
 	query := fmt.Sprintf(
-		`select %s from %s.%s%s limit $1 offset $2`,
+		`select %s from %s.%s%s%s limit %s offset %s`,
 		strings.Join(selectExpressions, ", "),
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
+		whereClause,
 		orderByClause,
+		limitPlaceholder,
+		offsetPlaceholder,
 	)
 
-	rows, err := conn.Query(timeoutCtx, query, request.Limit+1, request.Offset)
+	rows, err := conn.Query(timeoutCtx, query, parameters...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
@@ -1884,6 +1914,15 @@ func isColumnEditable(definition columnDefinition) bool {
 	}
 }
 
+func isColumnSearchable(definition columnDefinition) bool {
+	switch definition.UdtName {
+	case "geometry", "geography", "bytea":
+		return false
+	default:
+		return true
+	}
+}
+
 func convertColumnValue(
 	definition columnDefinition,
 	value interface{},
@@ -2002,6 +2041,12 @@ func columnSelectExpression(column columnDefinition) string {
 	}
 
 	return quotedName
+}
+
+func columnSearchExpression(column columnDefinition) string {
+	quotedName := quoteIdentifier(column.Name)
+
+	return fmt.Sprintf("%s::text", quotedName)
 }
 
 func quoteIdentifier(value string) string {

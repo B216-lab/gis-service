@@ -184,6 +184,7 @@ export async function fetchInspectorRows(
   table: InspectableTable,
   offset: number,
   limit: number,
+  search?: string,
 ) {
   const response = await fetch('/api/v1/database-connections/rows', {
     method: 'POST',
@@ -194,6 +195,7 @@ export async function fetchInspectorRows(
       ...connectionPayload(connection),
       schema: table.schema,
       table: table.name,
+      search,
       offset,
       limit,
     }),
