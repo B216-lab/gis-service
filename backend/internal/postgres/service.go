@@ -109,14 +109,19 @@ type ListLayerFeaturesRequest struct {
 
 type ListFlowmapDataRequest struct {
 	ConnectionTestRequest
-	Schema          string `json:"schema"`
-	Table           string `json:"table"`
-	StartLonColumn  string `json:"startLonColumn"`
-	StartLatColumn  string `json:"startLatColumn"`
-	EndLonColumn    string `json:"endLonColumn"`
-	EndLatColumn    string `json:"endLatColumn"`
-	MagnitudeColumn string `json:"magnitudeColumn"`
-	Limit           int    `json:"limit"`
+	Schema              string  `json:"schema"`
+	Table               string  `json:"table"`
+	StartMode           string  `json:"startMode"`
+	StartLonColumn      string  `json:"startLonColumn"`
+	StartLatColumn      string  `json:"startLatColumn"`
+	StartGeometryColumn string  `json:"startGeometryColumn"`
+	EndMode             string  `json:"endMode"`
+	EndLonColumn        string  `json:"endLonColumn"`
+	EndLatColumn        string  `json:"endLatColumn"`
+	EndGeometryColumn   string  `json:"endGeometryColumn"`
+	MagnitudeColumn     string  `json:"magnitudeColumn"`
+	DefaultMagnitude    float64 `json:"defaultMagnitude"`
+	Limit               int     `json:"limit"`
 }
 
 type ColumnMeta struct {
@@ -289,10 +294,14 @@ func (request *ListFlowmapDataRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
+	request.StartMode = strings.TrimSpace(request.StartMode)
 	request.StartLonColumn = strings.TrimSpace(request.StartLonColumn)
 	request.StartLatColumn = strings.TrimSpace(request.StartLatColumn)
+	request.StartGeometryColumn = strings.TrimSpace(request.StartGeometryColumn)
+	request.EndMode = strings.TrimSpace(request.EndMode)
 	request.EndLonColumn = strings.TrimSpace(request.EndLonColumn)
 	request.EndLatColumn = strings.TrimSpace(request.EndLatColumn)
+	request.EndGeometryColumn = strings.TrimSpace(request.EndGeometryColumn)
 	request.MagnitudeColumn = strings.TrimSpace(request.MagnitudeColumn)
 }
 
@@ -318,6 +327,15 @@ func (request *ListLayerFeaturesRequest) Normalize() {
 }
 
 func (request *ListFlowmapDataRequest) Normalize() {
+	if request.StartMode == "" {
+		request.StartMode = "coordinates"
+	}
+	if request.EndMode == "" {
+		request.EndMode = "coordinates"
+	}
+	if request.DefaultMagnitude <= 0 {
+		request.DefaultMagnitude = 1
+	}
 	if request.Limit <= 0 {
 		request.Limit = 1000
 	}
@@ -447,24 +465,36 @@ func (request ListFlowmapDataRequest) Validate() error {
 		return errors.New("Table is required.")
 	}
 
-	if request.StartLonColumn == "" {
-		return errors.New("Start longitude column is required.")
+	switch request.StartMode {
+	case "coordinates":
+		if request.StartLonColumn == "" {
+			return errors.New("Start longitude column is required.")
+		}
+		if request.StartLatColumn == "" {
+			return errors.New("Start latitude column is required.")
+		}
+	case "geometry":
+		if request.StartGeometryColumn == "" {
+			return errors.New("Start geometry column is required.")
+		}
+	default:
+		return errors.New("Start mode must be coordinates or geometry.")
 	}
 
-	if request.StartLatColumn == "" {
-		return errors.New("Start latitude column is required.")
-	}
-
-	if request.EndLonColumn == "" {
-		return errors.New("End longitude column is required.")
-	}
-
-	if request.EndLatColumn == "" {
-		return errors.New("End latitude column is required.")
-	}
-
-	if request.MagnitudeColumn == "" {
-		return errors.New("Magnitude column is required.")
+	switch request.EndMode {
+	case "coordinates":
+		if request.EndLonColumn == "" {
+			return errors.New("End longitude column is required.")
+		}
+		if request.EndLatColumn == "" {
+			return errors.New("End latitude column is required.")
+		}
+	case "geometry":
+		if request.EndGeometryColumn == "" {
+			return errors.New("End geometry column is required.")
+		}
+	default:
+		return errors.New("End mode must be coordinates or geometry.")
 	}
 
 	if request.Limit < 1 || request.Limit > 5000 {
@@ -1123,45 +1153,75 @@ func (service *Service) ListFlowmapData(
 		return nil, err
 	}
 
-	requiredColumns := []string{
-		request.StartLonColumn,
-		request.StartLatColumn,
-		request.EndLonColumn,
-		request.EndLatColumn,
-		request.MagnitudeColumn,
-	}
+	requiredColumns := request.flowmapColumnNames()
 	if err := validateColumnNames(columnDefinitions, requiredColumns); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	startLonExpression, startLatExpression := flowmapPointExpressions(
+		request.StartMode,
+		request.StartLonColumn,
+		request.StartLatColumn,
+		request.StartGeometryColumn,
+	)
+	endLonExpression, endLatExpression := flowmapPointExpressions(
+		request.EndMode,
+		request.EndLonColumn,
+		request.EndLatColumn,
+		request.EndGeometryColumn,
+	)
+	startNotNullColumns := flowmapRequiredPointColumns(
+		request.StartMode,
+		request.StartLonColumn,
+		request.StartLatColumn,
+		request.StartGeometryColumn,
+	)
+	endNotNullColumns := flowmapRequiredPointColumns(
+		request.EndMode,
+		request.EndLonColumn,
+		request.EndLatColumn,
+		request.EndGeometryColumn,
+	)
+	notNullColumns := append(startNotNullColumns, endNotNullColumns...)
+	if request.MagnitudeColumn != "" {
+		notNullColumns = append(notNullColumns, request.MagnitudeColumn)
+	}
+	notNullPredicates := make([]string, 0, len(notNullColumns))
+	for _, columnName := range notNullColumns {
+		notNullPredicates = append(
+			notNullPredicates,
+			fmt.Sprintf("%s is not null", quoteIdentifier(columnName)),
+		)
+	}
+
+	magnitudeExpression := fmt.Sprintf("%f::double precision", request.DefaultMagnitude)
+	if request.MagnitudeColumn != "" {
+		magnitudeExpression = fmt.Sprintf(
+			"%s::double precision",
+			quoteIdentifier(request.MagnitudeColumn),
+		)
 	}
 
 	query := fmt.Sprintf(
 		`
 		select
-		  %s::double precision as start_lon,
-		  %s::double precision as start_lat,
-		  %s::double precision as end_lon,
-		  %s::double precision as end_lat,
-		  %s::double precision as magnitude
+		  %s as start_lon,
+		  %s as start_lat,
+		  %s as end_lon,
+		  %s as end_lat,
+		  %s as magnitude
 		from %s.%s
-		where %s is not null
-		  and %s is not null
-		  and %s is not null
-		  and %s is not null
-		  and %s is not null
+		where %s
 		limit $1
 		`,
-		quoteIdentifier(request.StartLonColumn),
-		quoteIdentifier(request.StartLatColumn),
-		quoteIdentifier(request.EndLonColumn),
-		quoteIdentifier(request.EndLatColumn),
-		quoteIdentifier(request.MagnitudeColumn),
+		startLonExpression,
+		startLatExpression,
+		endLonExpression,
+		endLatExpression,
+		magnitudeExpression,
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
-		quoteIdentifier(request.StartLonColumn),
-		quoteIdentifier(request.StartLatColumn),
-		quoteIdentifier(request.EndLonColumn),
-		quoteIdentifier(request.EndLatColumn),
-		quoteIdentifier(request.MagnitudeColumn),
+		strings.Join(notNullPredicates, " and "),
 	)
 
 	rows, err := conn.Query(timeoutCtx, query, request.Limit)
@@ -1248,6 +1308,62 @@ func (service *Service) ListFlowmapData(
 		Locations:     locations,
 		Flows:         flows,
 	}, nil
+}
+
+func (request ListFlowmapDataRequest) flowmapColumnNames() []string {
+	columns := make([]string, 0, 5)
+	if request.MagnitudeColumn != "" {
+		columns = append(columns, request.MagnitudeColumn)
+	}
+	columns = append(
+		columns,
+		flowmapRequiredPointColumns(
+			request.StartMode,
+			request.StartLonColumn,
+			request.StartLatColumn,
+			request.StartGeometryColumn,
+		)...,
+	)
+	columns = append(
+		columns,
+		flowmapRequiredPointColumns(
+			request.EndMode,
+			request.EndLonColumn,
+			request.EndLatColumn,
+			request.EndGeometryColumn,
+		)...,
+	)
+
+	return columns
+}
+
+func flowmapRequiredPointColumns(
+	mode string,
+	lonColumn string,
+	latColumn string,
+	geometryColumn string,
+) []string {
+	if mode == "geometry" {
+		return []string{geometryColumn}
+	}
+
+	return []string{lonColumn, latColumn}
+}
+
+func flowmapPointExpressions(
+	mode string,
+	lonColumn string,
+	latColumn string,
+	geometryColumn string,
+) (string, string) {
+	if mode == "geometry" {
+		geometryExpression := fmt.Sprintf("%s::geometry", quoteIdentifier(geometryColumn))
+		return fmt.Sprintf("ST_X(%s)::double precision", geometryExpression),
+			fmt.Sprintf("ST_Y(%s)::double precision", geometryExpression)
+	}
+
+	return fmt.Sprintf("%s::double precision", quoteIdentifier(lonColumn)),
+		fmt.Sprintf("%s::double precision", quoteIdentifier(latColumn))
 }
 
 func (service *Service) applyTableOperation(
