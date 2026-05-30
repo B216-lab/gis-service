@@ -85,6 +85,13 @@ type ListRowsRequest struct {
 	Offset int    `json:"offset"`
 }
 
+type LookupRowsRequest struct {
+	ConnectionTestRequest
+	Schema  string                   `json:"schema"`
+	Table   string                   `json:"table"`
+	RowKeys []map[string]interface{} `json:"rowKeys"`
+}
+
 type CommitTableChangesRequest struct {
 	ConnectionTestRequest
 	Schema     string           `json:"schema"`
@@ -153,6 +160,21 @@ type RowRecord struct {
 	Values map[string]interface{} `json:"values"`
 }
 
+type RowReference struct {
+	PrimaryKey []string               `json:"primaryKey"`
+	RowKey     map[string]interface{} `json:"rowKey"`
+}
+
+type LookupRowsResult struct {
+	Schema            string       `json:"schema"`
+	Table             string       `json:"table"`
+	RequestedRowCount int          `json:"requestedRowCount"`
+	MatchedRowCount   int          `json:"matchedRowCount"`
+	PrimaryKey        []string     `json:"primaryKey"`
+	Columns           []ColumnMeta `json:"columns"`
+	Rows              []RowRecord  `json:"rows"`
+}
+
 type CommitTableChangesResult struct {
 	Schema  string `json:"schema"`
 	Table   string `json:"table"`
@@ -179,12 +201,14 @@ type FlowmapLocation struct {
 	Lat  float64 `json:"lat"`
 	Lon  float64 `json:"lon"`
 	Name string  `json:"name"`
+	RowRefs []RowReference `json:"rowRefs"`
 }
 
 type FlowmapFlow struct {
 	OriginID  string  `json:"originId"`
 	DestID    string  `json:"destId"`
 	Magnitude float64 `json:"magnitude"`
+	RowRef    *RowReference `json:"rowRef"`
 }
 
 type ListFlowmapDataResult struct {
@@ -272,6 +296,12 @@ func (request *ListRowsRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 }
 
+func (request *LookupRowsRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+}
+
 func (request *SchemaTablesRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
@@ -314,6 +344,12 @@ func (request *ListRowsRequest) Normalize() {
 	}
 	if request.Offset < 0 {
 		request.Offset = 0
+	}
+}
+
+func (request *LookupRowsRequest) Normalize() {
+	if len(request.RowKeys) > 50 {
+		request.RowKeys = request.RowKeys[:50]
 	}
 }
 
@@ -363,6 +399,26 @@ func (request ListRowsRequest) Validate() error {
 
 	if request.Offset < 0 {
 		return errors.New("Offset must be zero or greater.")
+	}
+
+	return nil
+}
+
+func (request LookupRowsRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	if len(request.RowKeys) == 0 {
+		return errors.New("At least one row key is required.")
 	}
 
 	return nil
@@ -937,6 +993,133 @@ func (service *Service) ListRows(
 	}, nil
 }
 
+func (service *Service) LookupRows(
+	ctx context.Context,
+	request LookupRowsRequest,
+) (*LookupRowsResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	columnDefinitions, err := service.listColumnDefinitions(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(columnDefinitions) == 0 {
+		return nil, fmt.Errorf("%w: no columns found for selected table", ErrConnectionFailed)
+	}
+
+	primaryKey, err := service.listPrimaryKeyColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	columnByName := make(map[string]columnDefinition, len(columnDefinitions))
+	selectExpressions := make([]string, 0, len(columnDefinitions))
+	columns := make([]ColumnMeta, 0, len(columnDefinitions))
+	for _, column := range columnDefinitions {
+		columnByName[column.Name] = column
+		selectExpressions = append(selectExpressions, columnSelectExpression(column))
+		columns = append(columns, ColumnMeta{
+			Name: column.Name,
+			Type: column.Type,
+		})
+	}
+
+	whereClauses := make([]string, 0, len(request.RowKeys))
+	parameters := make([]interface{}, 0, len(request.RowKeys)*max(1, len(primaryKey)))
+	for _, rowKey := range request.RowKeys {
+		if err := validateRowKey(rowKey, primaryKey); err != nil {
+			return nil, err
+		}
+
+		whereClause, whereParameters, err := buildPrimaryKeyFilter(
+			columnByName,
+			primaryKey,
+			rowKey,
+			len(parameters),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", whereClause))
+		parameters = append(parameters, whereParameters...)
+	}
+
+	query := fmt.Sprintf(
+		`select %s from %s.%s where %s`,
+		strings.Join(selectExpressions, ", "),
+		quoteIdentifier(request.Schema),
+		quoteIdentifier(request.Table),
+		strings.Join(whereClauses, " or "),
+	)
+
+	rows, err := conn.Query(timeoutCtx, query, parameters...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	recordsByToken := make(map[string]RowRecord, len(request.RowKeys))
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+
+		record := make(map[string]interface{}, len(columns))
+		for index, column := range columns {
+			record[column.Name] = normalizeValue(values[index])
+		}
+
+		rowRecord := RowRecord{
+			RowKey: buildRowKey(record, primaryKey),
+			Values: record,
+		}
+		recordsByToken[rowKeyToken(rowRecord.RowKey, primaryKey)] = rowRecord
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	orderedRows := make([]RowRecord, 0, len(recordsByToken))
+	for _, rowKey := range request.RowKeys {
+		record, ok := recordsByToken[rowKeyToken(rowKey, primaryKey)]
+		if !ok {
+			continue
+		}
+		orderedRows = append(orderedRows, record)
+	}
+
+	return &LookupRowsResult{
+		Schema:            request.Schema,
+		Table:             request.Table,
+		RequestedRowCount: len(request.RowKeys),
+		MatchedRowCount:   len(orderedRows),
+		PrimaryKey:        primaryKey,
+		Columns:           columns,
+		Rows:              orderedRows,
+	}, nil
+}
+
 func (service *Service) CommitTableChanges(
 	ctx context.Context,
 	request CommitTableChangesRequest,
@@ -1079,9 +1262,39 @@ func (service *Service) ListLayerFeatures(
 		)
 	}
 
+	primaryKey, err := service.listPrimaryKeyColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	propertyExpression := "to_jsonb(source_row)"
 	for _, geometryColumn := range geometryColumns {
 		propertyExpression += fmt.Sprintf(" - %s", quoteLiteral(geometryColumn.Name))
+	}
+
+	rowRefExpression := "'null'::jsonb"
+	if len(primaryKey) > 0 {
+		rowKeyParts := make([]string, 0, len(primaryKey)*2)
+		primaryKeyLiterals := make([]string, 0, len(primaryKey))
+		for _, columnName := range primaryKey {
+			rowKeyParts = append(
+				rowKeyParts,
+				quoteLiteral(columnName),
+				fmt.Sprintf("to_jsonb(source_row.%s)", quoteIdentifier(columnName)),
+			)
+			primaryKeyLiterals = append(primaryKeyLiterals, quoteLiteral(columnName))
+		}
+
+		rowRefExpression = fmt.Sprintf(
+			"jsonb_build_object('rowRef', jsonb_build_object('primaryKey', jsonb_build_array(%s), 'rowKey', jsonb_build_object(%s)))",
+			strings.Join(primaryKeyLiterals, ", "),
+			strings.Join(rowKeyParts, ", "),
+		)
 	}
 
 	query := fmt.Sprintf(
@@ -1090,7 +1303,7 @@ func (service *Service) ListLayerFeatures(
 		  select json_build_object(
 		    'type', 'Feature',
 		    'geometry', ST_AsGeoJSON(%s)::json,
-		    'properties', %s
+		    'properties', %s || jsonb_build_object('__geopanel', %s)
 		  ) as feature
 		  from %s.%s as source_row
 		  where %s is not null
@@ -1101,6 +1314,7 @@ func (service *Service) ListLayerFeatures(
 		`,
 		quoteIdentifier(request.GeometryColumn),
 		propertyExpression,
+		rowRefExpression,
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
 		quoteIdentifier(request.GeometryColumn),
@@ -1158,6 +1372,16 @@ func (service *Service) ListFlowmapData(
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
+	primaryKey, err := service.listPrimaryKeyColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	startLonExpression, startLatExpression := flowmapPointExpressions(
 		request.StartMode,
 		request.StartLonColumn,
@@ -1202,23 +1426,29 @@ func (service *Service) ListFlowmapData(
 		)
 	}
 
+	selectExpressions := []string{
+		fmt.Sprintf("%s as start_lon", startLonExpression),
+		fmt.Sprintf("%s as start_lat", startLatExpression),
+		fmt.Sprintf("%s as end_lon", endLonExpression),
+		fmt.Sprintf("%s as end_lat", endLatExpression),
+		fmt.Sprintf("%s as magnitude", magnitudeExpression),
+	}
+	for _, columnName := range primaryKey {
+		selectExpressions = append(
+			selectExpressions,
+			fmt.Sprintf("%s as %s", quoteIdentifier(columnName), quoteIdentifier(columnName)),
+		)
+	}
+
 	query := fmt.Sprintf(
 		`
 		select
-		  %s as start_lon,
-		  %s as start_lat,
-		  %s as end_lon,
-		  %s as end_lat,
-		  %s as magnitude
+		  %s
 		from %s.%s
 		where %s
 		limit $1
 		`,
-		startLonExpression,
-		startLatExpression,
-		endLonExpression,
-		endLatExpression,
-		magnitudeExpression,
+		strings.Join(selectExpressions, ",\n          "),
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
 		strings.Join(notNullPredicates, " and "),
@@ -1234,20 +1464,30 @@ func (service *Service) ListFlowmapData(
 	flows := make([]FlowmapFlow, 0)
 
 	for rows.Next() {
-		var startLon float64
-		var startLat float64
-		var endLon float64
-		var endLat float64
-		var magnitude float64
-
-		if err := rows.Scan(
-			&startLon,
-			&startLat,
-			&endLon,
-			&endLat,
-			&magnitude,
-		); err != nil {
+		values, err := rows.Values()
+		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+
+		startLon, ok := valueToFloat64(values[0])
+		if !ok {
+			continue
+		}
+		startLat, ok := valueToFloat64(values[1])
+		if !ok {
+			continue
+		}
+		endLon, ok := valueToFloat64(values[2])
+		if !ok {
+			continue
+		}
+		endLat, ok := valueToFloat64(values[3])
+		if !ok {
+			continue
+		}
+		magnitude, ok := valueToFloat64(values[4])
+		if !ok {
+			continue
 		}
 
 		if !isFiniteFloat(startLon) ||
@@ -1259,31 +1499,45 @@ func (service *Service) ListFlowmapData(
 			continue
 		}
 
+		record := make(map[string]interface{}, len(primaryKey))
+		for index, columnName := range primaryKey {
+			record[columnName] = normalizeValue(values[index+5])
+		}
+
+		rowRef := buildRowReference(record, primaryKey)
+
 		originID := makeFlowmapLocationID(startLon, startLat)
 		destID := makeFlowmapLocationID(endLon, endLat)
 
-		if _, exists := locationsByID[originID]; !exists {
-			locationsByID[originID] = FlowmapLocation{
+		originLocation, exists := locationsByID[originID]
+		if !exists {
+			originLocation = FlowmapLocation{
 				ID:   originID,
 				Lat:  startLat,
 				Lon:  startLon,
 				Name: fmt.Sprintf("%.6f, %.6f", startLat, startLon),
 			}
 		}
+		originLocation.RowRefs = appendRowReference(originLocation.RowRefs, rowRef)
+		locationsByID[originID] = originLocation
 
-		if _, exists := locationsByID[destID]; !exists {
-			locationsByID[destID] = FlowmapLocation{
+		destLocation, exists := locationsByID[destID]
+		if !exists {
+			destLocation = FlowmapLocation{
 				ID:   destID,
 				Lat:  endLat,
 				Lon:  endLon,
 				Name: fmt.Sprintf("%.6f, %.6f", endLat, endLon),
 			}
 		}
+		destLocation.RowRefs = appendRowReference(destLocation.RowRefs, rowRef)
+		locationsByID[destID] = destLocation
 
 		flows = append(flows, FlowmapFlow{
 			OriginID:  originID,
 			DestID:    destID,
 			Magnitude: magnitude,
+			RowRef:    rowRef,
 		})
 	}
 
@@ -1820,6 +2074,39 @@ func buildRowKey(
 	return rowKey
 }
 
+func buildRowReference(
+	record map[string]interface{},
+	primaryKey []string,
+) *RowReference {
+	rowKey := buildRowKey(record, primaryKey)
+	if rowKey == nil {
+		return nil
+	}
+
+	return &RowReference{
+		PrimaryKey: slices.Clone(primaryKey),
+		RowKey:     rowKey,
+	}
+}
+
+func appendRowReference(
+	rowRefs []RowReference,
+	rowRef *RowReference,
+) []RowReference {
+	if rowRef == nil {
+		return rowRefs
+	}
+
+	token := rowKeyToken(rowRef.RowKey, rowRef.PrimaryKey)
+	for _, existing := range rowRefs {
+		if rowKeyToken(existing.RowKey, existing.PrimaryKey) == token {
+			return rowRefs
+		}
+	}
+
+	return append(rowRefs, *rowRef)
+}
+
 func validateRowKey(
 	rowKey map[string]interface{},
 	primaryKey []string,
@@ -1869,6 +2156,19 @@ func buildPrimaryKeyFilter(
 	}
 
 	return strings.Join(whereParts, " and "), parameters, nil
+}
+
+func rowKeyToken(
+	rowKey map[string]interface{},
+	primaryKey []string,
+) string {
+	values := make([]interface{}, 0, len(primaryKey))
+	for _, columnName := range primaryKey {
+		values = append(values, rowKey[columnName])
+	}
+
+	encoded, _ := json.Marshal(values)
+	return string(encoded)
 }
 
 func isColumnEditable(definition columnDefinition) bool {
@@ -2034,5 +2334,32 @@ func normalizeValue(value interface{}) interface{} {
 		return string(typed)
 	default:
 		return typed
+	}
+}
+
+func valueToFloat64(value interface{}) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint:
+		return float64(typed), true
+	case uint16:
+		return float64(typed), true
+	case uint32:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	default:
+		return 0, false
 	}
 }

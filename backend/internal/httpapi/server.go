@@ -61,6 +61,10 @@ func (server *Server) routes() {
 		server.handleListRows,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/rows/lookup",
+		server.handleLookupRows,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/rows/commit",
 		server.handleCommitTableChanges,
 	)
@@ -332,6 +336,49 @@ func (server *Server) handleListRows(
 			writer,
 			err,
 			"database_row_fetch_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleLookupRows(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.LookupRowsRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+	payload.Normalize()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_row_lookup_request",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.LookupRows(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"database_row_lookup_failed",
 			"Unexpected server error.",
 		)
 		return

@@ -1,4 +1,5 @@
 import type { DatabaseConnection } from '../connections/store';
+import type { RowReference } from '../map/selection';
 
 export interface InspectableTable {
   schema: string;
@@ -44,6 +45,16 @@ export interface InspectorRowsResponse {
   hasMore: boolean;
   primaryKey: string[];
   isEditable: boolean;
+  columns: InspectorColumn[];
+  rows: InspectorRow[];
+}
+
+export interface InspectorLookupRowsResponse {
+  schema: string;
+  table: string;
+  requestedRowCount: number;
+  matchedRowCount: number;
+  primaryKey: string[];
   columns: InspectorColumn[];
   rows: InspectorRow[];
 }
@@ -202,6 +213,33 @@ export async function fetchInspectorRows(
   return await decodePayload<InspectorRowsResponse>(
     response,
     'Failed to load table rows.',
+  );
+}
+
+export async function fetchInspectorRowsByKey(
+  connection: DatabaseConnection,
+  payload: {
+    schema: string;
+    table: string;
+    rowRefs: RowReference[];
+  },
+) {
+  const response = await fetch('/api/v1/database-connections/rows/lookup', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...connectionPayload(connection),
+      schema: payload.schema,
+      table: payload.table,
+      rowKeys: payload.rowRefs.map((rowRef) => rowRef.rowKey),
+    }),
+  });
+
+  return await decodePayload<InspectorLookupRowsResponse>(
+    response,
+    'Failed to load selected rows.',
   );
 }
 

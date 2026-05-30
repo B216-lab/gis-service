@@ -24,6 +24,7 @@ import {
   fetchGeoJsonSourceData,
   type GeoJsonFeatureCollection,
 } from './api';
+import type { MapSelection, RowReference } from './selection';
 
 const defaultCenter: [number, number] = [104.295, 52.302];
 
@@ -234,6 +235,83 @@ function createFlowmapDeckLayer(
   });
 }
 
+function extractRowRefs(
+  rowRef: RowReference | null | undefined,
+  rowRefs: RowReference[] | null | undefined,
+) {
+  if (rowRefs && rowRefs.length > 0) {
+    return rowRefs;
+  }
+
+  return rowRef ? [rowRef] : [];
+}
+
+function buildMapSelection(
+  pickedObject: unknown,
+  layer: MapLayer,
+  source: MapSource,
+): MapSelection | null {
+  if (!pickedObject) {
+    return null;
+  }
+
+  if (source.type === 'geojson-table' && layer.type === 'geojson') {
+    const feature = pickedObject as {
+      properties?: Record<string, unknown> & {
+        __geopanel?: {
+          rowRef?: RowReference | null;
+        };
+      };
+    };
+    const inlineProperties = {
+      ...(feature.properties ?? {}),
+    };
+    delete inlineProperties.__geopanel;
+
+    return {
+      layerId: layer.id,
+      layerName: layer.name,
+      sourceId: source.id,
+      sourceType: source.type,
+      sourceFullName: source.fullName,
+      schema: source.schema,
+      table: source.table,
+      objectType: 'feature',
+      rowRefs: extractRowRefs(feature.properties?.__geopanel?.rowRef, null),
+      inlineProperties,
+      title: layer.name,
+    };
+  }
+
+  if (source.type === 'flowmap-table' && layer.type === 'flowmap') {
+    const flowObject = pickedObject as {
+      rowRef?: RowReference | null;
+      rowRefs?: RowReference[];
+      magnitude?: number;
+      name?: string;
+    };
+    const isLocationObject = Array.isArray(flowObject.rowRefs);
+
+    return {
+      layerId: layer.id,
+      layerName: layer.name,
+      sourceId: source.id,
+      sourceType: source.type,
+      sourceFullName: source.fullName,
+      schema: source.schema,
+      table: source.table,
+      objectType: isLocationObject ? 'location' : 'flow',
+      rowRefs: extractRowRefs(flowObject.rowRef, flowObject.rowRefs),
+      inlineProperties: null,
+      title:
+        flowObject.name ||
+        (isLocationObject ? `${layer.name} node` : `${layer.name} flow`),
+    };
+  }
+
+  return null;
+}
+
 async function fetchSourceData(
   connection: DatabaseConnection,
   source: MapSource,
@@ -258,10 +336,12 @@ export function MapPane({
   connection,
   visibleLayers,
   sources,
+  onSelectMapObject,
 }: {
   connection: DatabaseConnection | null;
   visibleLayers: MapLayer[];
   sources: MapSource[];
+  onSelectMapObject: (selection: MapSelection | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -337,6 +417,7 @@ export function MapPane({
       fittedSourceIdsRef.current = '';
       setLayerError('');
       setIsLoadingSources(false);
+      onSelectMapObject(null);
       return;
     }
 
@@ -345,6 +426,7 @@ export function MapPane({
       fittedSourceIdsRef.current = '';
       setLayerError('');
       setIsLoadingSources(false);
+      onSelectMapObject(null);
       return;
     }
 
@@ -420,7 +502,7 @@ export function MapPane({
       isActive = false;
       abortController.abort();
     };
-  }, [connection, isMapReady, visibleSources]);
+  }, [connection, isMapReady, onSelectMapObject, visibleSources]);
 
   useEffect(() => {
     if (!isMapReady || !overlayRef.current) {
@@ -431,6 +513,7 @@ export function MapPane({
 
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
+      onSelectMapObject(null);
       return;
     }
 
@@ -472,6 +555,34 @@ export function MapPane({
 
     overlayRef.current.setProps({
       layers: deckLayers as never,
+      onClick: (pickInfo: {
+        layer?: { id: string } | null;
+        object?: unknown;
+      }) => {
+        const pickedLayerId = pickInfo.layer?.id;
+        if (!pickedLayerId) {
+          onSelectMapObject(null);
+          return;
+        }
+
+        const layer = visibleLayers.find(
+          (candidate) => candidate.id === pickedLayerId,
+        );
+        if (!layer) {
+          onSelectMapObject(null);
+          return;
+        }
+
+        const source = sources.find(
+          (candidate) => candidate.id === layer.sourceId,
+        );
+        if (!source) {
+          onSelectMapObject(null);
+          return;
+        }
+
+        onSelectMapObject(buildMapSelection(pickInfo.object, layer, source));
+      },
     });
 
     const loadedSources = visibleSourceIds.flatMap((sourceId) => {
@@ -501,6 +612,7 @@ export function MapPane({
     visibleLayers,
     visibleSourceIds,
     visibleSourceSignature,
+    onSelectMapObject,
   ]);
 
   return (

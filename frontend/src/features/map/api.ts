@@ -3,6 +3,7 @@ import type {
   FlowmapTableSource,
   GeoJsonTableSource,
 } from '../connections/store';
+import type { RowReference } from './selection';
 
 export interface GeoJsonGeometry {
   type: string;
@@ -12,7 +13,11 @@ export interface GeoJsonGeometry {
 export interface GeoJsonFeature {
   type: 'Feature';
   geometry: GeoJsonGeometry | null;
-  properties: Record<string, unknown>;
+  properties: Record<string, unknown> & {
+    __geopanel?: {
+      rowRef: RowReference | null;
+    };
+  };
 }
 
 export interface GeoJsonFeatureCollection {
@@ -35,12 +40,14 @@ export interface FlowmapLocation {
   lat: number;
   lon: number;
   name: string;
+  rowRefs: RowReference[];
 }
 
 export interface FlowmapFlow {
   originId: string;
   destId: string;
   magnitude: number;
+  rowRef: RowReference | null;
 }
 
 export interface FlowmapDataResponse {

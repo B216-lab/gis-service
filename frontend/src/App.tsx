@@ -20,25 +20,33 @@ import {
   Slider,
   Stack,
   Table,
+  Tabs,
   Text,
   TextInput,
+  ThemeIcon,
   Title,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
+  IconChartBar,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconDatabasePlus,
+  IconDatabaseSearch,
   IconDeviceFloppy,
   IconEye,
   IconEyeOff,
   IconFolder,
+  IconInfoCircle,
+  IconLayersIntersect,
   IconPlug,
   IconPlugConnected,
   IconPlus,
   IconRefresh,
   IconRestore,
+  IconRoute,
+  IconSettings,
   IconTable,
   IconTrash,
 } from '@tabler/icons-react';
@@ -65,16 +73,19 @@ import {
   fetchInspectableSchemas,
   fetchInspectableSchemaTables,
   fetchInspectorRows,
+  fetchInspectorRowsByKey,
   fetchTableMetadata,
   type InspectableSchema,
   type InspectableTable,
   type InspectableTableSummary,
   type InspectorColumn,
+  type InspectorLookupRowsResponse,
   type InspectorRow,
   type InspectorRowsResponse,
   type TableChangeOperation,
 } from './features/inspector/api';
 import { MapPane } from './features/map/MapPane';
+import type { MapSelection } from './features/map/selection';
 
 const pageSize = 100;
 const emptyCellLabel = 'NULL';
@@ -95,6 +106,38 @@ interface CatalogState {
   isLoadingSchemas: boolean;
   loadingSchemaTablesByName: LoadingSchemaTablesByName;
   error: string;
+}
+
+type RightPaneTab = 'layer' | 'data' | 'analysis';
+
+function getMapSelectionBadgeColor(objectType: MapSelection['objectType']) {
+  switch (objectType) {
+    case 'feature':
+      return 'blue';
+    case 'flow':
+      return 'grape';
+    case 'location':
+      return 'teal';
+    default:
+      return 'gray';
+  }
+}
+
+function formatMapSelectionObjectType(objectType: MapSelection['objectType']) {
+  switch (objectType) {
+    case 'feature':
+      return 'Feature';
+    case 'flow':
+      return 'Flow';
+    case 'location':
+      return 'Location';
+    default:
+      return objectType;
+  }
+}
+
+function formatMapSelectionCount(count: number) {
+  return `${count} row${count === 1 ? '' : 's'}`;
 }
 
 function createDraftInsertId() {
@@ -363,12 +406,14 @@ const initialConnectionForm: ConnectionFormState = {
 };
 
 function ConnectionManager({
+  activeLayerId,
   catalog,
   mapLayers,
   mapSources,
   onLoadSchemas,
   onImportSelectedTable,
   onCreateFlowLayer,
+  onSelectLayer,
   onSelectCatalogTable,
   onToggleCatalogSchema,
   onToggleCatalogSchemaExpanded,
@@ -376,6 +421,7 @@ function ConnectionManager({
   selectedTableKey,
   tables,
 }: {
+  activeLayerId: string | null;
   catalog: CatalogState;
   mapLayers: MapLayer[];
   mapSources: MapSource[];
@@ -394,6 +440,7 @@ function ConnectionManager({
     magnitude: string;
     defaultMagnitude: number;
   }) => void;
+  onSelectLayer: (layerId: string) => void;
   onSelectCatalogTable: (tableKey: string) => void;
   onToggleCatalogSchema: (schemaName: string) => void;
   onToggleCatalogSchemaExpanded: (schemaName: string) => void;
@@ -1145,6 +1192,7 @@ function ConnectionManager({
                   null)
                 : null;
               const isExpanded = expandedLayerId === layer.id;
+              const isSelected = activeLayerId === layer.id;
 
               if (!source) {
                 return null;
@@ -1153,11 +1201,15 @@ function ConnectionManager({
               return (
                 <Paper
                   key={layer.id}
+                  onClick={() => onSelectLayer(layer.id)}
                   p="xs"
                   radius="md"
                   shadow="xs"
                   style={{
-                    border: '1px solid var(--mantine-color-gray-3)',
+                    border: isSelected
+                      ? '1px solid var(--mantine-color-blue-4)'
+                      : '1px solid var(--mantine-color-gray-3)',
+                    cursor: 'pointer',
                     opacity: layer.visible ? 1 : 0.55,
                   }}
                 >
@@ -1185,11 +1237,12 @@ function ConnectionManager({
 
                       <Group gap={4} wrap="nowrap">
                         <Button
-                          onClick={() =>
+                          onClick={(event) => {
+                            event.stopPropagation();
                             setExpandedLayerId((current) =>
                               current === layer.id ? null : layer.id,
-                            )
-                          }
+                            );
+                          }}
                           size="compact-xs"
                           variant="subtle"
                         >
@@ -1199,7 +1252,10 @@ function ConnectionManager({
                           aria-label={
                             layer.visible ? 'Hide layer' : 'Show layer'
                           }
-                          onClick={() => toggleMapLayerVisibility(layer.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleMapLayerVisibility(layer.id);
+                          }}
                           size="sm"
                           variant="subtle"
                         >
@@ -1212,7 +1268,8 @@ function ConnectionManager({
                         <ActionIcon
                           aria-label={`Delete ${layer.name}`}
                           color="red"
-                          onClick={() => {
+                          onClick={(event) => {
+                            event.stopPropagation();
                             if (
                               window.confirm(
                                 `Delete layer "${layer.name}" from map?`,
@@ -2874,6 +2931,596 @@ function DataInspector({
   );
 }
 
+function RightPaneTabs({
+  activeLayer,
+  activeSource,
+  connection,
+  mapSelection,
+  onChangeTab,
+  onOpenTable,
+  selectedTab,
+}: {
+  activeLayer: MapLayer | null;
+  activeSource: MapSource | null;
+  connection: DatabaseConnection | null;
+  mapSelection: MapSelection | null;
+  onChangeTab: (value: RightPaneTab) => void;
+  onOpenTable: (tableKey: string) => void | Promise<void>;
+  selectedTab: RightPaneTab;
+}) {
+  const selectedRowCount = mapSelection?.rowRefs.length ?? 0;
+
+  return (
+    <Tabs
+      h="100%"
+      keepMounted={false}
+      onChange={(value) => {
+        if (value === 'layer' || value === 'data' || value === 'analysis') {
+          onChangeTab(value);
+        }
+      }}
+      styles={{
+        root: {
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          minHeight: 0,
+        },
+        panel: {
+          flex: 1,
+          minHeight: 0,
+          paddingTop: 'var(--mantine-spacing-md)',
+        },
+      }}
+      value={selectedTab}
+    >
+      <Tabs.List grow>
+        <Tabs.Tab leftSection={<IconSettings size={14} />} value="layer">
+          Layer
+        </Tabs.Tab>
+        <Tabs.Tab
+          leftSection={<IconDatabaseSearch size={14} />}
+          rightSection={
+            selectedRowCount > 0 ? (
+              <Badge color="blue" size="xs" variant="light">
+                {selectedRowCount}
+              </Badge>
+            ) : null
+          }
+          value="data"
+        >
+          Data
+        </Tabs.Tab>
+        <Tabs.Tab leftSection={<IconChartBar size={14} />} value="analysis">
+          Analysis
+        </Tabs.Tab>
+      </Tabs.List>
+
+      <Tabs.Panel value="layer">
+        <LayerWorkspacePanel
+          activeLayer={activeLayer}
+          activeSource={activeSource}
+          mapSelection={mapSelection}
+        />
+      </Tabs.Panel>
+
+      <Tabs.Panel value="data">
+        <DataWorkspacePanel
+          connection={connection}
+          mapSelection={mapSelection}
+          onOpenTable={onOpenTable}
+        />
+      </Tabs.Panel>
+
+      <Tabs.Panel value="analysis">
+        <AnalysisWorkspacePanel
+          activeLayer={activeLayer}
+          activeSource={activeSource}
+          mapSelection={mapSelection}
+        />
+      </Tabs.Panel>
+    </Tabs>
+  );
+}
+
+function LayerWorkspacePanel({
+  activeLayer,
+  activeSource,
+  mapSelection,
+}: {
+  activeLayer: MapLayer | null;
+  activeSource: MapSource | null;
+  mapSelection: MapSelection | null;
+}) {
+  if (!activeLayer || !activeSource) {
+    return (
+      <EmptyState
+        detail="Select layer from left panel or click map object to set active layer."
+        label="No Active Layer"
+      />
+    );
+  }
+
+  return (
+    <Stack h="100%" gap="md">
+      <Paper p="md" radius="md" withBorder>
+        <Stack gap="sm">
+          <Group justify="space-between" wrap="nowrap">
+            <Group gap="sm" wrap="nowrap">
+              <ThemeIcon color="blue" radius="xl" size="lg" variant="light">
+                <IconLayersIntersect size={16} />
+              </ThemeIcon>
+              <div>
+                <Text fw={700} size="sm">
+                  {activeLayer.name}
+                </Text>
+                <Text c="dimmed" size="xs">
+                  {activeSource.schema}.{activeSource.table}
+                </Text>
+              </div>
+            </Group>
+            <Badge
+              color={activeLayer.visible ? 'teal' : 'gray'}
+              variant="light"
+            >
+              {activeLayer.visible ? 'Visible' : 'Hidden'}
+            </Badge>
+          </Group>
+
+          <Group gap="xs">
+            <Badge color="gray" variant="outline">
+              {activeLayer.type}
+            </Badge>
+            <Badge color="gray" variant="outline">
+              {activeSource.type}
+            </Badge>
+            {mapSelection?.layerId === activeLayer.id ? (
+              <Badge color="blue" variant="light">
+                Current map selection
+              </Badge>
+            ) : null}
+          </Group>
+        </Stack>
+      </Paper>
+
+      <Alert
+        color="blue"
+        icon={<IconInfoCircle size={16} />}
+        title="Layer controls next"
+        variant="light"
+      >
+        Right pane owns layer settings next. Existing style editor stays in left
+        pane for now so data inspection can land without blocking that move.
+      </Alert>
+
+      <Paper
+        p="md"
+        radius="md"
+        style={{
+          flex: 1,
+          minHeight: 0,
+        }}
+        withBorder
+      >
+        <Stack gap="xs">
+          <Text fw={600} size="sm">
+            Source summary
+          </Text>
+          <Text c="dimmed" size="sm">
+            Table: {activeSource.fullName}
+          </Text>
+          {activeSource.type === 'geojson-table' ? (
+            <Text c="dimmed" size="sm">
+              Geometry: {activeSource.geometryColumn} (
+              {activeSource.geometryType})
+            </Text>
+          ) : (
+            <Text c="dimmed" size="sm">
+              Flow columns: {formatFlowmapSourceColumns(activeSource.columns)}
+            </Text>
+          )}
+        </Stack>
+      </Paper>
+    </Stack>
+  );
+}
+
+function DataWorkspacePanel({
+  connection,
+  mapSelection,
+  onOpenTable,
+}: {
+  connection: DatabaseConnection | null;
+  mapSelection: MapSelection | null;
+  onOpenTable: (tableKey: string) => void | Promise<void>;
+}) {
+  const [lookupState, setLookupState] =
+    useState<InspectorLookupRowsResponse | null>(null);
+  const [isLoadingLookup, setIsLoadingLookup] = useState(false);
+  const [lookupError, setLookupError] = useState('');
+
+  useEffect(() => {
+    if (!connection || !mapSelection || mapSelection.rowRefs.length === 0) {
+      setLookupState(null);
+      setLookupError('');
+      setIsLoadingLookup(false);
+      return;
+    }
+
+    const activeConnection = connection;
+    const activeSelection = mapSelection;
+    let isActive = true;
+    const requestedRowRefs = activeSelection.rowRefs.slice(0, 25);
+
+    async function loadSelectedRows() {
+      setIsLoadingLookup(true);
+      setLookupError('');
+
+      try {
+        const payload = await fetchInspectorRowsByKey(activeConnection, {
+          schema: activeSelection.schema,
+          table: activeSelection.table,
+          rowRefs: requestedRowRefs,
+        });
+
+        if (!isActive) {
+          return;
+        }
+
+        setLookupState(payload);
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+
+        setLookupError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to load selected rows.',
+        );
+      } finally {
+        if (isActive) {
+          setIsLoadingLookup(false);
+        }
+      }
+    }
+
+    void loadSelectedRows();
+
+    return () => {
+      isActive = false;
+    };
+  }, [connection, mapSelection]);
+
+  if (!mapSelection) {
+    return (
+      <EmptyState
+        detail="Click map object to inspect source rows from its backing table."
+        label="No Map Selection"
+      />
+    );
+  }
+
+  const effectiveRowCount = mapSelection.rowRefs.length;
+  const singleLookupRow =
+    lookupState?.rows.length === 1 ? lookupState.rows[0] : null;
+  const fallbackEntries = Object.entries(mapSelection.inlineProperties ?? {});
+
+  return (
+    <Stack h="100%" gap="md">
+      <Paper p="md" radius="md" withBorder>
+        <Stack gap="sm">
+          <Group justify="space-between" wrap="nowrap">
+            <Group gap="sm" wrap="nowrap">
+              <ThemeIcon
+                color={getMapSelectionBadgeColor(mapSelection.objectType)}
+                radius="xl"
+                size="lg"
+                variant="light"
+              >
+                {mapSelection.objectType === 'flow' ? (
+                  <IconRoute size={16} />
+                ) : (
+                  <IconDatabaseSearch size={16} />
+                )}
+              </ThemeIcon>
+              <div>
+                <Text fw={700} size="sm">
+                  {mapSelection.title}
+                </Text>
+                <Text c="dimmed" size="xs">
+                  {mapSelection.sourceFullName}
+                </Text>
+              </div>
+            </Group>
+            <Badge
+              color={getMapSelectionBadgeColor(mapSelection.objectType)}
+              variant="light"
+            >
+              {formatMapSelectionObjectType(mapSelection.objectType)}
+            </Badge>
+          </Group>
+
+          <Group gap="xs">
+            <Badge color="gray" variant="outline">
+              {formatMapSelectionCount(effectiveRowCount)}
+            </Badge>
+            <Badge color="gray" variant="outline">
+              {mapSelection.layerName}
+            </Badge>
+          </Group>
+        </Stack>
+      </Paper>
+
+      <Group justify="space-between" wrap="nowrap">
+        <Text c="dimmed" size="xs">
+          Clicked object mapped to {mapSelection.sourceFullName}
+        </Text>
+        <Button
+          onClick={() => void onOpenTable(mapSelection.sourceFullName)}
+          size="compact-sm"
+          variant="light"
+        >
+          Open Table
+        </Button>
+      </Group>
+
+      {mapSelection.rowRefs.length > 25 ? (
+        <Alert color="yellow" title="Selection truncated" variant="light">
+          Showing first 25 matched rows in right pane. Full selection still
+          available through table view.
+        </Alert>
+      ) : null}
+
+      {lookupError ? (
+        <Alert color="red" title="Row lookup failed" variant="light">
+          {lookupError}
+        </Alert>
+      ) : null}
+
+      {isLoadingLookup ? (
+        <Alert
+          color="blue"
+          icon={<Loader size={16} />}
+          title="Loading selected rows"
+          variant="light"
+        >
+          Resolving primary keys back to database rows.
+        </Alert>
+      ) : null}
+
+      {!isLoadingLookup &&
+      !lookupState &&
+      mapSelection.rowRefs.length === 0 &&
+      fallbackEntries.length > 0 ? (
+        <ScrollArea
+          offsetScrollbars
+          scrollbarSize={8}
+          style={{
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <Paper p="md" radius="md" withBorder>
+            <Stack gap="xs">
+              <Alert color="yellow" title="Snapshot only" variant="light">
+                Source table has no stable primary key metadata for exact row
+                lookup. Showing attributes carried by rendered object.
+              </Alert>
+              {fallbackEntries.map(([key, value]) => (
+                <Group align="flex-start" justify="space-between" key={key}>
+                  <Text c="dimmed" size="xs">
+                    {key}
+                  </Text>
+                  <Text
+                    size="sm"
+                    style={{
+                      maxWidth: '65%',
+                      textAlign: 'right',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {formatCellValue(value)}
+                  </Text>
+                </Group>
+              ))}
+            </Stack>
+          </Paper>
+        </ScrollArea>
+      ) : null}
+
+      {!isLoadingLookup &&
+      !lookupError &&
+      mapSelection.rowRefs.length > 0 &&
+      lookupState?.rows.length === 0 ? (
+        <EmptyState
+          detail="No matching rows came back for selected primary keys."
+          label="Rows Not Found"
+        />
+      ) : null}
+
+      {!isLoadingLookup && singleLookupRow ? (
+        <ScrollArea
+          offsetScrollbars
+          scrollbarSize={8}
+          style={{
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <Paper p="md" radius="md" withBorder>
+            <Stack gap="xs">
+              {(lookupState?.columns ?? []).map((column) => (
+                <Group
+                  align="flex-start"
+                  justify="space-between"
+                  key={column.name}
+                >
+                  <div>
+                    <Text size="sm">{column.name}</Text>
+                    <Text c="dimmed" size="xs">
+                      {column.type}
+                    </Text>
+                  </div>
+                  <Text
+                    size="sm"
+                    style={{
+                      maxWidth: '60%',
+                      textAlign: 'right',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {formatCellValue(singleLookupRow.values[column.name])}
+                  </Text>
+                </Group>
+              ))}
+            </Stack>
+          </Paper>
+        </ScrollArea>
+      ) : null}
+
+      {!isLoadingLookup && lookupState && lookupState.rows.length > 1 ? (
+        <ScrollArea
+          offsetScrollbars
+          scrollbarSize={8}
+          style={{
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <Stack gap="sm">
+            <Text c="dimmed" size="xs">
+              Loaded {lookupState.matchedRowCount} of{' '}
+              {lookupState.requestedRowCount} requested rows.
+            </Text>
+            {lookupState.rows.map((row) => (
+              <Paper
+                key={JSON.stringify(row.rowKey)}
+                p="md"
+                radius="md"
+                withBorder
+              >
+                <Stack gap="xs">
+                  <Badge color="gray" variant="light">
+                    {lookupState.primaryKey
+                      .map(
+                        (columnName) =>
+                          `${columnName}=${formatCellValue(
+                            row.rowKey?.[columnName],
+                          )}`,
+                      )
+                      .join(' • ')}
+                  </Badge>
+                  {lookupState.columns.slice(0, 4).map((column) => (
+                    <Group
+                      align="flex-start"
+                      justify="space-between"
+                      key={`${JSON.stringify(row.rowKey)}-${column.name}`}
+                    >
+                      <Text c="dimmed" size="xs">
+                        {column.name}
+                      </Text>
+                      <Text
+                        size="sm"
+                        style={{
+                          maxWidth: '62%',
+                          textAlign: 'right',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {formatCellValue(row.values[column.name])}
+                      </Text>
+                    </Group>
+                  ))}
+                </Stack>
+              </Paper>
+            ))}
+          </Stack>
+        </ScrollArea>
+      ) : null}
+    </Stack>
+  );
+}
+
+function AnalysisWorkspacePanel({
+  activeLayer,
+  activeSource,
+  mapSelection,
+}: {
+  activeLayer: MapLayer | null;
+  activeSource: MapSource | null;
+  mapSelection: MapSelection | null;
+}) {
+  if (!activeLayer || !activeSource) {
+    return (
+      <EmptyState
+        detail="Analytics widgets will react to active layer and map selection."
+        label="No Analysis Context"
+      />
+    );
+  }
+
+  return (
+    <Stack h="100%" gap="md">
+      <Group grow>
+        <Paper p="md" radius="md" withBorder>
+          <Text c="dimmed" size="xs">
+            Active layer
+          </Text>
+          <Text fw={700} size="lg">
+            {activeLayer.name}
+          </Text>
+        </Paper>
+        <Paper p="md" radius="md" withBorder>
+          <Text c="dimmed" size="xs">
+            Source
+          </Text>
+          <Text fw={700} size="lg">
+            {activeSource.type === 'flowmap-table' ? 'Flowmap' : 'Geometry'}
+          </Text>
+        </Paper>
+      </Group>
+
+      <Paper p="md" radius="md" withBorder>
+        <Stack gap="xs">
+          <Text fw={600} size="sm">
+            Analytics workspace
+          </Text>
+          <Text c="dimmed" size="sm">
+            Use this tab for widgets, charts, and infographics bound to current
+            layer or map selection.
+          </Text>
+          {mapSelection ? (
+            <Badge
+              color={getMapSelectionBadgeColor(mapSelection.objectType)}
+              variant="light"
+            >
+              Focused on{' '}
+              {formatMapSelectionObjectType(
+                mapSelection.objectType,
+              ).toLowerCase()}{' '}
+              with {formatMapSelectionCount(mapSelection.rowRefs.length)}
+            </Badge>
+          ) : (
+            <Badge color="gray" variant="outline">
+              No object selected
+            </Badge>
+          )}
+        </Stack>
+      </Paper>
+
+      <EmptyState
+        background="linear-gradient(180deg, rgba(248,249,250,0.7) 0%, rgba(236,242,255,0.88) 100%)"
+        detail="Charts and analysis widgets plug in here next without changing map/data selection model."
+        label="Widgets Next"
+      />
+    </Stack>
+  );
+}
+
 function formatCellValue(value: unknown) {
   if (value === null || value === undefined) {
     return emptyCellLabel;
@@ -3103,6 +3750,9 @@ export function App() {
     useState<LoadingSchemaTablesByName>({});
   const [isLoadingTableMetadata, setIsLoadingTableMetadata] = useState(false);
   const [catalogError, setCatalogError] = useState('');
+  const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
+  const [mapSelection, setMapSelection] = useState<MapSelection | null>(null);
+  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('layer');
 
   const selectedConnection =
     connections.find((connection) => connection.id === selectedConnectionId) ??
@@ -3290,6 +3940,12 @@ export function App() {
   const selectedVisibleMapLayers = selectedConnectionMapLayers.filter(
     (layer) => layer.visible,
   );
+  const activeLayer =
+    selectedConnectionMapLayers.find((layer) => layer.id === activeLayerId) ??
+    null;
+  const activeLayerSource = activeLayer
+    ? (findLayerSource(mapSources, activeLayer) ?? null)
+    : null;
 
   useEffect(() => {
     void selectedConnectionId;
@@ -3302,7 +3958,35 @@ export function App() {
     setLoadingSchemaTablesByName({});
     setIsLoadingTableMetadata(false);
     setCatalogError('');
+    setActiveLayerId(null);
+    setMapSelection(null);
+    setRightPaneTab('layer');
   }, [selectedConnectionId]);
+
+  useEffect(() => {
+    if (!activeLayerId && selectedConnectionMapLayers.length > 0) {
+      setActiveLayerId(selectedConnectionMapLayers[0].id);
+      return;
+    }
+
+    if (
+      activeLayerId &&
+      !selectedConnectionMapLayers.some((layer) => layer.id === activeLayerId)
+    ) {
+      setActiveLayerId(selectedConnectionMapLayers[0]?.id ?? null);
+    }
+  }, [activeLayerId, selectedConnectionMapLayers]);
+
+  useEffect(() => {
+    if (
+      mapSelection &&
+      !selectedConnectionMapLayers.some(
+        (layer) => layer.id === mapSelection.layerId,
+      )
+    ) {
+      setMapSelection(null);
+    }
+  }, [mapSelection, selectedConnectionMapLayers]);
 
   useEffect(() => {
     if (!selectedConnection || selectedConnection.testStatus !== 'success') {
@@ -3386,6 +4070,46 @@ export function App() {
     visibleTableOptions,
   ]);
 
+  function handleSelectLayer(layerId: string) {
+    setActiveLayerId(layerId);
+    setRightPaneTab('layer');
+  }
+
+  function handleSelectMapObject(selection: MapSelection | null) {
+    setMapSelection(selection);
+
+    if (!selection) {
+      return;
+    }
+
+    setActiveLayerId(selection.layerId);
+    setRightPaneTab('data');
+  }
+
+  async function handleOpenTable(tableKey: string) {
+    const [schemaName] = tableKey.split('.');
+    if (!schemaName) {
+      handleSelectTable(tableKey);
+      return;
+    }
+
+    if (!selectedSchemaNames.includes(schemaName)) {
+      setSelectedSchemaNames((current) =>
+        current.includes(schemaName) ? current : [...current, schemaName],
+      );
+    }
+
+    setExpandedSchemaNames((current) =>
+      current.includes(schemaName) ? current : [...current, schemaName],
+    );
+
+    if (!schemaTablesByName[schemaName]) {
+      await loadSchemaTables(schemaName);
+    }
+
+    handleSelectTable(tableKey);
+  }
+
   return (
     <Flex
       direction="column"
@@ -3431,12 +4155,14 @@ export function App() {
           <Split.Pane initialWidth={280} maxWidth={480} minWidth={0}>
             <PanelFrame hint="Resizable" title="Data & Layers">
               <ConnectionManager
+                activeLayerId={activeLayerId}
                 catalog={catalog}
                 mapLayers={selectedConnectionMapLayers}
                 mapSources={mapSources}
                 onLoadSchemas={() => void loadCatalogSchemas()}
                 onImportSelectedTable={handleImportSelectedTable}
                 onCreateFlowLayer={handleCreateFlowLayer}
+                onSelectLayer={handleSelectLayer}
                 onSelectCatalogTable={handleSelectTable}
                 onToggleCatalogSchema={handleToggleCatalogSchema}
                 onToggleCatalogSchemaExpanded={
@@ -3462,6 +4188,7 @@ export function App() {
                 <PanelFrame hint="Resizable" title="Map">
                   <MapPane
                     connection={selectedConnection}
+                    onSelectMapObject={handleSelectMapObject}
                     sources={mapSources}
                     visibleLayers={selectedVisibleMapLayers}
                   />
@@ -3493,8 +4220,16 @@ export function App() {
           <Split.Resizer />
 
           <Split.Pane initialWidth={340} maxWidth={520} minWidth={0}>
-            <PanelFrame hint="Resizable" title="Analytics">
-              <EmptyState detail="Right workspace pane" label="Insights" />
+            <PanelFrame hint="Tabs" title="Workspace">
+              <RightPaneTabs
+                activeLayer={activeLayer}
+                activeSource={activeLayerSource}
+                connection={selectedConnection}
+                mapSelection={mapSelection}
+                onChangeTab={setRightPaneTab}
+                onOpenTable={handleOpenTable}
+                selectedTab={rightPaneTab}
+              />
             </PanelFrame>
           </Split.Pane>
         </Split>
