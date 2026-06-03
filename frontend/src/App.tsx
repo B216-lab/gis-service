@@ -92,6 +92,11 @@ import {
   type InspectorRowsResponse,
   type TableChangeOperation,
 } from './features/inspector/api';
+import {
+  type BasemapId,
+  basemapOptions,
+  defaultBasemapId,
+} from './features/map/basemaps';
 import { MapPane } from './features/map/MapPane';
 import type { MapSelection } from './features/map/selection';
 
@@ -381,13 +386,7 @@ function PanelFrame({
   );
 }
 
-function EmptyState({
-  label,
-  detail,
-}: {
-  label: string;
-  detail: string;
-}) {
+function EmptyState({ label, detail }: { label: string; detail: string }) {
   return (
     <Center
       h="100%"
@@ -501,6 +500,12 @@ function ConnectionManager({
   );
   const setConnectionTestError = useConnectionStore(
     (state) => state.setConnectionTestError,
+  );
+  const selectedBasemapId = useConnectionStore(
+    (state) => state.selectedBasemapId,
+  );
+  const setSelectedBasemap = useConnectionStore(
+    (state) => state.setSelectedBasemap,
   );
   const toggleMapLayerVisibility = useConnectionStore(
     (state) => state.toggleMapLayerVisibility,
@@ -1177,6 +1182,27 @@ function ConnectionManager({
         </ScrollArea>
 
         <Stack gap="xs">
+          <Paper p="xs" radius="md" withBorder>
+            <Stack gap={6}>
+              <Text fw={700} size="sm">
+                Basemap
+              </Text>
+              <Select
+                allowDeselect={false}
+                data={basemapOptions}
+                onChange={(value) => {
+                  if (!value) {
+                    return;
+                  }
+
+                  setSelectedBasemap(value as BasemapId);
+                }}
+                size="xs"
+                value={selectedBasemapId ?? defaultBasemapId}
+              />
+            </Stack>
+          </Paper>
+
           <Group justify="space-between" wrap="nowrap">
             <div>
               <Text fw={700} size="sm">
@@ -3808,6 +3834,9 @@ export function App() {
   const connections = useConnectionStore((state) => state.connections);
   const mapSources = useConnectionStore((state) => state.mapSources);
   const mapLayers = useConnectionStore((state) => state.mapLayers);
+  const selectedBasemapId = useConnectionStore(
+    (state) => state.selectedBasemapId,
+  );
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
   );
@@ -4272,6 +4301,7 @@ export function App() {
               <Split.Pane grow minHeight={0}>
                 <PanelFrame hint="Resizable" title="Map">
                   <MapPane
+                    basemapId={selectedBasemapId ?? defaultBasemapId}
                     connection={selectedConnection}
                     onSelectMapObject={handleSelectMapObject}
                     sources={mapSources}

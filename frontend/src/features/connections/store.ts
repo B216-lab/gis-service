@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
+import { type BasemapId, defaultBasemapId } from '../map/basemaps';
+
 export interface DatabaseConnection {
   id: string;
   name: string;
@@ -108,6 +110,7 @@ interface ConnectionStoreState {
   connections: DatabaseConnection[];
   mapSources: MapSource[];
   mapLayers: MapLayer[];
+  selectedBasemapId: BasemapId;
   selectedConnectionId: string | null;
   selectedTableByConnectionId: Record<string, string | null>;
   addConnection: (
@@ -122,6 +125,7 @@ interface ConnectionStoreState {
     >,
   ) => void;
   removeConnection: (connectionId: string) => void;
+  setSelectedBasemap: (basemapId: BasemapId) => void;
   selectConnection: (connectionId: string) => void;
   setSelectedTable: (connectionId: string, tableKey: string | null) => void;
   addGeoJsonLayer: (payload: {
@@ -452,6 +456,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
       ],
       mapSources: [],
       mapLayers: [],
+      selectedBasemapId: defaultBasemapId,
       selectedConnectionId: null,
       selectedTableByConnectionId: {},
       addConnection: (connection) =>
@@ -504,6 +509,10 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               ),
             ),
           };
+        }),
+      setSelectedBasemap: (basemapId) =>
+        set({
+          selectedBasemapId: basemapId,
         }),
       selectConnection: (connectionId) =>
         set({

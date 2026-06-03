@@ -2,11 +2,7 @@ import { GeoJsonLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { FlowmapLayer } from '@flowmap.gl/layers';
 import { Box, Center, Loader, Stack, Text } from '@mantine/core';
-import maplibregl, {
-  LngLatBounds,
-  NavigationControl,
-  type StyleSpecification,
-} from 'maplibre-gl';
+import maplibregl, { LngLatBounds, NavigationControl } from 'maplibre-gl';
 import { Protocol } from 'pmtiles';
 import { useEffect, useRef, useState } from 'react';
 
@@ -26,30 +22,10 @@ import {
   type GeoBounds,
   type GeoJsonFeatureCollection,
 } from './api';
+import { type BasemapId, getBasemapStyle } from './basemaps';
 import type { MapSelection, RowReference } from './selection';
 
 const defaultCenter: [number, number] = [104.295, 52.302];
-
-const fallbackStyle: StyleSpecification = {
-  version: 8,
-  sources: {
-    'osm-raster': {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
-    },
-  },
-  layers: [
-    {
-      id: 'osm-raster-layer',
-      type: 'raster',
-      source: 'osm-raster',
-      minzoom: 0,
-      maxzoom: 22,
-    },
-  ],
-};
 
 declare global {
   interface Window {
@@ -118,16 +94,6 @@ function registerPmtilesProtocol() {
   const protocol = new Protocol({ metadata: true });
   maplibregl.addProtocol('pmtiles', protocol.tile);
   window.__geopanelPmtilesProtocolRegistered = true;
-}
-
-function resolveMapStyle() {
-  const styleUrl = import.meta.env.VITE_MAP_STYLE_URL;
-
-  if (styleUrl) {
-    return styleUrl;
-  }
-
-  return fallbackStyle;
 }
 
 function hexToRgba(hex: string, opacity: number) {
@@ -421,11 +387,13 @@ async function fetchSourceData(
 }
 
 export function MapPane({
+  basemapId,
   connection,
   visibleLayers,
   sources,
   onSelectMapObject,
 }: {
+  basemapId: BasemapId;
   connection: DatabaseConnection | null;
   visibleLayers: MapLayer[];
   sources: MapSource[];
@@ -434,6 +402,7 @@ export function MapPane({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const activeBasemapIdRef = useRef<BasemapId>(basemapId);
   const sourceCacheRef = useRef<SourceDataCache>({});
   const sourceExtentCacheRef = useRef<SourceExtentCache>({});
   const fittedSourceIdsRef = useRef<string>('');
@@ -442,6 +411,7 @@ export function MapPane({
   const [layerError, setLayerError] = useState('');
   const [cacheVersion, setCacheVersion] = useState(0);
   const [extentVersion, setExtentVersion] = useState(0);
+  const [styleVersion, setStyleVersion] = useState(0);
   const [viewportBounds, setViewportBounds] = useState<GeoBounds | null>(null);
 
   const visibleSourceIds = Array.from(
@@ -468,7 +438,7 @@ export function MapPane({
       container,
       center: defaultCenter,
       zoom: 11,
-      style: resolveMapStyle(),
+      style: getBasemapStyle(activeBasemapIdRef.current),
     });
 
     const navigation = new NavigationControl({
@@ -506,12 +476,53 @@ export function MapPane({
 
     return () => {
       map.off('moveend', syncViewportBounds);
-      overlayRef.current?.finalize();
+      if (overlayRef.current) {
+        map.removeControl(overlayRef.current);
+        overlayRef.current.finalize();
+      }
       overlayRef.current = null;
       mapRef.current?.remove();
       mapRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapReady || activeBasemapIdRef.current === basemapId) {
+      return;
+    }
+
+    activeBasemapIdRef.current = basemapId;
+
+    const currentCenter = map.getCenter();
+    const currentZoom = map.getZoom();
+    const currentBearing = map.getBearing();
+    const currentPitch = map.getPitch();
+
+    map.once('style.load', () => {
+      if (overlayRef.current) {
+        map.removeControl(overlayRef.current);
+        overlayRef.current.finalize();
+      }
+
+      const nextOverlay = new MapboxOverlay({
+        interleaved: true,
+        layers: [],
+      });
+
+      map.addControl(nextOverlay);
+      overlayRef.current = nextOverlay;
+      map.jumpTo({
+        center: currentCenter,
+        zoom: currentZoom,
+        bearing: currentBearing,
+        pitch: currentPitch,
+      });
+      setStyleVersion((current) => current + 1);
+    });
+
+    map.setStyle(getBasemapStyle(basemapId));
+  }, [basemapId, isMapReady]);
 
   useEffect(() => {
     if (!isMapReady || !overlayRef.current) {
@@ -709,6 +720,7 @@ export function MapPane({
     }
 
     void cacheVersion;
+    void styleVersion;
 
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
@@ -803,6 +815,7 @@ export function MapPane({
     connection,
     extentVersion,
     isMapReady,
+    styleVersion,
     sources,
     visibleLayers,
     visibleSources,
