@@ -25,6 +25,13 @@ export interface GeoJsonFeatureCollection {
   features: GeoJsonFeature[];
 }
 
+export interface GeoBounds {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}
+
 export interface LayerFeaturesResponse {
   schema: string;
   table: string;
@@ -33,6 +40,15 @@ export interface LayerFeaturesResponse {
   srid: number;
   featureCount: number;
   data: GeoJsonFeatureCollection;
+}
+
+export interface LayerExtentResponse {
+  schema: string;
+  table: string;
+  geometryColumn: string;
+  geometryType: string;
+  srid: number;
+  bounds: GeoBounds | null;
 }
 
 export interface FlowmapLocation {
@@ -84,6 +100,7 @@ async function decodePayload<T extends object>(
 export async function fetchGeoJsonSourceData(
   connection: DatabaseConnection,
   source: GeoJsonTableSource,
+  bounds: GeoBounds,
   signal?: AbortSignal,
 ) {
   const response = await fetch('/api/v1/database-connections/layer-features', {
@@ -102,13 +119,47 @@ export async function fetchGeoJsonSourceData(
       schema: source.schema,
       table: source.table,
       geometryColumn: source.geometryColumn,
-      limit: 2000,
+      limit: 5000,
+      west: bounds.west,
+      south: bounds.south,
+      east: bounds.east,
+      north: bounds.north,
     }),
   });
 
   return decodePayload<LayerFeaturesResponse>(
     response,
     'Failed to load layer features.',
+  );
+}
+
+export async function fetchGeoJsonSourceExtent(
+  connection: DatabaseConnection,
+  source: GeoJsonTableSource,
+  signal?: AbortSignal,
+) {
+  const response = await fetch('/api/v1/database-connections/layer-extent', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: connection.name,
+      host: connection.host,
+      port: connection.port,
+      database: connection.database,
+      user: connection.user,
+      password: connection.password,
+      schema: source.schema,
+      table: source.table,
+      geometryColumn: source.geometryColumn,
+    }),
+  });
+
+  return decodePayload<LayerExtentResponse>(
+    response,
+    'Failed to load layer extent.',
   );
 }
 

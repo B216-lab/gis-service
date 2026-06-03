@@ -46,8 +46,8 @@ import {
   IconRefresh,
   IconRestore,
   IconRoute,
-  IconSettings,
   IconSearch,
+  IconSettings,
   IconTable,
   IconTrash,
   IconX,
@@ -56,6 +56,7 @@ import {
   type ChangeEvent,
   type ReactNode,
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useState,
@@ -2118,22 +2119,41 @@ function DataInspector({
     Object.keys(draftUpdates).length +
     Object.keys(draftDeletes).length;
 
-  function resetDraftState() {
+  const resetDraftState = useCallback(() => {
     setDraftUpdates({});
     setDraftDeletes({});
     setDraftInserts([]);
     setSaveError('');
-  }
+  }, []);
 
-  function confirmDraftReset(actionLabel: string) {
-    if (!hasDirtyChanges) {
-      return true;
+  const confirmDraftReset = useCallback(
+    (actionLabel: string) => {
+      if (!hasDirtyChanges) {
+        return true;
+      }
+
+      return window.confirm(
+        `Discard unsaved table changes before ${actionLabel}?`,
+      );
+    },
+    [hasDirtyChanges],
+  );
+
+  useEffect(() => {
+    const nextSearch = deferredSearchInput.trim();
+    if (nextSearch === appliedSearch) {
+      return;
     }
 
-    return window.confirm(
-      `Discard unsaved table changes before ${actionLabel}?`,
-    );
-  }
+    if (!confirmDraftReset('changing search filter')) {
+      setSearchInput(appliedSearch);
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
+    setAppliedSearch(nextSearch);
+  }, [appliedSearch, confirmDraftReset, deferredSearchInput, resetDraftState]);
 
   useEffect(() => {
     if (!selectedTableKey && tables.length > 0) {
@@ -2148,11 +2168,6 @@ function DataInspector({
       onSelectTable(tables[0]?.fullName ?? null);
     }
   }, [onSelectTable, selectedTableKey, tables]);
-
-  useEffect(() => {
-    setSearchInput('');
-    setAppliedSearch('');
-  }, [selectedTableKey]);
 
   useEffect(() => {
     if (!connection || !selectedTable) {
@@ -2213,22 +2228,6 @@ function DataInspector({
       isActive = false;
     };
   }, [appliedSearch, connection, rowsRefreshToken, selectedTable]);
-
-  useEffect(() => {
-    const nextSearch = deferredSearchInput.trim();
-    if (nextSearch === appliedSearch) {
-      return;
-    }
-
-    if (!confirmDraftReset('changing search filter')) {
-      setSearchInput(appliedSearch);
-      return;
-    }
-
-    resetDraftState();
-    setSaveMessage('');
-    setAppliedSearch(nextSearch);
-  }, [appliedSearch, deferredSearchInput]);
 
   async function handlePageChange(nextOffset: number) {
     if (!connection || !selectedTable) {
@@ -2516,7 +2515,6 @@ function DataInspector({
             value={selectedTableKey}
           />
           <TextInput
-            clearable
             leftSection={<IconSearch size={14} />}
             onChange={(event) => setSearchInput(event.currentTarget.value)}
             placeholder="Search rows"
@@ -4273,6 +4271,7 @@ export function App() {
                       isLoadingSchemas ||
                       Object.values(loadingSchemaTablesByName).some(Boolean)
                     }
+                    key={`${selectedConnectionId ?? 'none'}:${selectedTableKey ?? 'none'}`}
                     onSelectTable={handleSelectTable}
                     selectedTable={selectedInspectableTable}
                     selectedTableKey={selectedTableKey}

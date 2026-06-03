@@ -22,6 +22,8 @@ import {
   type FlowmapDataResponse,
   fetchFlowmapSourceData,
   fetchGeoJsonSourceData,
+  fetchGeoJsonSourceExtent,
+  type GeoBounds,
   type GeoJsonFeatureCollection,
 } from './api';
 import type { MapSelection, RowReference } from './selection';
@@ -71,8 +73,40 @@ type SourceCacheEntry = {
   payload: LoadedSourceData;
 };
 type SourceDataCache = Record<string, SourceCacheEntry>;
+type SourceExtentCacheEntry = {
+  signature: string;
+  bounds: GeoBounds | null;
+};
+type SourceExtentCache = Record<string, SourceExtentCacheEntry>;
 
-function getSourceSignature(source: MapSource) {
+function roundCoordinate(value: number) {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function getViewportBoundsSignature(bounds: GeoBounds | null) {
+  if (!bounds) {
+    return 'no-bounds';
+  }
+
+  return JSON.stringify({
+    west: roundCoordinate(bounds.west),
+    south: roundCoordinate(bounds.south),
+    east: roundCoordinate(bounds.east),
+    north: roundCoordinate(bounds.north),
+  });
+}
+
+function getSourceSignature(
+  source: MapSource,
+  viewportBounds: GeoBounds | null,
+) {
+  if (source.type === 'geojson-table') {
+    return JSON.stringify({
+      source,
+      viewportBounds: getViewportBoundsSignature(viewportBounds),
+    });
+  }
+
   return JSON.stringify(source);
 }
 
@@ -158,16 +192,38 @@ function extendBoundsWithSourceData(
   }
 }
 
-function computeBounds(loadedSources: LoadedSourceData[]) {
+function extendBoundsWithGeoBounds(bounds: LngLatBounds, geoBounds: GeoBounds) {
+  bounds.extend([geoBounds.west, geoBounds.south]);
+  bounds.extend([geoBounds.east, geoBounds.north]);
+}
+
+function computeVisibleBounds(params: {
+  extentCache: SourceExtentCache;
+  sourceCache: SourceDataCache;
+  visibleSources: MapSource[];
+}) {
   const bounds = new LngLatBounds();
   let hasCoordinates = false;
 
-  for (const sourceData of loadedSources) {
-    const before = bounds.isEmpty();
-    extendBoundsWithSourceData(bounds, sourceData);
-    if (before !== bounds.isEmpty() || !bounds.isEmpty()) {
+  for (const source of params.visibleSources) {
+    if (source.type === 'geojson-table') {
+      const extentEntry = params.extentCache[source.id];
+      if (!extentEntry?.bounds) {
+        continue;
+      }
+
+      extendBoundsWithGeoBounds(bounds, extentEntry.bounds);
       hasCoordinates = true;
+      continue;
     }
+
+    const sourceData = params.sourceCache[source.id];
+    if (!sourceData) {
+      continue;
+    }
+
+    extendBoundsWithSourceData(bounds, sourceData.payload);
+    hasCoordinates = hasCoordinates || !bounds.isEmpty();
   }
 
   return hasCoordinates ? bounds : null;
@@ -312,13 +368,45 @@ function buildMapSelection(
   return null;
 }
 
+function isDeckSublayerIdOfParent(
+  pickedLayerId: string,
+  parentLayerId: string,
+) {
+  return (
+    pickedLayerId === parentLayerId ||
+    pickedLayerId.startsWith(`${parentLayerId}/`) ||
+    pickedLayerId.startsWith(`${parentLayerId}-`)
+  );
+}
+
+function resolvePickedMapLayer(
+  pickedLayerId: string,
+  visibleLayers: MapLayer[],
+) {
+  return (
+    visibleLayers.find((candidate) =>
+      isDeckSublayerIdOfParent(pickedLayerId, candidate.id),
+    ) ?? null
+  );
+}
+
 async function fetchSourceData(
   connection: DatabaseConnection,
   source: MapSource,
+  viewportBounds: GeoBounds | null,
   signal?: AbortSignal,
 ): Promise<LoadedSourceData> {
   if (source.type === 'geojson-table') {
-    const response = await fetchGeoJsonSourceData(connection, source, signal);
+    if (!viewportBounds) {
+      throw new Error('Viewport bounds are required to load map features.');
+    }
+
+    const response = await fetchGeoJsonSourceData(
+      connection,
+      source,
+      viewportBounds,
+      signal,
+    );
     return {
       sourceType: 'geojson-table',
       data: response.data,
@@ -347,11 +435,14 @@ export function MapPane({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const sourceCacheRef = useRef<SourceDataCache>({});
+  const sourceExtentCacheRef = useRef<SourceExtentCache>({});
   const fittedSourceIdsRef = useRef<string>('');
   const [isMapReady, setIsMapReady] = useState(false);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
   const [layerError, setLayerError] = useState('');
   const [cacheVersion, setCacheVersion] = useState(0);
+  const [extentVersion, setExtentVersion] = useState(0);
+  const [viewportBounds, setViewportBounds] = useState<GeoBounds | null>(null);
 
   const visibleSourceIds = Array.from(
     new Set(visibleLayers.map((layer) => layer.sourceId)),
@@ -361,6 +452,9 @@ export function MapPane({
     return source ? [source] : [];
   });
   const visibleSourceSignature = visibleSourceIds.sort().join('|');
+  const geoJsonVisibleSources = visibleSources.filter(
+    (source): source is GeoJsonTableSource => source.type === 'geojson-table',
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -390,15 +484,28 @@ export function MapPane({
     map.addControl(navigation, 'top-left');
     map.addControl(overlay);
 
+    function syncViewportBounds() {
+      const nextBounds = map.getBounds();
+      setViewportBounds({
+        west: nextBounds.getWest(),
+        south: nextBounds.getSouth(),
+        east: nextBounds.getEast(),
+        north: nextBounds.getNorth(),
+      });
+    }
+
     map.once('load', () => {
       setIsMapReady(true);
       map.resize();
+      syncViewportBounds();
     });
+    map.on('moveend', syncViewportBounds);
 
     mapRef.current = map;
     overlayRef.current = overlay;
 
     return () => {
+      map.off('moveend', syncViewportBounds);
       overlayRef.current?.finalize();
       overlayRef.current = null;
       mapRef.current?.remove();
@@ -414,6 +521,7 @@ export function MapPane({
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
       sourceCacheRef.current = {};
+      sourceExtentCacheRef.current = {};
       fittedSourceIdsRef.current = '';
       setLayerError('');
       setIsLoadingSources(false);
@@ -430,11 +538,18 @@ export function MapPane({
       return;
     }
 
+    if (
+      visibleSources.some((source) => source.type === 'geojson-table') &&
+      !viewportBounds
+    ) {
+      return;
+    }
+
     const missingSources = visibleSources.filter(
       (source) =>
         !sourceCacheRef.current[source.id] ||
         sourceCacheRef.current[source.id].signature !==
-          getSourceSignature(source),
+          getSourceSignature(source, viewportBounds),
     );
 
     if (missingSources.length === 0) {
@@ -456,13 +571,14 @@ export function MapPane({
             const data = await fetchSourceData(
               activeConnection,
               source,
+              viewportBounds,
               abortController.signal,
             );
 
             return [
               source.id,
               {
-                signature: getSourceSignature(source),
+                signature: getSourceSignature(source, viewportBounds),
                 payload: data,
               },
             ] as const;
@@ -502,7 +618,90 @@ export function MapPane({
       isActive = false;
       abortController.abort();
     };
-  }, [connection, isMapReady, onSelectMapObject, visibleSources]);
+  }, [
+    connection,
+    isMapReady,
+    onSelectMapObject,
+    viewportBounds,
+    visibleSources,
+  ]);
+
+  useEffect(() => {
+    if (!isMapReady || !connection || connection.testStatus !== 'success') {
+      return;
+    }
+
+    if (geoJsonVisibleSources.length === 0) {
+      return;
+    }
+
+    const missingExtentSources = geoJsonVisibleSources.filter(
+      (source) =>
+        !sourceExtentCacheRef.current[source.id] ||
+        sourceExtentCacheRef.current[source.id].signature !==
+          JSON.stringify(source),
+    );
+
+    if (missingExtentSources.length === 0) {
+      return;
+    }
+
+    const activeConnection = connection;
+    let isActive = true;
+    const abortController = new AbortController();
+    setLayerError('');
+
+    async function loadMissingExtents() {
+      try {
+        const loadedEntries = await Promise.all(
+          missingExtentSources.map(async (source) => {
+            const response = await fetchGeoJsonSourceExtent(
+              activeConnection,
+              source,
+              abortController.signal,
+            );
+
+            return [
+              source.id,
+              {
+                signature: JSON.stringify(source),
+                bounds: response.bounds,
+              },
+            ] as const;
+          }),
+        );
+
+        if (!isActive) {
+          return;
+        }
+
+        const nextCache = { ...sourceExtentCacheRef.current };
+        for (const [sourceId, extentEntry] of loadedEntries) {
+          nextCache[sourceId] = extentEntry;
+        }
+
+        sourceExtentCacheRef.current = nextCache;
+        setExtentVersion((value) => value + 1);
+      } catch (error) {
+        if (!isActive || abortController.signal.aborted) {
+          return;
+        }
+
+        setLayerError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to load layer extent.',
+        );
+      }
+    }
+
+    void loadMissingExtents();
+
+    return () => {
+      isActive = false;
+      abortController.abort();
+    };
+  }, [connection, geoJsonVisibleSources, isMapReady]);
 
   useEffect(() => {
     if (!isMapReady || !overlayRef.current) {
@@ -565,9 +764,7 @@ export function MapPane({
           return;
         }
 
-        const layer = visibleLayers.find(
-          (candidate) => candidate.id === pickedLayerId,
-        );
+        const layer = resolvePickedMapLayer(pickedLayerId, visibleLayers);
         if (!layer) {
           onSelectMapObject(null);
           return;
@@ -585,17 +782,14 @@ export function MapPane({
       },
     });
 
-    const loadedSources = visibleSourceIds.flatMap((sourceId) => {
-      const sourceData = sourceCacheRef.current[sourceId];
-      return sourceData ? [sourceData.payload] : [];
-    });
-
-    if (loadedSources.length === 0) {
-      return;
-    }
-
     if (visibleSourceSignature !== fittedSourceIdsRef.current) {
-      const bounds = computeBounds(loadedSources);
+      void extentVersion;
+
+      const bounds = computeVisibleBounds({
+        extentCache: sourceExtentCacheRef.current,
+        sourceCache: sourceCacheRef.current,
+        visibleSources,
+      });
       if (bounds && mapRef.current) {
         mapRef.current.fitBounds(bounds, {
           padding: 48,
@@ -607,10 +801,11 @@ export function MapPane({
   }, [
     cacheVersion,
     connection,
+    extentVersion,
     isMapReady,
     sources,
     visibleLayers,
-    visibleSourceIds,
+    visibleSources,
     visibleSourceSignature,
     onSelectMapObject,
   ]);
@@ -674,9 +869,18 @@ export function MapPane({
           >
             <Stack gap={4}>
               {isLoadingSources ? (
-                <Text c="dimmed" size="xs">
-                  Loading visible layers...
-                </Text>
+                <Box
+                  style={{
+                    alignItems: 'center',
+                    display: 'flex',
+                    gap: 8,
+                  }}
+                >
+                  <Loader size={14} />
+                  <Text c="dimmed" size="xs">
+                    Loading visible layers...
+                  </Text>
+                </Box>
               ) : null}
               {layerError ? (
                 <Text c="red" size="xs">

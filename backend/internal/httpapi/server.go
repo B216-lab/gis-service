@@ -69,6 +69,10 @@ func (server *Server) routes() {
 		server.handleCommitTableChanges,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/layer-extent",
+		server.handleLayerExtent,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/layer-features",
 		server.handleListLayerFeatures,
 	)
@@ -422,6 +426,48 @@ func (server *Server) handleListLayerFeatures(
 			writer,
 			err,
 			"database_layer_fetch_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleLayerExtent(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.LayerExtentRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_layer_extent_request",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.GetLayerExtent(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"database_layer_extent_failed",
 			"Unexpected server error.",
 		)
 		return

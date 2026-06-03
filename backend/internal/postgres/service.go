@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,6 +114,17 @@ type ListLayerFeaturesRequest struct {
 	Table          string `json:"table"`
 	GeometryColumn string `json:"geometryColumn"`
 	Limit          int    `json:"limit"`
+	West           *float64 `json:"west"`
+	South          *float64 `json:"south"`
+	East           *float64 `json:"east"`
+	North          *float64 `json:"north"`
+}
+
+type LayerExtentRequest struct {
+	ConnectionTestRequest
+	Schema         string `json:"schema"`
+	Table          string `json:"table"`
+	GeometryColumn string `json:"geometryColumn"`
 }
 
 type ListFlowmapDataRequest struct {
@@ -195,6 +207,22 @@ type ListLayerFeaturesResult struct {
 	SRID           int                      `json:"srid"`
 	FeatureCount   int                      `json:"featureCount"`
 	Data           GeoJSONFeatureCollection `json:"data"`
+}
+
+type GeoBounds struct {
+	West  float64 `json:"west"`
+	South float64 `json:"south"`
+	East  float64 `json:"east"`
+	North float64 `json:"north"`
+}
+
+type LayerExtentResult struct {
+	Schema         string     `json:"schema"`
+	Table          string     `json:"table"`
+	GeometryColumn string     `json:"geometryColumn"`
+	GeometryType   string     `json:"geometryType"`
+	SRID           int        `json:"srid"`
+	Bounds         *GeoBounds `json:"bounds"`
 }
 
 type FlowmapLocation struct {
@@ -302,6 +330,13 @@ func (request *LookupRowsRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
+}
+
+func (request *LayerExtentRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
 }
 
 func (request *SchemaTablesRequest) TrimSpaces() {
@@ -426,6 +461,26 @@ func (request LookupRowsRequest) Validate() error {
 	return nil
 }
 
+func (request LayerExtentRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	if request.GeometryColumn == "" {
+		return errors.New("Geometry column is required.")
+	}
+
+	return nil
+}
+
 func (request SchemaTablesRequest) Validate() error {
 	if err := request.ConnectionTestRequest.Validate(); err != nil {
 		return err
@@ -505,6 +560,22 @@ func (request ListLayerFeaturesRequest) Validate() error {
 
 	if request.Limit < 1 || request.Limit > 5000 {
 		return errors.New("Limit must be between 1 and 5000.")
+	}
+
+	if request.hasViewportBounds() {
+		if request.West == nil ||
+			request.South == nil ||
+			request.East == nil ||
+			request.North == nil {
+			return errors.New("Viewport bounds must include west, south, east, and north.")
+		}
+
+		if *request.West < -180 || *request.West > 180 ||
+			*request.East < -180 || *request.East > 180 ||
+			*request.South < -90 || *request.South > 90 ||
+			*request.North < -90 || *request.North > 90 {
+			return errors.New("Viewport bounds must be valid longitude and latitude values.")
+		}
 	}
 
 	return nil
@@ -1327,6 +1398,12 @@ func (service *Service) ListLayerFeatures(
 		)
 	}
 
+	geometryExpression := geometryColumnWGS84Expression(
+		request.GeometryColumn,
+		selectedGeometryColumn.StorageType,
+		selectedGeometryColumn.SRID,
+	)
+
 	query := fmt.Sprintf(
 		`
 		with source_features as (
@@ -1336,18 +1413,18 @@ func (service *Service) ListLayerFeatures(
 		    'properties', %s || jsonb_build_object('__geopanel', %s)
 		  ) as feature
 		  from %s.%s as source_row
-		  where %s is not null
+		  where %s
 		  limit $1
 		)
 		select coalesce(json_agg(feature), '[]'::json)
 		from source_features
 		`,
-		quoteIdentifier(request.GeometryColumn),
+		geometryExpression,
 		propertyExpression,
 		rowRefExpression,
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
-		quoteIdentifier(request.GeometryColumn),
+		request.whereClauseForGeometry(geometryExpression),
 	)
 
 	var rawFeatures []byte
@@ -1365,12 +1442,109 @@ func (service *Service) ListLayerFeatures(
 		Table:          request.Table,
 		GeometryColumn: request.GeometryColumn,
 		GeometryType:   selectedGeometryColumn.GeometryType,
-		SRID:           selectedGeometryColumn.SRID,
+		SRID:           4326,
 		FeatureCount:   len(features),
 		Data: GeoJSONFeatureCollection{
 			Type:     "FeatureCollection",
 			Features: features,
 		},
+	}, nil
+}
+
+func (service *Service) GetLayerExtent(
+	ctx context.Context,
+	request LayerExtentRequest,
+) (*LayerExtentResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	geometryColumns, err := service.listGeometryColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var selectedGeometryColumn *geometryColumnDefinition
+	for index := range geometryColumns {
+		if geometryColumns[index].Name == request.GeometryColumn {
+			selectedGeometryColumn = &geometryColumns[index]
+			break
+		}
+	}
+
+	if selectedGeometryColumn == nil {
+		return nil, fmt.Errorf(
+			"%w: selected geometry column not found on table",
+			ErrConnectionFailed,
+		)
+	}
+
+	geometryExpression := geometryColumnWGS84Expression(
+		request.GeometryColumn,
+		selectedGeometryColumn.StorageType,
+		selectedGeometryColumn.SRID,
+	)
+
+	query := fmt.Sprintf(
+		`
+		with extent as (
+		  select ST_Extent(%s) as bbox
+		  from %s.%s as source_row
+		  where %s is not null
+		)
+		select
+		  ST_XMin(bbox::box2d),
+		  ST_YMin(bbox::box2d),
+		  ST_XMax(bbox::box2d),
+		  ST_YMax(bbox::box2d)
+		from extent
+		`,
+		geometryExpression,
+		quoteIdentifier(request.Schema),
+		quoteIdentifier(request.Table),
+		geometryExpression,
+	)
+
+	var west sql.NullFloat64
+	var south sql.NullFloat64
+	var east sql.NullFloat64
+	var north sql.NullFloat64
+	if err := conn.QueryRow(timeoutCtx, query).Scan(
+		&west,
+		&south,
+		&east,
+		&north,
+	); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	var bounds *GeoBounds
+	if west.Valid && south.Valid && east.Valid && north.Valid {
+		bounds = &GeoBounds{
+			West:  west.Float64,
+			South: south.Float64,
+			East:  east.Float64,
+			North: north.Float64,
+		}
+	}
+
+	return &LayerExtentResult{
+		Schema:         request.Schema,
+		Table:          request.Table,
+		GeometryColumn: request.GeometryColumn,
+		GeometryType:   selectedGeometryColumn.GeometryType,
+		SRID:           4326,
+		Bounds:         bounds,
 	}, nil
 }
 
@@ -2104,6 +2278,36 @@ func buildRowKey(
 	return rowKey
 }
 
+func (request ListLayerFeaturesRequest) hasViewportBounds() bool {
+	return request.West != nil ||
+		request.South != nil ||
+		request.East != nil ||
+		request.North != nil
+}
+
+func (request ListLayerFeaturesRequest) whereClauseForGeometry(
+	geometryExpression string,
+) string {
+	baseClause := fmt.Sprintf("%s is not null", geometryExpression)
+	if !request.hasViewportBounds() ||
+		request.West == nil ||
+		request.South == nil ||
+		request.East == nil ||
+		request.North == nil {
+		return baseClause
+	}
+
+	return fmt.Sprintf(
+		"%s and ST_Intersects(%s, ST_MakeEnvelope(%f, %f, %f, %f, 4326))",
+		baseClause,
+		geometryExpression,
+		*request.West,
+		*request.South,
+		*request.East,
+		*request.North,
+	)
+}
+
 func buildRowReference(
 	record map[string]interface{},
 	primaryKey []string,
@@ -2355,6 +2559,19 @@ func quoteIdentifier(value string) string {
 
 func quoteLiteral(value string) string {
 	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
+}
+
+func geometryColumnWGS84Expression(
+	columnName string,
+	storageType string,
+	srid int,
+) string {
+	geometryExpression := fmt.Sprintf("%s::geometry", quoteIdentifier(columnName))
+	if storageType == "geography" || srid == 4326 || srid == 0 {
+		return geometryExpression
+	}
+
+	return fmt.Sprintf("ST_Transform(%s, 4326)", geometryExpression)
 }
 
 func normalizeValue(value interface{}) interface{} {
