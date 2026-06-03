@@ -1,12 +1,20 @@
 import '@mantine/core/styles.css';
 import '@gfazioli/mantine-split-pane/styles.css';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { MantineProvider } from '@mantine/core';
+import {
+  ColorSchemeScript,
+  localStorageColorSchemeManager,
+  MantineProvider,
+} from '@mantine/core';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import './styles.css';
+
+const colorSchemeManager = localStorageColorSchemeManager({
+  key: 'geopanel-color-scheme',
+});
 
 const container = document.getElementById('root');
 
@@ -16,7 +24,11 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <MantineProvider>
+    <ColorSchemeScript defaultColorScheme="auto" />
+    <MantineProvider
+      colorSchemeManager={colorSchemeManager}
+      defaultColorScheme="auto"
+    >
       <App />
     </MantineProvider>
   </StrictMode>,

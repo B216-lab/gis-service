@@ -25,6 +25,8 @@ import {
   TextInput,
   ThemeIcon,
   Title,
+  useComputedColorScheme,
+  useMantineColorScheme,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
@@ -40,6 +42,7 @@ import {
   IconFolder,
   IconInfoCircle,
   IconLayersIntersect,
+  IconMoonStars,
   IconPlug,
   IconPlugConnected,
   IconPlus,
@@ -48,6 +51,7 @@ import {
   IconRoute,
   IconSearch,
   IconSettings,
+  IconSun,
   IconTable,
   IconTrash,
   IconX,
@@ -142,6 +146,24 @@ function formatMapSelectionObjectType(objectType: MapSelection['objectType']) {
 
 function formatMapSelectionCount(count: number) {
   return `${count} row${count === 1 ? '' : 's'}`;
+}
+
+function ColorSchemeToggle() {
+  const computedColorScheme = useComputedColorScheme('light');
+  const { setColorScheme } = useMantineColorScheme();
+
+  const isDark = computedColorScheme === 'dark';
+
+  return (
+    <ActionIcon
+      aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      onClick={() => setColorScheme(isDark ? 'light' : 'dark')}
+      size="lg"
+      variant="default"
+    >
+      {isDark ? <IconSun size={18} /> : <IconMoonStars size={18} />}
+    </ActionIcon>
+  );
 }
 
 function createDraftInsertId() {
@@ -337,7 +359,7 @@ function PanelFrame({
       }}
     >
       <Flex align="center" justify="space-between" mb="md">
-        <Title c="dark.7" order={5} tt="uppercase">
+        <Title c="text" order={5} tt="uppercase">
           {title}
         </Title>
         <Text c="dimmed" fw={500} size="xs">
@@ -362,20 +384,16 @@ function PanelFrame({
 function EmptyState({
   label,
   detail,
-  background,
 }: {
   label: string;
   detail: string;
-  background?: string;
 }) {
   return (
     <Center
       h="100%"
       style={{
-        background:
-          background ??
-          'linear-gradient(180deg, rgba(248,249,250,0.92) 0%, rgba(241,243,245,0.92) 100%)',
-        border: '1px dashed var(--mantine-color-gray-4)',
+        background: 'var(--mantine-color-default)',
+        border: '1px dashed var(--mantine-color-default-border)',
         borderRadius: 'var(--mantine-radius-md)',
       }}
     >
@@ -3578,7 +3596,6 @@ function AnalysisWorkspacePanel({
       </Paper>
 
       <EmptyState
-        background="linear-gradient(180deg, rgba(248,249,250,0.7) 0%, rgba(236,242,255,0.88) 100%)"
         detail="Charts and analysis widgets plug in here next without changing map/data selection model."
         label="Widgets Next"
       />
@@ -4189,7 +4206,7 @@ export function App() {
         radius={0}
         shadow="xs"
         style={{
-          borderBottom: '1px solid var(--mantine-color-gray-3)',
+          borderBottom: '1px solid var(--mantine-color-default-border)',
         }}
       >
         <Flex align="center" justify="space-between">
@@ -4199,9 +4216,12 @@ export function App() {
               Phase 1 layout base
             </Text>
           </div>
-          <Text c="dimmed" fw={500} size="sm">
-            Resizable workspace shell
-          </Text>
+          <Group gap="sm">
+            <Text c="dimmed" fw={500} size="sm">
+              Resizable workspace shell
+            </Text>
+            <ColorSchemeToggle />
+          </Group>
         </Flex>
       </Paper>
 
