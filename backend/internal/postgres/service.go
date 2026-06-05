@@ -80,11 +80,23 @@ type TableMetadataRequest struct {
 
 type ListRowsRequest struct {
 	ConnectionTestRequest
-	Schema string `json:"schema"`
-	Table  string `json:"table"`
-	Search string `json:"search"`
-	Limit  int    `json:"limit"`
-	Offset int    `json:"offset"`
+	Schema string       `json:"schema"`
+	Table  string       `json:"table"`
+	Search string       `json:"search"`
+	Filter *QueryFilter `json:"filter"`
+	Limit  int          `json:"limit"`
+	Offset int          `json:"offset"`
+}
+
+type QueryFilter struct {
+	Conditions []FilterCondition `json:"conditions"`
+}
+
+type FilterCondition struct {
+	Column   string   `json:"column"`
+	Operator string   `json:"operator"`
+	Value    string   `json:"value"`
+	Values   []string `json:"values"`
 }
 
 type LookupRowsRequest struct {
@@ -110,10 +122,10 @@ type TableOperation struct {
 
 type ListLayerFeaturesRequest struct {
 	ConnectionTestRequest
-	Schema         string `json:"schema"`
-	Table          string `json:"table"`
-	GeometryColumn string `json:"geometryColumn"`
-	Limit          int    `json:"limit"`
+	Schema         string   `json:"schema"`
+	Table          string   `json:"table"`
+	GeometryColumn string   `json:"geometryColumn"`
+	Limit          int      `json:"limit"`
 	West           *float64 `json:"west"`
 	South          *float64 `json:"south"`
 	East           *float64 `json:"east"`
@@ -226,17 +238,17 @@ type LayerExtentResult struct {
 }
 
 type FlowmapLocation struct {
-	ID   string  `json:"id"`
-	Lat  float64 `json:"lat"`
-	Lon  float64 `json:"lon"`
-	Name string  `json:"name"`
+	ID      string         `json:"id"`
+	Lat     float64        `json:"lat"`
+	Lon     float64        `json:"lon"`
+	Name    string         `json:"name"`
 	RowRefs []RowReference `json:"rowRefs"`
 }
 
 type FlowmapFlow struct {
-	OriginID  string  `json:"originId"`
-	DestID    string  `json:"destId"`
-	Magnitude float64 `json:"magnitude"`
+	OriginID  string        `json:"originId"`
+	DestID    string        `json:"destId"`
+	Magnitude float64       `json:"magnitude"`
 	RowRef    *RowReference `json:"rowRef"`
 }
 
@@ -324,6 +336,26 @@ func (request *ListRowsRequest) TrimSpaces() {
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
 	request.Search = strings.TrimSpace(request.Search)
+	if request.Filter == nil {
+		return
+	}
+
+	for index := range request.Filter.Conditions {
+		request.Filter.Conditions[index].Column = strings.TrimSpace(
+			request.Filter.Conditions[index].Column,
+		)
+		request.Filter.Conditions[index].Operator = strings.TrimSpace(
+			request.Filter.Conditions[index].Operator,
+		)
+		request.Filter.Conditions[index].Value = strings.TrimSpace(
+			request.Filter.Conditions[index].Value,
+		)
+		for valueIndex := range request.Filter.Conditions[index].Values {
+			request.Filter.Conditions[index].Values[valueIndex] = strings.TrimSpace(
+				request.Filter.Conditions[index].Values[valueIndex],
+			)
+		}
+	}
 }
 
 func (request *LookupRowsRequest) TrimSpaces() {
@@ -382,6 +414,9 @@ func (request *ListRowsRequest) Normalize() {
 	if request.Offset < 0 {
 		request.Offset = 0
 	}
+	if request.Filter != nil && len(request.Filter.Conditions) > 10 {
+		request.Filter.Conditions = request.Filter.Conditions[:10]
+	}
 }
 
 func (request *LookupRowsRequest) Normalize() {
@@ -436,6 +471,31 @@ func (request ListRowsRequest) Validate() error {
 
 	if request.Offset < 0 {
 		return errors.New("Offset must be zero or greater.")
+	}
+
+	if request.Filter != nil {
+		if len(request.Filter.Conditions) == 0 {
+			return errors.New("Filter must contain at least one condition.")
+		}
+
+		for index, condition := range request.Filter.Conditions {
+			if condition.Column == "" {
+				return fmt.Errorf("Filter condition %d must specify a column.", index+1)
+			}
+
+			switch condition.Operator {
+			case "eq":
+				if condition.Value == "" {
+					return fmt.Errorf("Filter condition %d requires a value.", index+1)
+				}
+			case "in":
+				if len(condition.Values) == 0 {
+					return fmt.Errorf("Filter condition %d requires one or more values.", index+1)
+				}
+			default:
+				return fmt.Errorf("Filter condition %d uses unsupported operator %q.", index+1, condition.Operator)
+			}
+		}
 	}
 
 	return nil
@@ -1005,7 +1065,7 @@ func (service *Service) ListRows(
 	}
 
 	parameters := make([]interface{}, 0, 3)
-	whereClause := ""
+	whereClauses := make([]string, 0, 2)
 	if request.Search != "" && len(searchExpressions) > 0 {
 		parameters = append(parameters, "%"+request.Search+"%")
 		searchPlaceholder := fmt.Sprintf("$%d", len(parameters))
@@ -1018,7 +1078,28 @@ func (service *Service) ListRows(
 			)
 		}
 
-		whereClause = fmt.Sprintf(" where (%s)", strings.Join(searchTerms, " or "))
+		whereClauses = append(
+			whereClauses,
+			fmt.Sprintf("(%s)", strings.Join(searchTerms, " or ")),
+		)
+	}
+
+	filterClause, filterParameters, err := buildQueryFilterClause(
+		columnDefinitions,
+		request.Filter,
+		len(parameters),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if filterClause != "" {
+		parameters = append(parameters, filterParameters...)
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", filterClause))
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = fmt.Sprintf(" where %s", strings.Join(whereClauses, " and "))
 	}
 
 	orderByClause := ""
@@ -2427,6 +2508,15 @@ func isColumnSearchable(definition columnDefinition) bool {
 	}
 }
 
+func isColumnFilterable(definition columnDefinition) bool {
+	switch definition.UdtName {
+	case "geometry", "geography", "bytea":
+		return false
+	default:
+		return true
+	}
+}
+
 func convertColumnValue(
 	definition columnDefinition,
 	value interface{},
@@ -2454,6 +2544,22 @@ func convertColumnValue(
 		return typed, nil
 	default:
 		return nil, fmt.Errorf("%w: column %q is not editable", ErrInvalidWriteRequest, definition.Name)
+	}
+}
+
+func convertFilterValue(
+	definition columnDefinition,
+	value string,
+) (interface{}, error) {
+	switch definition.UdtName {
+	case "bool":
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: column %q expects boolean filter value", ErrInvalidWriteRequest, definition.Name)
+		}
+		return parsed, nil
+	default:
+		return convertColumnValue(definition, value)
 	}
 }
 
@@ -2597,6 +2703,76 @@ func normalizeValue(value interface{}) interface{} {
 	default:
 		return typed
 	}
+}
+
+func buildQueryFilterClause(
+	definitions []columnDefinition,
+	filter *QueryFilter,
+	startParameterIndex int,
+) (string, []interface{}, error) {
+	if filter == nil || len(filter.Conditions) == 0 {
+		return "", nil, nil
+	}
+
+	columnByName := make(map[string]columnDefinition, len(definitions))
+	for _, definition := range definitions {
+		columnByName[definition.Name] = definition
+	}
+
+	clauses := make([]string, 0, len(filter.Conditions))
+	parameters := make([]interface{}, 0, len(filter.Conditions))
+
+	for _, condition := range filter.Conditions {
+		definition, ok := columnByName[condition.Column]
+		if !ok {
+			return "", nil, fmt.Errorf("%w: filter column %q does not exist on selected table", ErrInvalidWriteRequest, condition.Column)
+		}
+
+		if !isColumnFilterable(definition) {
+			return "", nil, fmt.Errorf("%w: column %q does not support filtering in this first pass", ErrInvalidWriteRequest, condition.Column)
+		}
+
+		quotedColumnName := quoteIdentifier(condition.Column)
+
+		switch condition.Operator {
+		case "eq":
+			convertedValue, err := convertFilterValue(definition, condition.Value)
+			if err != nil {
+				return "", nil, err
+			}
+
+			parameters = append(parameters, convertedValue)
+			placeholder := fmt.Sprintf("$%d", startParameterIndex+len(parameters))
+			clauses = append(clauses, fmt.Sprintf("%s = %s", quotedColumnName, placeholder))
+		case "in":
+			if len(condition.Values) == 0 {
+				return "", nil, fmt.Errorf("%w: filter column %q requires one or more values", ErrInvalidWriteRequest, condition.Column)
+			}
+
+			placeholders := make([]string, 0, len(condition.Values))
+			for _, rawValue := range condition.Values {
+				convertedValue, err := convertFilterValue(definition, rawValue)
+				if err != nil {
+					return "", nil, err
+				}
+
+				parameters = append(parameters, convertedValue)
+				placeholders = append(
+					placeholders,
+					fmt.Sprintf("$%d", startParameterIndex+len(parameters)),
+				)
+			}
+
+			clauses = append(
+				clauses,
+				fmt.Sprintf("%s in (%s)", quotedColumnName, strings.Join(placeholders, ", ")),
+			)
+		default:
+			return "", nil, fmt.Errorf("%w: unsupported filter operator %q", ErrInvalidWriteRequest, condition.Operator)
+		}
+	}
+
+	return strings.Join(clauses, " and "), parameters, nil
 }
 
 func valueToFloat64(value interface{}) (float64, bool) {

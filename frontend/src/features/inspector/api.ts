@@ -1,4 +1,5 @@
 import type { DatabaseConnection } from '../connections/store';
+import type { TableFilterDefinition } from '../filters/types';
 import type { RowReference } from '../map/selection';
 
 export interface InspectableTable {
@@ -196,6 +197,7 @@ export async function fetchInspectorRows(
   offset: number,
   limit: number,
   search?: string,
+  filter?: TableFilterDefinition | null,
 ) {
   const response = await fetch('/api/v1/database-connections/rows', {
     method: 'POST',
@@ -207,6 +209,7 @@ export async function fetchInspectorRows(
       schema: table.schema,
       table: table.name,
       search,
+      filter,
       offset,
       limit,
     }),

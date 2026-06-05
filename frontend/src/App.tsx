@@ -76,6 +76,11 @@ import {
   type MapSource,
   useConnectionStore,
 } from './features/connections/store';
+import type {
+  TableFilterCondition,
+  TableFilterDefinition,
+  TableFilterOperator,
+} from './features/filters/types';
 import {
   commitInspectorRows,
   fetchInspectableSchemas,
@@ -2134,6 +2139,7 @@ function DataInspector({
   onSelectTable: (tableKey: string | null) => void;
   tablesError: string;
 }) {
+  const [savedFilterOpened, savedFilterModal] = useDisclosure(false);
   const [rowsState, setRowsState] = useState<InspectorRowsResponse | null>(
     null,
   );
@@ -2150,7 +2156,41 @@ function DataInspector({
   const [saveMessage, setSaveMessage] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
+  const [activeSavedFilterId, setActiveSavedFilterId] = useState<string | null>(
+    null,
+  );
+  const [draftFilterName, setDraftFilterName] = useState('');
+  const [draftFilterCondition, setDraftFilterCondition] =
+    useState<TableFilterCondition>(() =>
+      createDefaultTableFilterCondition(selectedTable),
+    );
   const deferredSearchInput = useDeferredValue(searchInput);
+  const savedTableFilters = useConnectionStore(
+    (state) => state.savedTableFilters,
+  );
+  const addSavedTableFilter = useConnectionStore(
+    (state) => state.addSavedTableFilter,
+  );
+  const removeSavedTableFilter = useConnectionStore(
+    (state) => state.removeSavedTableFilter,
+  );
+
+  const matchingSavedFilters = savedTableFilters.filter(
+    (filter) =>
+      filter.connectionId === connection?.id &&
+      filter.schema === selectedTable?.schema &&
+      filter.table === selectedTable?.name,
+  );
+  const activeSavedFilter =
+    matchingSavedFilters.find((filter) => filter.id === activeSavedFilterId) ??
+    null;
+  const activeTableFilter = activeSavedFilter?.filter ?? null;
+  const filterableColumnOptions = (selectedTable?.columns ?? [])
+    .filter((column) => isEditableColumnType(column.type))
+    .map((column) => ({
+      label: `${column.name} (${column.type})`,
+      value: column.name,
+    }));
 
   const activePrimaryKey =
     rowsState?.primaryKey ?? selectedTable?.primaryKey ?? [];
@@ -2169,6 +2209,11 @@ function DataInspector({
     setDraftInserts([]);
     setSaveError('');
   }, []);
+
+  const resetSavedFilterDraft = useCallback(() => {
+    setDraftFilterName('');
+    setDraftFilterCondition(createDefaultTableFilterCondition(selectedTable));
+  }, [selectedTable]);
 
   const confirmDraftReset = useCallback(
     (actionLabel: string) => {
@@ -2198,6 +2243,20 @@ function DataInspector({
     setSaveMessage('');
     setAppliedSearch(nextSearch);
   }, [appliedSearch, confirmDraftReset, deferredSearchInput, resetDraftState]);
+
+  useEffect(() => {
+    if (
+      activeSavedFilterId &&
+      !matchingSavedFilters.some((filter) => filter.id === activeSavedFilterId)
+    ) {
+      setActiveSavedFilterId(null);
+    }
+  }, [activeSavedFilterId, matchingSavedFilters]);
+
+  useEffect(() => {
+    setActiveSavedFilterId(null);
+    resetSavedFilterDraft();
+  }, [resetSavedFilterDraft]);
 
   useEffect(() => {
     if (!selectedTableKey && tables.length > 0) {
@@ -2243,6 +2302,7 @@ function DataInspector({
           offset,
           pageSize,
           appliedSearch,
+          activeTableFilter,
         );
 
         if (!isActive) {
@@ -2271,7 +2331,13 @@ function DataInspector({
     return () => {
       isActive = false;
     };
-  }, [appliedSearch, connection, rowsRefreshToken, selectedTable]);
+  }, [
+    activeTableFilter,
+    appliedSearch,
+    connection,
+    rowsRefreshToken,
+    selectedTable,
+  ]);
 
   async function handlePageChange(nextOffset: number) {
     if (!connection || !selectedTable) {
@@ -2295,6 +2361,7 @@ function DataInspector({
         nextOffset,
         pageSize,
         appliedSearch,
+        activeTableFilter,
       );
       setRowsState(payload);
     } catch (error) {
@@ -2519,6 +2586,99 @@ function DataInspector({
     setSaveMessage('');
   }
 
+  function handleOpenSavedFilterModal() {
+    resetSavedFilterDraft();
+    savedFilterModal.open();
+  }
+
+  function handleCreateSavedFilter() {
+    if (!connection || !selectedTable) {
+      return;
+    }
+
+    const nextName = draftFilterName.trim();
+    const nextColumn = draftFilterCondition.column.trim();
+    const nextOperator = draftFilterCondition.operator;
+    const nextRawValue = (draftFilterCondition.value ?? '').trim();
+    const nextValues =
+      nextOperator === 'in'
+        ? (draftFilterCondition.values ?? []).filter(Boolean)
+        : [];
+
+    if (!nextName || !nextColumn) {
+      return;
+    }
+
+    if (nextOperator === 'eq' && !nextRawValue) {
+      return;
+    }
+
+    if (nextOperator === 'in' && nextValues.length === 0) {
+      return;
+    }
+
+    addSavedTableFilter({
+      name: nextName,
+      connectionId: connection.id,
+      schema: selectedTable.schema,
+      table: selectedTable.name,
+      filter: buildTableFilterDefinition({
+        column: nextColumn,
+        operator: nextOperator,
+        value: nextRawValue,
+        values: nextValues,
+      }),
+    });
+
+    resetSavedFilterDraft();
+    savedFilterModal.close();
+  }
+
+  function handleSelectSavedFilter(nextFilterId: string | null) {
+    if (nextFilterId === activeSavedFilterId) {
+      return;
+    }
+
+    if (
+      nextFilterId !== activeSavedFilterId &&
+      !confirmDraftReset('changing saved filter')
+    ) {
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
+    setActiveSavedFilterId(nextFilterId);
+  }
+
+  function handleRemoveActiveSavedFilter() {
+    if (!activeSavedFilter) {
+      return;
+    }
+
+    if (!window.confirm(`Delete saved filter "${activeSavedFilter.name}"?`)) {
+      return;
+    }
+
+    if (activeSavedFilter.id === activeSavedFilterId) {
+      setActiveSavedFilterId(null);
+    }
+
+    removeSavedTableFilter(activeSavedFilter.id);
+  }
+
+  function handleRemoveSavedFilter(filterId: string, filterName: string) {
+    if (!window.confirm(`Delete saved filter "${filterName}"?`)) {
+      return;
+    }
+
+    if (filterId === activeSavedFilterId) {
+      setActiveSavedFilterId(null);
+    }
+
+    removeSavedTableFilter(filterId);
+  }
+
   if (!connection) {
     return (
       <EmptyState
@@ -2538,505 +2698,685 @@ function DataInspector({
   }
 
   return (
-    <Stack h="100%" gap="sm">
-      <Group justify="space-between" wrap="nowrap">
-        <Group grow wrap="nowrap">
+    <>
+      <Modal
+        centered
+        onClose={savedFilterModal.close}
+        opened={savedFilterOpened}
+        title="Save table filter"
+      >
+        <Stack gap="sm">
+          <TextInput
+            label="Filter name"
+            onChange={(event) => setDraftFilterName(event.currentTarget.value)}
+            placeholder="Cities"
+            value={draftFilterName}
+          />
           <Select
-            data={tables.map((table) => ({
-              label: table.fullName,
-              value: table.fullName,
-            }))}
-            disabled={isLoadingTables}
-            leftSection={
-              isLoadingTables || isLoadingTableMetadata ? (
-                <Loader size={14} />
-              ) : null
+            data={filterableColumnOptions}
+            label="Column"
+            onChange={(value) =>
+              setDraftFilterCondition((current) => ({
+                ...current,
+                column: value ?? '',
+              }))
             }
-            onChange={handleSelectTableChange}
-            placeholder={
-              isLoadingTables ? 'Loading database tables...' : 'Select table'
+            searchable
+            value={draftFilterCondition.column}
+          />
+          <Select
+            allowDeselect={false}
+            data={[
+              { label: 'Equals', value: 'eq' },
+              { label: 'In list', value: 'in' },
+            ]}
+            label="Operator"
+            onChange={(value) =>
+              setDraftFilterCondition((current) => ({
+                ...current,
+                operator: (value ?? 'eq') as TableFilterOperator,
+                value: value === 'in' ? '' : current.value,
+                values: value === 'in' ? current.values : [],
+              }))
             }
-            value={selectedTableKey}
+            value={draftFilterCondition.operator}
           />
           <TextInput
-            leftSection={<IconSearch size={14} />}
-            onChange={(event) => setSearchInput(event.currentTarget.value)}
-            placeholder="Search rows"
-            rightSection={
-              searchInput ? (
+            description={
+              draftFilterCondition.operator === 'in'
+                ? 'Comma-separated values. Example: 7, 8'
+                : 'Single value. Example: 8'
+            }
+            label={draftFilterCondition.operator === 'in' ? 'Values' : 'Value'}
+            onChange={(event) => {
+              const nextRawValue = event.currentTarget.value;
+              setDraftFilterCondition((current) => ({
+                ...current,
+                value: current.operator === 'eq' ? nextRawValue : current.value,
+                values:
+                  current.operator === 'in'
+                    ? nextRawValue
+                        .split(',')
+                        .map((value) => value.trim())
+                        .filter(Boolean)
+                    : current.values,
+              }));
+            }}
+            placeholder={draftFilterCondition.operator === 'in' ? '7, 8' : '8'}
+            value={
+              draftFilterCondition.operator === 'in'
+                ? (draftFilterCondition.values ?? []).join(', ')
+                : (draftFilterCondition.value ?? '')
+            }
+          />
+          <Group justify="space-between" pt="xs">
+            <Text c="dimmed" size="xs">
+              First slice: one condition, operators `=` and `in`.
+            </Text>
+            <Button
+              disabled={
+                !draftFilterName.trim() ||
+                !draftFilterCondition.column ||
+                (draftFilterCondition.operator === 'eq'
+                  ? !(draftFilterCondition.value ?? '').trim()
+                  : (draftFilterCondition.values ?? []).length === 0)
+              }
+              onClick={handleCreateSavedFilter}
+            >
+              Save filter
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Stack h="100%" gap="sm">
+        <Group justify="space-between" wrap="nowrap">
+          <Group grow wrap="nowrap">
+            <Select
+              data={tables.map((table) => ({
+                label: table.fullName,
+                value: table.fullName,
+              }))}
+              disabled={isLoadingTables}
+              leftSection={
+                isLoadingTables || isLoadingTableMetadata ? (
+                  <Loader size={14} />
+                ) : null
+              }
+              onChange={handleSelectTableChange}
+              placeholder={
+                isLoadingTables ? 'Loading database tables...' : 'Select table'
+              }
+              value={selectedTableKey}
+            />
+            <TextInput
+              leftSection={<IconSearch size={14} />}
+              onChange={(event) => setSearchInput(event.currentTarget.value)}
+              placeholder="Search rows"
+              rightSection={
+                searchInput ? (
+                  <ActionIcon
+                    aria-label="Clear search"
+                    color="gray"
+                    onClick={() => setSearchInput('')}
+                    size="sm"
+                    variant="subtle"
+                  >
+                    <IconX size={14} />
+                  </ActionIcon>
+                ) : null
+              }
+              value={searchInput}
+            />
+          </Group>
+          <Group gap="xs" wrap="nowrap">
+            <Button
+              disabled={!selectedTable || filterableColumnOptions.length === 0}
+              leftSection={<IconPlus size={14} />}
+              onClick={handleOpenSavedFilterModal}
+              size="compact-sm"
+              variant="default"
+            >
+              Filter
+            </Button>
+            {selectedTable?.isEditable ? (
+              <Button
+                leftSection={<IconPlus size={14} />}
+                onClick={handleAddDraftRow}
+                size="compact-sm"
+                variant="light"
+              >
+                Row
+              </Button>
+            ) : null}
+            <Button
+              disabled={!hasDirtyChanges || isSavingChanges}
+              leftSection={<IconRestore size={14} />}
+              onClick={handleDiscardChanges}
+              size="compact-sm"
+              variant="default"
+            >
+              Discard
+            </Button>
+            <Button
+              disabled={!hasDirtyChanges || isSavingChanges}
+              leftSection={
+                isSavingChanges ? (
+                  <Loader size={14} />
+                ) : (
+                  <IconDeviceFloppy size={14} />
+                )
+              }
+              onClick={() => void handleSaveChanges()}
+              size="compact-sm"
+            >
+              Save
+            </Button>
+            <ActionIcon
+              aria-label="Refresh rows"
+              onClick={handleRefreshRows}
+              size="md"
+              variant="subtle"
+            >
+              {isLoadingRows ? <Loader size={16} /> : <IconRefresh size={16} />}
+            </ActionIcon>
+          </Group>
+        </Group>
+
+        <Group justify="space-between" wrap="nowrap">
+          <Group grow wrap="nowrap">
+            <Select
+              clearable
+              data={matchingSavedFilters.map((filter) => ({
+                label: filter.name,
+                value: filter.id,
+              }))}
+              disabled={!selectedTable}
+              onChange={handleSelectSavedFilter}
+              placeholder="Saved filter"
+              size="xs"
+              value={activeSavedFilterId}
+            />
+            {activeSavedFilter ? (
+              <Badge color="grape" size="sm" variant="light">
+                {activeSavedFilter.name}
+              </Badge>
+            ) : (
+              <Text c="dimmed" size="xs">
+                No saved filter applied
+              </Text>
+            )}
+          </Group>
+          {activeSavedFilter ? (
+            <ActionIcon
+              aria-label="Delete active saved filter"
+              color="red"
+              onClick={handleRemoveActiveSavedFilter}
+              size="sm"
+              variant="subtle"
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          ) : null}
+        </Group>
+
+        {matchingSavedFilters.length > 0 ? (
+          <Group gap="xs">
+            {matchingSavedFilters.map((filter) => (
+              <Group gap={4} key={filter.id} wrap="nowrap">
+                <Button
+                  color={filter.id === activeSavedFilterId ? 'grape' : 'gray'}
+                  onClick={() => handleSelectSavedFilter(filter.id)}
+                  size="compact-xs"
+                  variant={
+                    filter.id === activeSavedFilterId ? 'light' : 'subtle'
+                  }
+                >
+                  {filter.name}
+                </Button>
                 <ActionIcon
-                  aria-label="Clear search"
-                  color="gray"
-                  onClick={() => setSearchInput('')}
+                  aria-label={`Delete saved filter ${filter.name}`}
+                  color="red"
+                  onClick={() =>
+                    handleRemoveSavedFilter(filter.id, filter.name)
+                  }
                   size="sm"
                   variant="subtle"
                 >
-                  <IconX size={14} />
+                  <IconTrash size={14} />
                 </ActionIcon>
-              ) : null
-            }
-            value={searchInput}
-          />
-        </Group>
-        <Group gap="xs" wrap="nowrap">
-          {selectedTable?.isEditable ? (
-            <Button
-              leftSection={<IconPlus size={14} />}
-              onClick={handleAddDraftRow}
-              size="compact-sm"
-              variant="light"
-            >
-              Row
-            </Button>
-          ) : null}
-          <Button
-            disabled={!hasDirtyChanges || isSavingChanges}
-            leftSection={<IconRestore size={14} />}
-            onClick={handleDiscardChanges}
-            size="compact-sm"
-            variant="default"
-          >
-            Discard
-          </Button>
-          <Button
-            disabled={!hasDirtyChanges || isSavingChanges}
-            leftSection={
-              isSavingChanges ? (
-                <Loader size={14} />
-              ) : (
-                <IconDeviceFloppy size={14} />
-              )
-            }
-            onClick={() => void handleSaveChanges()}
-            size="compact-sm"
-          >
-            Save
-          </Button>
-          <ActionIcon
-            aria-label="Refresh rows"
-            onClick={handleRefreshRows}
-            size="md"
-            variant="subtle"
-          >
-            {isLoadingRows ? <Loader size={16} /> : <IconRefresh size={16} />}
-          </ActionIcon>
-        </Group>
-      </Group>
-
-      {tablesError ? (
-        <Alert color="red" title="Table discovery failed" variant="light">
-          {tablesError}
-        </Alert>
-      ) : null}
-
-      {isLoadingTables ? (
-        <Alert
-          color="blue"
-          icon={<Loader size={16} />}
-          title="Discovering database tables"
-          variant="light"
-        >
-          Remote databases can take a while while columns, primary keys,
-          privileges, and geometry metadata are inspected.
-        </Alert>
-      ) : null}
-
-      {isLoadingTableMetadata ? (
-        <Alert
-          color="blue"
-          icon={<Loader size={16} />}
-          title="Loading table metadata"
-          variant="light"
-        >
-          Reading selected table columns, primary key, privileges, and geometry.
-        </Alert>
-      ) : null}
-
-      {rowsError ? (
-        <Text c="red" size="sm">
-          {rowsError}
-        </Text>
-      ) : null}
-
-      {saveError ? (
-        <Alert color="red" title="Save failed" variant="light">
-          {saveError}
-        </Alert>
-      ) : null}
-
-      {saveMessage ? (
-        <Alert color="teal" title="Draft committed" variant="light">
-          {saveMessage}
-        </Alert>
-      ) : null}
-
-      {!selectedTable && (isLoadingTables || isLoadingTableMetadata) ? (
-        <Center
-          style={{
-            flex: 1,
-            minHeight: 0,
-          }}
-        >
-          <Stack align="center" gap="xs">
-            <Loader size="sm" />
-            <Text c="dimmed" size="sm">
-              {isLoadingTableMetadata
-                ? 'Reading table metadata...'
-                : 'Reading table catalog...'}
-            </Text>
-          </Stack>
-        </Center>
-      ) : null}
-
-      {!selectedTable && !isLoadingTables && !isLoadingTableMetadata ? (
-        <EmptyState
-          detail="Choose schemas from the selected connection catalog first."
-          label="No Table Selected"
-        />
-      ) : null}
-
-      {selectedTable && rowsState ? (
-        <>
-          <Group justify="space-between">
-            <Group gap="xs">
-              <Text c="dimmed" size="xs">
-                {selectedTable.fullName} • {selectedTable.kind} • showing rows{' '}
-                {rowsState.offset + 1}-
-                {rowsState.offset + rowsState.rows.length}
-              </Text>
-              {rowsState.primaryKey.length > 0 ? (
-                <Badge color="gray" size="sm" variant="light">
-                  PK {rowsState.primaryKey.join(', ')}
-                </Badge>
-              ) : (
-                <Badge color="gray" size="sm" variant="outline">
-                  No primary key
-                </Badge>
-              )}
-              <Badge
-                color={rowsState.isEditable ? 'teal' : 'gray'}
-                size="sm"
-                variant="light"
-              >
-                {rowsState.isEditable ? 'Editable draft' : 'Read only'}
-              </Badge>
-              {appliedSearch ? (
-                <Badge color="blue" size="sm" variant="light">
-                  Search: {appliedSearch}
-                </Badge>
-              ) : null}
-            </Group>
-            <Group gap="xs">
-              {hasDirtyChanges ? (
-                <Badge color="orange" size="sm" variant="light">
-                  {touchedRowCount} pending
-                </Badge>
-              ) : null}
-              <Text c="dimmed" size="xs">
-                page size {rowsState.limit}
-              </Text>
-              {isLoadingRows ? (
-                <Badge color="blue" size="sm" variant="light">
-                  Loading rows
-                </Badge>
-              ) : null}
-            </Group>
+              </Group>
+            ))}
           </Group>
+        ) : null}
 
-          {!rowsState.isEditable ? (
-            <Alert color="gray" variant="light">
-              Editing enabled only for base tables with primary key and
-              insert/update/delete privileges. Geometry cells stay read-only in
-              this first pass.
-            </Alert>
-          ) : null}
+        {tablesError ? (
+          <Alert color="red" title="Table discovery failed" variant="light">
+            {tablesError}
+          </Alert>
+        ) : null}
 
-          {rowsState.rows.length === 0 && draftInserts.length === 0 ? (
-            <EmptyState
-              detail={
-                appliedSearch
-                  ? 'No rows match current search.'
-                  : 'Selected page has no rows.'
-              }
-              label={appliedSearch ? 'No Matches' : 'No Rows'}
-            />
-          ) : (
-            <ScrollArea
-              offsetScrollbars
-              scrollbarSize={8}
-              style={{
-                flex: 1,
-                minHeight: 0,
-              }}
-            >
-              <Table
-                highlightOnHover
-                stickyHeader
-                stickyHeaderOffset={0}
-                striped
-                withColumnBorders
+        {isLoadingTables ? (
+          <Alert
+            color="blue"
+            icon={<Loader size={16} />}
+            title="Discovering database tables"
+            variant="light"
+          >
+            Remote databases can take a while while columns, primary keys,
+            privileges, and geometry metadata are inspected.
+          </Alert>
+        ) : null}
+
+        {isLoadingTableMetadata ? (
+          <Alert
+            color="blue"
+            icon={<Loader size={16} />}
+            title="Loading table metadata"
+            variant="light"
+          >
+            Reading selected table columns, primary key, privileges, and
+            geometry.
+          </Alert>
+        ) : null}
+
+        {rowsError ? (
+          <Text c="red" size="sm">
+            {rowsError}
+          </Text>
+        ) : null}
+
+        {saveError ? (
+          <Alert color="red" title="Save failed" variant="light">
+            {saveError}
+          </Alert>
+        ) : null}
+
+        {saveMessage ? (
+          <Alert color="teal" title="Draft committed" variant="light">
+            {saveMessage}
+          </Alert>
+        ) : null}
+
+        {!selectedTable && (isLoadingTables || isLoadingTableMetadata) ? (
+          <Center
+            style={{
+              flex: 1,
+              minHeight: 0,
+            }}
+          >
+            <Stack align="center" gap="xs">
+              <Loader size="sm" />
+              <Text c="dimmed" size="sm">
+                {isLoadingTableMetadata
+                  ? 'Reading table metadata...'
+                  : 'Reading table catalog...'}
+              </Text>
+            </Stack>
+          </Center>
+        ) : null}
+
+        {!selectedTable && !isLoadingTables && !isLoadingTableMetadata ? (
+          <EmptyState
+            detail="Choose schemas from the selected connection catalog first."
+            label="No Table Selected"
+          />
+        ) : null}
+
+        {selectedTable && rowsState ? (
+          <>
+            <Group justify="space-between">
+              <Group gap="xs">
+                <Text c="dimmed" size="xs">
+                  {selectedTable.fullName} • {selectedTable.kind} • showing rows{' '}
+                  {rowsState.offset + 1}-
+                  {rowsState.offset + rowsState.rows.length}
+                </Text>
+                {rowsState.primaryKey.length > 0 ? (
+                  <Badge color="gray" size="sm" variant="light">
+                    PK {rowsState.primaryKey.join(', ')}
+                  </Badge>
+                ) : (
+                  <Badge color="gray" size="sm" variant="outline">
+                    No primary key
+                  </Badge>
+                )}
+                <Badge
+                  color={rowsState.isEditable ? 'teal' : 'gray'}
+                  size="sm"
+                  variant="light"
+                >
+                  {rowsState.isEditable ? 'Editable draft' : 'Read only'}
+                </Badge>
+                {appliedSearch ? (
+                  <Badge color="blue" size="sm" variant="light">
+                    Search: {appliedSearch}
+                  </Badge>
+                ) : null}
+                {activeSavedFilter ? (
+                  <Badge color="grape" size="sm" variant="light">
+                    Filter: {activeSavedFilter.name}
+                  </Badge>
+                ) : null}
+              </Group>
+              <Group gap="xs">
+                {hasDirtyChanges ? (
+                  <Badge color="orange" size="sm" variant="light">
+                    {touchedRowCount} pending
+                  </Badge>
+                ) : null}
+                <Text c="dimmed" size="xs">
+                  page size {rowsState.limit}
+                </Text>
+                {isLoadingRows ? (
+                  <Badge color="blue" size="sm" variant="light">
+                    Loading rows
+                  </Badge>
+                ) : null}
+              </Group>
+            </Group>
+
+            {!rowsState.isEditable ? (
+              <Alert color="gray" variant="light">
+                Editing enabled only for base tables with primary key and
+                insert/update/delete privileges. Geometry cells stay read-only
+                in this first pass.
+              </Alert>
+            ) : null}
+
+            {rowsState.rows.length === 0 && draftInserts.length === 0 ? (
+              <EmptyState
+                detail={
+                  appliedSearch || activeSavedFilter
+                    ? 'No rows match current search/filter.'
+                    : 'Selected page has no rows.'
+                }
+                label={
+                  appliedSearch || activeSavedFilter ? 'No Matches' : 'No Rows'
+                }
+              />
+            ) : (
+              <ScrollArea
+                offsetScrollbars
+                scrollbarSize={8}
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                }}
               >
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th
-                      style={{
-                        minWidth: 120,
-                      }}
-                    >
-                      Row
-                    </Table.Th>
-                    {rowsState.columns.map((column) => (
+                <Table
+                  highlightOnHover
+                  stickyHeader
+                  stickyHeaderOffset={0}
+                  striped
+                  withColumnBorders
+                >
+                  <Table.Thead>
+                    <Table.Tr>
                       <Table.Th
-                        key={column.name}
                         style={{
-                          minWidth: 160,
-                          whiteSpace: 'nowrap',
+                          minWidth: 120,
                         }}
                       >
-                        <Stack gap={0}>
-                          <Text fw={600} size="sm">
-                            {column.name}
-                          </Text>
-                          <Text c="dimmed" size="xs">
-                            {column.type}
-                          </Text>
-                        </Stack>
+                        Row
                       </Table.Th>
-                    ))}
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {draftInserts.map((draftRow) => (
-                    <Table.Tr
-                      key={draftRow.id}
-                      style={{
-                        background: 'rgba(18, 184, 134, 0.08)',
-                      }}
-                    >
-                      <Table.Td>
-                        <Group gap={6} wrap="nowrap">
-                          <Badge color="teal" size="xs" variant="light">
-                            New
-                          </Badge>
-                          <ActionIcon
-                            aria-label="Remove new row"
-                            color="red"
-                            onClick={() =>
-                              handleRemoveDraftInsertRow(draftRow.id)
-                            }
-                            size="sm"
-                            variant="subtle"
-                          >
-                            <IconTrash size={14} />
-                          </ActionIcon>
-                        </Group>
-                      </Table.Td>
                       {rowsState.columns.map((column) => (
-                        <Table.Td
-                          key={`${draftRow.id}-${column.name}`}
+                        <Table.Th
+                          key={column.name}
                           style={{
-                            fontFamily: getCellFontFamily(
-                              column.name,
-                              column.type,
-                            ),
-                            maxWidth: 320,
-                            textAlign: getCellTextAlign(column.type),
-                            verticalAlign: 'top',
+                            minWidth: 160,
+                            whiteSpace: 'nowrap',
                           }}
                         >
-                          {isEditableColumnType(column.type) ? (
-                            renderEditableCell({
-                              column,
-                              onChange: (nextValue) =>
-                                handleDraftInsertChange(
-                                  draftRow.id,
-                                  column,
-                                  nextValue,
-                                ),
-                              value: draftRow.values[column.name],
-                            })
-                          ) : (
-                            <Text c="dimmed" size="sm">
-                              Auto / read only
+                          <Stack gap={0}>
+                            <Text fw={600} size="sm">
+                              {column.name}
                             </Text>
-                          )}
-                        </Table.Td>
+                            <Text c="dimmed" size="xs">
+                              {column.type}
+                            </Text>
+                          </Stack>
+                        </Table.Th>
                       ))}
                     </Table.Tr>
-                  ))}
-
-                  {rowsState.rows.map((row) => {
-                    const rowToken = serializeRowKey(
-                      row.rowKey,
-                      rowsState.primaryKey,
-                    );
-                    const rowPatch = rowToken
-                      ? draftUpdates[rowToken]
-                      : undefined;
-                    const isDeleted = rowToken
-                      ? Boolean(draftDeletes[rowToken])
-                      : false;
-                    const rowRenderKey =
-                      rowToken ??
-                      JSON.stringify([
-                        rowsState.offset,
-                        rowsState.primaryKey,
-                        row.values,
-                      ]);
-
-                    return (
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {draftInserts.map((draftRow) => (
                       <Table.Tr
-                        key={rowRenderKey}
+                        key={draftRow.id}
                         style={{
-                          background: isDeleted
-                            ? 'rgba(224, 49, 49, 0.08)'
-                            : rowPatch
-                              ? 'rgba(250, 176, 5, 0.08)'
-                              : undefined,
+                          background: 'rgba(18, 184, 134, 0.08)',
                         }}
                       >
                         <Table.Td>
                           <Group gap={6} wrap="nowrap">
-                            {isDeleted ? (
-                              <Badge color="red" size="xs" variant="light">
-                                Delete
-                              </Badge>
-                            ) : rowPatch ? (
-                              <Badge color="orange" size="xs" variant="light">
-                                Edit
-                              </Badge>
-                            ) : (
-                              <Badge color="gray" size="xs" variant="light">
-                                Live
-                              </Badge>
-                            )}
-                            {rowsState.isEditable && row.rowKey ? (
-                              <ActionIcon
-                                aria-label={
-                                  isDeleted
-                                    ? 'Restore row'
-                                    : 'Mark row for delete'
-                                }
-                                color={isDeleted ? 'gray' : 'red'}
-                                onClick={() =>
-                                  handleToggleDeleteExistingRow(row)
-                                }
-                                size="sm"
-                                variant="subtle"
-                              >
-                                {isDeleted ? (
-                                  <IconRestore size={14} />
-                                ) : (
-                                  <IconTrash size={14} />
-                                )}
-                              </ActionIcon>
-                            ) : null}
+                            <Badge color="teal" size="xs" variant="light">
+                              New
+                            </Badge>
+                            <ActionIcon
+                              aria-label="Remove new row"
+                              color="red"
+                              onClick={() =>
+                                handleRemoveDraftInsertRow(draftRow.id)
+                              }
+                              size="sm"
+                              variant="subtle"
+                            >
+                              <IconTrash size={14} />
+                            </ActionIcon>
                           </Group>
                         </Table.Td>
-                        {rowsState.columns.map((column) => {
-                          const displayValue =
-                            rowPatch && column.name in rowPatch
-                              ? rowPatch[column.name]
-                              : row.values[column.name];
-                          const isEditableCell =
-                            rowsState.isEditable &&
-                            Boolean(row.rowKey) &&
-                            isEditableColumnType(column.type) &&
-                            !rowsState.primaryKey.includes(column.name);
-
-                          return (
-                            <Table.Td
-                              key={`${rowRenderKey}-${column.name}`}
-                              style={{
-                                fontFamily: getCellFontFamily(
-                                  column.name,
-                                  column.type,
-                                ),
-                                maxWidth: 320,
-                                textAlign: getCellTextAlign(column.type),
-                                verticalAlign: 'top',
-                              }}
-                            >
-                              {isEditableCell ? (
-                                renderEditableCell({
-                                  column,
-                                  disabled: isDeleted || isSavingChanges,
-                                  onChange: (nextValue) =>
-                                    handleExistingCellChange(
-                                      row,
-                                      column,
-                                      nextValue,
-                                    ),
-                                  value: displayValue,
-                                })
-                              ) : (
-                                <Text
-                                  lineClamp={3}
-                                  size="sm"
-                                  style={{
-                                    opacity: isDeleted ? 0.55 : 1,
-                                    textDecoration: isDeleted
-                                      ? 'line-through'
-                                      : undefined,
-                                    whiteSpace: 'pre-wrap',
-                                    wordBreak: 'break-word',
-                                  }}
-                                >
-                                  {formatCellValue(displayValue)}
-                                </Text>
-                              )}
-                            </Table.Td>
-                          );
-                        })}
+                        {rowsState.columns.map((column) => (
+                          <Table.Td
+                            key={`${draftRow.id}-${column.name}`}
+                            style={{
+                              fontFamily: getCellFontFamily(
+                                column.name,
+                                column.type,
+                              ),
+                              maxWidth: 320,
+                              textAlign: getCellTextAlign(column.type),
+                              verticalAlign: 'top',
+                            }}
+                          >
+                            {isEditableColumnType(column.type) ? (
+                              renderEditableCell({
+                                column,
+                                onChange: (nextValue) =>
+                                  handleDraftInsertChange(
+                                    draftRow.id,
+                                    column,
+                                    nextValue,
+                                  ),
+                                value: draftRow.values[column.name],
+                              })
+                            ) : (
+                              <Text c="dimmed" size="sm">
+                                Auto / read only
+                              </Text>
+                            )}
+                          </Table.Td>
+                        ))}
                       </Table.Tr>
-                    );
-                  })}
-                </Table.Tbody>
-              </Table>
-            </ScrollArea>
-          )}
+                    ))}
 
-          <Group justify="space-between">
-            <Button
-              disabled={isLoadingRows || rowsState.offset === 0}
-              onClick={() =>
-                void handlePageChange(Math.max(rowsState.offset - pageSize, 0))
-              }
-              size="compact-sm"
-              variant="light"
-            >
-              Previous
-            </Button>
-            <Text c="dimmed" size="xs">
-              offset {rowsState.offset}
-            </Text>
-            <Button
-              disabled={isLoadingRows || !rowsState.hasMore}
-              onClick={() => void handlePageChange(rowsState.offset + pageSize)}
-              size="compact-sm"
-            >
-              Next
-            </Button>
-          </Group>
-        </>
-      ) : null}
+                    {rowsState.rows.map((row) => {
+                      const rowToken = serializeRowKey(
+                        row.rowKey,
+                        rowsState.primaryKey,
+                      );
+                      const rowPatch = rowToken
+                        ? draftUpdates[rowToken]
+                        : undefined;
+                      const isDeleted = rowToken
+                        ? Boolean(draftDeletes[rowToken])
+                        : false;
+                      const rowRenderKey =
+                        rowToken ??
+                        JSON.stringify([
+                          rowsState.offset,
+                          rowsState.primaryKey,
+                          row.values,
+                        ]);
 
-      {selectedTable && !rowsState && isLoadingRows ? (
-        <Center
-          style={{
-            flex: 1,
-            minHeight: 0,
-          }}
-        >
-          <Stack align="center" gap="xs">
-            <Loader size="sm" />
-            <Text c="dimmed" size="sm">
-              Loading first page from {selectedTable.fullName}...
-            </Text>
-          </Stack>
-        </Center>
-      ) : null}
-    </Stack>
+                      return (
+                        <Table.Tr
+                          key={rowRenderKey}
+                          style={{
+                            background: isDeleted
+                              ? 'rgba(224, 49, 49, 0.08)'
+                              : rowPatch
+                                ? 'rgba(250, 176, 5, 0.08)'
+                                : undefined,
+                          }}
+                        >
+                          <Table.Td>
+                            <Group gap={6} wrap="nowrap">
+                              {isDeleted ? (
+                                <Badge color="red" size="xs" variant="light">
+                                  Delete
+                                </Badge>
+                              ) : rowPatch ? (
+                                <Badge color="orange" size="xs" variant="light">
+                                  Edit
+                                </Badge>
+                              ) : (
+                                <Badge color="gray" size="xs" variant="light">
+                                  Live
+                                </Badge>
+                              )}
+                              {rowsState.isEditable && row.rowKey ? (
+                                <ActionIcon
+                                  aria-label={
+                                    isDeleted
+                                      ? 'Restore row'
+                                      : 'Mark row for delete'
+                                  }
+                                  color={isDeleted ? 'gray' : 'red'}
+                                  onClick={() =>
+                                    handleToggleDeleteExistingRow(row)
+                                  }
+                                  size="sm"
+                                  variant="subtle"
+                                >
+                                  {isDeleted ? (
+                                    <IconRestore size={14} />
+                                  ) : (
+                                    <IconTrash size={14} />
+                                  )}
+                                </ActionIcon>
+                              ) : null}
+                            </Group>
+                          </Table.Td>
+                          {rowsState.columns.map((column) => {
+                            const displayValue =
+                              rowPatch && column.name in rowPatch
+                                ? rowPatch[column.name]
+                                : row.values[column.name];
+                            const isEditableCell =
+                              rowsState.isEditable &&
+                              Boolean(row.rowKey) &&
+                              isEditableColumnType(column.type) &&
+                              !rowsState.primaryKey.includes(column.name);
+
+                            return (
+                              <Table.Td
+                                key={`${rowRenderKey}-${column.name}`}
+                                style={{
+                                  fontFamily: getCellFontFamily(
+                                    column.name,
+                                    column.type,
+                                  ),
+                                  maxWidth: 320,
+                                  textAlign: getCellTextAlign(column.type),
+                                  verticalAlign: 'top',
+                                }}
+                              >
+                                {isEditableCell ? (
+                                  renderEditableCell({
+                                    column,
+                                    disabled: isDeleted || isSavingChanges,
+                                    onChange: (nextValue) =>
+                                      handleExistingCellChange(
+                                        row,
+                                        column,
+                                        nextValue,
+                                      ),
+                                    value: displayValue,
+                                  })
+                                ) : (
+                                  <Text
+                                    lineClamp={3}
+                                    size="sm"
+                                    style={{
+                                      opacity: isDeleted ? 0.55 : 1,
+                                      textDecoration: isDeleted
+                                        ? 'line-through'
+                                        : undefined,
+                                      whiteSpace: 'pre-wrap',
+                                      wordBreak: 'break-word',
+                                    }}
+                                  >
+                                    {formatCellValue(displayValue)}
+                                  </Text>
+                                )}
+                              </Table.Td>
+                            );
+                          })}
+                        </Table.Tr>
+                      );
+                    })}
+                  </Table.Tbody>
+                </Table>
+              </ScrollArea>
+            )}
+
+            <Group justify="space-between">
+              <Button
+                disabled={isLoadingRows || rowsState.offset === 0}
+                onClick={() =>
+                  void handlePageChange(
+                    Math.max(rowsState.offset - pageSize, 0),
+                  )
+                }
+                size="compact-sm"
+                variant="light"
+              >
+                Previous
+              </Button>
+              <Text c="dimmed" size="xs">
+                offset {rowsState.offset}
+              </Text>
+              <Button
+                disabled={isLoadingRows || !rowsState.hasMore}
+                onClick={() =>
+                  void handlePageChange(rowsState.offset + pageSize)
+                }
+                size="compact-sm"
+              >
+                Next
+              </Button>
+            </Group>
+          </>
+        ) : null}
+
+        {selectedTable && !rowsState && isLoadingRows ? (
+          <Center
+            style={{
+              flex: 1,
+              minHeight: 0,
+            }}
+          >
+            <Stack align="center" gap="xs">
+              <Loader size="sm" />
+              <Text c="dimmed" size="sm">
+                Loading first page from {selectedTable.fullName}...
+              </Text>
+            </Stack>
+          </Center>
+        ) : null}
+      </Stack>
+    </>
   );
 }
 
@@ -3828,6 +4168,47 @@ function isEditableColumnType(columnType: string) {
     isBooleanColumnType(columnType) ||
     /text|character|uuid|date|timestamp/i.test(columnType)
   );
+}
+
+function createDefaultTableFilterCondition(
+  table: InspectableTable | null,
+): TableFilterCondition {
+  const firstFilterableColumn =
+    table?.columns.find((column) => isEditableColumnType(column.type))?.name ??
+    '';
+
+  return {
+    column: firstFilterableColumn,
+    operator: 'eq',
+    value: '',
+    values: [],
+  };
+}
+
+function buildTableFilterDefinition(
+  condition: TableFilterCondition,
+): TableFilterDefinition {
+  if (condition.operator === 'in') {
+    return {
+      conditions: [
+        {
+          column: condition.column,
+          operator: condition.operator,
+          values: condition.values ?? [],
+        },
+      ],
+    };
+  }
+
+  return {
+    conditions: [
+      {
+        column: condition.column,
+        operator: condition.operator,
+        value: condition.value ?? '',
+      },
+    ],
+  };
 }
 
 export function App() {

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
+import type { SavedTableFilter } from '../filters/types';
 import { type BasemapId, defaultBasemapId } from '../map/basemaps';
 
 export interface DatabaseConnection {
@@ -110,6 +111,7 @@ interface ConnectionStoreState {
   connections: DatabaseConnection[];
   mapSources: MapSource[];
   mapLayers: MapLayer[];
+  savedTableFilters: SavedTableFilter[];
   selectedBasemapId: BasemapId;
   selectedConnectionId: string | null;
   selectedTableByConnectionId: Record<string, string | null>;
@@ -125,6 +127,10 @@ interface ConnectionStoreState {
     >,
   ) => void;
   removeConnection: (connectionId: string) => void;
+  addSavedTableFilter: (
+    filter: Omit<SavedTableFilter, 'id' | 'createdAt'>,
+  ) => void;
+  removeSavedTableFilter: (filterId: string) => void;
   setSelectedBasemap: (basemapId: BasemapId) => void;
   selectConnection: (connectionId: string) => void;
   setSelectedTable: (connectionId: string, tableKey: string | null) => void;
@@ -194,6 +200,10 @@ function createMapSourceId() {
 
 function createMapLayerId() {
   return `layer-${crypto.randomUUID()}`;
+}
+
+function createSavedTableFilterId() {
+  return `filter-${crypto.randomUUID()}`;
 }
 
 const layerColors = [
@@ -456,6 +466,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
       ],
       mapSources: [],
       mapLayers: [],
+      savedTableFilters: [],
       selectedBasemapId: defaultBasemapId,
       selectedConnectionId: null,
       selectedTableByConnectionId: {},
@@ -502,6 +513,9 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 layer.connectionId !== connectionId &&
                 nextSourceIds.has(layer.sourceId),
             ),
+            savedTableFilters: state.savedTableFilters.filter(
+              (filter) => filter.connectionId !== connectionId,
+            ),
             selectedConnectionId: nextSelectedId,
             selectedTableByConnectionId: Object.fromEntries(
               Object.entries(state.selectedTableByConnectionId).filter(
@@ -510,6 +524,23 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             ),
           };
         }),
+      addSavedTableFilter: (filter) =>
+        set((state) => ({
+          savedTableFilters: [
+            {
+              ...filter,
+              id: createSavedTableFilterId(),
+              createdAt: new Date().toISOString(),
+            },
+            ...state.savedTableFilters,
+          ],
+        })),
+      removeSavedTableFilter: (filterId) =>
+        set((state) => ({
+          savedTableFilters: state.savedTableFilters.filter(
+            (filter) => filter.id !== filterId,
+          ),
+        })),
       setSelectedBasemap: (basemapId) =>
         set({
           selectedBasemapId: basemapId,
