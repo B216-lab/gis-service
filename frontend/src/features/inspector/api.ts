@@ -43,6 +43,7 @@ export interface InspectorRowsResponse {
   table: string;
   limit: number;
   offset: number;
+  totalRows: number;
   hasMore: boolean;
   primaryKey: string[];
   isEditable: boolean;

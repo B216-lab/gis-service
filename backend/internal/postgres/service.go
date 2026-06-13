@@ -122,21 +122,23 @@ type TableOperation struct {
 
 type ListLayerFeaturesRequest struct {
 	ConnectionTestRequest
-	Schema         string   `json:"schema"`
-	Table          string   `json:"table"`
-	GeometryColumn string   `json:"geometryColumn"`
-	Limit          int      `json:"limit"`
-	West           *float64 `json:"west"`
-	South          *float64 `json:"south"`
-	East           *float64 `json:"east"`
-	North          *float64 `json:"north"`
+	Schema         string       `json:"schema"`
+	Table          string       `json:"table"`
+	GeometryColumn string       `json:"geometryColumn"`
+	Filter         *QueryFilter `json:"filter"`
+	Limit          int          `json:"limit"`
+	West           *float64     `json:"west"`
+	South          *float64     `json:"south"`
+	East           *float64     `json:"east"`
+	North          *float64     `json:"north"`
 }
 
 type LayerExtentRequest struct {
 	ConnectionTestRequest
-	Schema         string `json:"schema"`
-	Table          string `json:"table"`
-	GeometryColumn string `json:"geometryColumn"`
+	Schema         string       `json:"schema"`
+	Table          string       `json:"table"`
+	GeometryColumn string       `json:"geometryColumn"`
+	Filter         *QueryFilter `json:"filter"`
 }
 
 type ListFlowmapDataRequest struct {
@@ -173,6 +175,7 @@ type ListRowsResult struct {
 	Table      string       `json:"table"`
 	Limit      int          `json:"limit"`
 	Offset     int          `json:"offset"`
+	TotalRows  int64        `json:"totalRows"`
 	HasMore    bool         `json:"hasMore"`
 	PrimaryKey []string     `json:"primaryKey"`
 	IsEditable bool         `json:"isEditable"`
@@ -336,26 +339,7 @@ func (request *ListRowsRequest) TrimSpaces() {
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
 	request.Search = strings.TrimSpace(request.Search)
-	if request.Filter == nil {
-		return
-	}
-
-	for index := range request.Filter.Conditions {
-		request.Filter.Conditions[index].Column = strings.TrimSpace(
-			request.Filter.Conditions[index].Column,
-		)
-		request.Filter.Conditions[index].Operator = strings.TrimSpace(
-			request.Filter.Conditions[index].Operator,
-		)
-		request.Filter.Conditions[index].Value = strings.TrimSpace(
-			request.Filter.Conditions[index].Value,
-		)
-		for valueIndex := range request.Filter.Conditions[index].Values {
-			request.Filter.Conditions[index].Values[valueIndex] = strings.TrimSpace(
-				request.Filter.Conditions[index].Values[valueIndex],
-			)
-		}
-	}
+	trimQueryFilter(request.Filter)
 }
 
 func (request *LookupRowsRequest) TrimSpaces() {
@@ -369,6 +353,7 @@ func (request *LayerExtentRequest) TrimSpaces() {
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
 	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
+	trimQueryFilter(request.Filter)
 }
 
 func (request *SchemaTablesRequest) TrimSpaces() {
@@ -387,6 +372,7 @@ func (request *ListLayerFeaturesRequest) TrimSpaces() {
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
 	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
+	trimQueryFilter(request.Filter)
 }
 
 func (request *ListFlowmapDataRequest) TrimSpaces() {
@@ -402,6 +388,68 @@ func (request *ListFlowmapDataRequest) TrimSpaces() {
 	request.EndLatColumn = strings.TrimSpace(request.EndLatColumn)
 	request.EndGeometryColumn = strings.TrimSpace(request.EndGeometryColumn)
 	request.MagnitudeColumn = strings.TrimSpace(request.MagnitudeColumn)
+}
+
+func trimQueryFilter(filter *QueryFilter) {
+	if filter == nil {
+		return
+	}
+
+	for index := range filter.Conditions {
+		filter.Conditions[index].Column = strings.TrimSpace(
+			filter.Conditions[index].Column,
+		)
+		filter.Conditions[index].Operator = strings.TrimSpace(
+			filter.Conditions[index].Operator,
+		)
+		filter.Conditions[index].Value = strings.TrimSpace(
+			filter.Conditions[index].Value,
+		)
+		for valueIndex := range filter.Conditions[index].Values {
+			filter.Conditions[index].Values[valueIndex] = strings.TrimSpace(
+				filter.Conditions[index].Values[valueIndex],
+			)
+		}
+	}
+}
+
+func validateQueryFilter(filter *QueryFilter) error {
+	if filter == nil {
+		return nil
+	}
+
+	if len(filter.Conditions) == 0 {
+		return errors.New("Filter must contain at least one condition.")
+	}
+
+	if len(filter.Conditions) > 10 {
+		return errors.New("Filter must contain 10 conditions or fewer.")
+	}
+
+	for index, condition := range filter.Conditions {
+		if condition.Column == "" {
+			return fmt.Errorf("Filter condition %d must specify a column.", index+1)
+		}
+
+		switch condition.Operator {
+		case "eq":
+			if condition.Value == "" {
+				return fmt.Errorf("Filter condition %d requires a value.", index+1)
+			}
+		case "in":
+			if len(condition.Values) == 0 {
+				return fmt.Errorf("Filter condition %d requires one or more values.", index+1)
+			}
+		default:
+			return fmt.Errorf(
+				"Filter condition %d uses unsupported operator %q.",
+				index+1,
+				condition.Operator,
+			)
+		}
+	}
+
+	return nil
 }
 
 func (request *ListRowsRequest) Normalize() {
@@ -473,29 +521,8 @@ func (request ListRowsRequest) Validate() error {
 		return errors.New("Offset must be zero or greater.")
 	}
 
-	if request.Filter != nil {
-		if len(request.Filter.Conditions) == 0 {
-			return errors.New("Filter must contain at least one condition.")
-		}
-
-		for index, condition := range request.Filter.Conditions {
-			if condition.Column == "" {
-				return fmt.Errorf("Filter condition %d must specify a column.", index+1)
-			}
-
-			switch condition.Operator {
-			case "eq":
-				if condition.Value == "" {
-					return fmt.Errorf("Filter condition %d requires a value.", index+1)
-				}
-			case "in":
-				if len(condition.Values) == 0 {
-					return fmt.Errorf("Filter condition %d requires one or more values.", index+1)
-				}
-			default:
-				return fmt.Errorf("Filter condition %d uses unsupported operator %q.", index+1, condition.Operator)
-			}
-		}
+	if err := validateQueryFilter(request.Filter); err != nil {
+		return err
 	}
 
 	return nil
@@ -536,6 +563,10 @@ func (request LayerExtentRequest) Validate() error {
 
 	if request.GeometryColumn == "" {
 		return errors.New("Geometry column is required.")
+	}
+
+	if err := validateQueryFilter(request.Filter); err != nil {
+		return err
 	}
 
 	return nil
@@ -620,6 +651,10 @@ func (request ListLayerFeaturesRequest) Validate() error {
 
 	if request.Limit < 1 || request.Limit > 5000 {
 		return errors.New("Limit must be between 1 and 5000.")
+	}
+
+	if err := validateQueryFilter(request.Filter); err != nil {
+		return err
 	}
 
 	if request.hasViewportBounds() {
@@ -1102,6 +1137,17 @@ func (service *Service) ListRows(
 		whereClause = fmt.Sprintf(" where %s", strings.Join(whereClauses, " and "))
 	}
 
+	var totalRows int64
+	countQuery := fmt.Sprintf(
+		`select count(*) from %s.%s%s`,
+		quoteIdentifier(request.Schema),
+		quoteIdentifier(request.Table),
+		whereClause,
+	)
+	if err := conn.QueryRow(timeoutCtx, countQuery, parameters...).Scan(&totalRows); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
 	orderByClause := ""
 	if len(primaryKey) > 0 {
 		orderedPrimaryKey := make([]string, 0, len(primaryKey))
@@ -1167,6 +1213,7 @@ func (service *Service) ListRows(
 		Table:      request.Table,
 		Limit:      request.Limit,
 		Offset:     request.Offset,
+		TotalRows:  totalRows,
 		HasMore:    hasMore,
 		PrimaryKey: primaryKey,
 		IsEditable: isEditableTable(access, primaryKey),
@@ -1444,6 +1491,16 @@ func (service *Service) ListLayerFeatures(
 		)
 	}
 
+	columnDefinitions, err := service.listColumnDefinitions(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	primaryKey, err := service.listPrimaryKeyColumns(
 		timeoutCtx,
 		conn,
@@ -1485,6 +1542,21 @@ func (service *Service) ListLayerFeatures(
 		selectedGeometryColumn.SRID,
 	)
 
+	whereClauses := []string{request.whereClauseForGeometry(geometryExpression)}
+	filterClause, parameters, err := buildQueryFilterClause(
+		columnDefinitions,
+		request.Filter,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if filterClause != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", filterClause))
+	}
+	parameters = append(parameters, request.Limit)
+	limitPlaceholder := fmt.Sprintf("$%d", len(parameters))
+
 	query := fmt.Sprintf(
 		`
 		with source_features as (
@@ -1495,7 +1567,7 @@ func (service *Service) ListLayerFeatures(
 		  ) as feature
 		  from %s.%s as source_row
 		  where %s
-		  limit $1
+		  limit %s
 		)
 		select coalesce(json_agg(feature), '[]'::json)
 		from source_features
@@ -1505,11 +1577,12 @@ func (service *Service) ListLayerFeatures(
 		rowRefExpression,
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
-		request.whereClauseForGeometry(geometryExpression),
+		strings.Join(whereClauses, " and "),
+		limitPlaceholder,
 	)
 
 	var rawFeatures []byte
-	if err := conn.QueryRow(timeoutCtx, query, request.Limit).Scan(&rawFeatures); err != nil {
+	if err := conn.QueryRow(timeoutCtx, query, parameters...).Scan(&rawFeatures); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
@@ -1570,18 +1643,41 @@ func (service *Service) GetLayerExtent(
 		)
 	}
 
+	columnDefinitions, err := service.listColumnDefinitions(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	geometryExpression := geometryColumnWGS84Expression(
 		request.GeometryColumn,
 		selectedGeometryColumn.StorageType,
 		selectedGeometryColumn.SRID,
 	)
 
+	whereClauses := []string{fmt.Sprintf("%s is not null", geometryExpression)}
+	filterClause, parameters, err := buildQueryFilterClause(
+		columnDefinitions,
+		request.Filter,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if filterClause != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", filterClause))
+	}
+
 	query := fmt.Sprintf(
 		`
 		with extent as (
 		  select ST_Extent(%s) as bbox
 		  from %s.%s as source_row
-		  where %s is not null
+		  where %s
 		)
 		select
 		  ST_XMin(bbox::box2d),
@@ -1593,14 +1689,14 @@ func (service *Service) GetLayerExtent(
 		geometryExpression,
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
-		geometryExpression,
+		strings.Join(whereClauses, " and "),
 	)
 
 	var west sql.NullFloat64
 	var south sql.NullFloat64
 	var east sql.NullFloat64
 	var north sql.NullFloat64
-	if err := conn.QueryRow(timeoutCtx, query).Scan(
+	if err := conn.QueryRow(timeoutCtx, query, parameters...).Scan(
 		&west,
 		&south,
 		&east,

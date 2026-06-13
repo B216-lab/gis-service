@@ -1,7 +1,11 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import type { SavedTableFilter } from '../filters/types';
+import type {
+  SavedTableFilter,
+  SavedTableView,
+  TableFilterDefinition,
+} from '../filters/types';
 import { type BasemapId, defaultBasemapId } from '../map/basemaps';
 
 export interface DatabaseConnection {
@@ -32,6 +36,7 @@ export interface GeoJsonTableSource {
   kind: string;
   geometryColumn: string;
   geometryType: string;
+  filter?: TableFilterDefinition | null;
 }
 
 export interface FlowmapTableSource {
@@ -111,7 +116,7 @@ interface ConnectionStoreState {
   connections: DatabaseConnection[];
   mapSources: MapSource[];
   mapLayers: MapLayer[];
-  savedTableFilters: SavedTableFilter[];
+  savedTableViews: SavedTableView[];
   selectedBasemapId: BasemapId;
   selectedConnectionId: string | null;
   selectedTableByConnectionId: Record<string, string | null>;
@@ -127,10 +132,14 @@ interface ConnectionStoreState {
     >,
   ) => void;
   removeConnection: (connectionId: string) => void;
-  addSavedTableFilter: (
-    filter: Omit<SavedTableFilter, 'id' | 'createdAt'>,
+  addSavedTableView: (
+    view: Omit<SavedTableView, 'id' | 'createdAt' | 'updatedAt'>,
   ) => void;
-  removeSavedTableFilter: (filterId: string) => void;
+  updateSavedTableView: (
+    viewId: string,
+    patch: Partial<Pick<SavedTableView, 'name' | 'filter'>>,
+  ) => void;
+  removeSavedTableView: (viewId: string) => void;
   setSelectedBasemap: (basemapId: BasemapId) => void;
   selectConnection: (connectionId: string) => void;
   setSelectedTable: (connectionId: string, tableKey: string | null) => void;
@@ -143,6 +152,7 @@ interface ConnectionStoreState {
     name: string;
     geometryColumn: string;
     geometryType: string;
+    filter?: TableFilterDefinition | null;
   }) => void;
   addFlowmapLayer: (payload: {
     connectionId: string;
@@ -202,8 +212,37 @@ function createMapLayerId() {
   return `layer-${crypto.randomUUID()}`;
 }
 
-function createSavedTableFilterId() {
-  return `filter-${crypto.randomUUID()}`;
+function createSavedTableViewId() {
+  return `view-${crypto.randomUUID()}`;
+}
+
+function normalizeSavedTableView(
+  view: Partial<SavedTableView & SavedTableFilter>,
+): SavedTableView | null {
+  const sourceSchema = view.sourceSchema ?? view.schema;
+  const sourceTable = view.sourceTable ?? view.table;
+  if (
+    !view.name ||
+    !view.connectionId ||
+    !sourceSchema ||
+    !sourceTable ||
+    !view.filter
+  ) {
+    return null;
+  }
+
+  const createdAt = view.createdAt ?? new Date().toISOString();
+
+  return {
+    id: view.id ?? createSavedTableViewId(),
+    name: view.name,
+    connectionId: view.connectionId,
+    sourceSchema,
+    sourceTable,
+    createdAt,
+    updatedAt: view.updatedAt ?? createdAt,
+    filter: view.filter,
+  };
 }
 
 const layerColors = [
@@ -283,6 +322,7 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
       kind: source.kind ?? 'table',
       geometryColumn: source.geometryColumn ?? 'geom',
       geometryType: source.geometryType ?? '',
+      filter: source.filter ?? null,
     };
   }
 
@@ -363,6 +403,7 @@ function findGeoJsonSource(
     schema: string;
     table: string;
     geometryColumn: string;
+    filter?: TableFilterDefinition | null;
   },
 ) {
   return sources.find(
@@ -371,7 +412,9 @@ function findGeoJsonSource(
       source.connectionId === payload.connectionId &&
       source.schema === payload.schema &&
       source.table === payload.table &&
-      source.geometryColumn === payload.geometryColumn,
+      source.geometryColumn === payload.geometryColumn &&
+      JSON.stringify(source.filter ?? null) ===
+        JSON.stringify(payload.filter ?? null),
   );
 }
 
@@ -466,7 +509,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
       ],
       mapSources: [],
       mapLayers: [],
-      savedTableFilters: [],
+      savedTableViews: [],
       selectedBasemapId: defaultBasemapId,
       selectedConnectionId: null,
       selectedTableByConnectionId: {},
@@ -513,8 +556,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 layer.connectionId !== connectionId &&
                 nextSourceIds.has(layer.sourceId),
             ),
-            savedTableFilters: state.savedTableFilters.filter(
-              (filter) => filter.connectionId !== connectionId,
+            savedTableViews: state.savedTableViews.filter(
+              (view) => view.connectionId !== connectionId,
             ),
             selectedConnectionId: nextSelectedId,
             selectedTableByConnectionId: Object.fromEntries(
@@ -524,21 +567,34 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             ),
           };
         }),
-      addSavedTableFilter: (filter) =>
+      addSavedTableView: (view) =>
         set((state) => ({
-          savedTableFilters: [
+          savedTableViews: [
             {
-              ...filter,
-              id: createSavedTableFilterId(),
+              ...view,
+              id: createSavedTableViewId(),
               createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
             },
-            ...state.savedTableFilters,
+            ...state.savedTableViews,
           ],
         })),
-      removeSavedTableFilter: (filterId) =>
+      updateSavedTableView: (viewId, patch) =>
         set((state) => ({
-          savedTableFilters: state.savedTableFilters.filter(
-            (filter) => filter.id !== filterId,
+          savedTableViews: state.savedTableViews.map((view) =>
+            view.id === viewId
+              ? {
+                  ...view,
+                  ...patch,
+                  updatedAt: new Date().toISOString(),
+                }
+              : view,
+          ),
+        })),
+      removeSavedTableView: (viewId) =>
+        set((state) => ({
+          savedTableViews: state.savedTableViews.filter(
+            (view) => view.id !== viewId,
           ),
         })),
       setSelectedBasemap: (basemapId) =>
@@ -572,6 +628,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               kind: payload.kind,
               geometryColumn: payload.geometryColumn,
               geometryType: payload.geometryType,
+              filter: payload.filter ?? null,
             };
             nextSources.push(source);
           }
@@ -804,6 +861,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             importedLayers?: LegacyImportedLayer[];
             mapSources?: Partial<MapSource>[];
             mapLayers?: Partial<MapLayer>[];
+            savedTableFilters?: SavedTableFilter[];
+            savedTableViews?: Partial<SavedTableView>[];
           }
         >;
 
@@ -827,12 +886,19 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           ),
           mapSources: migratedLegacy.mapSources,
           mapLayers: migratedLegacy.mapLayers,
+          savedTableViews: [
+            ...(state.savedTableViews ?? []),
+            ...(state.savedTableFilters ?? []),
+          ]
+            .map(normalizeSavedTableView)
+            .filter((view): view is SavedTableView => view !== null),
         };
       },
       partialize: (state) => ({
         connections: state.connections,
         mapSources: state.mapSources,
         mapLayers: state.mapLayers,
+        savedTableViews: state.savedTableViews,
         selectedConnectionId: state.selectedConnectionId,
         selectedTableByConnectionId: state.selectedTableByConnectionId,
       }),

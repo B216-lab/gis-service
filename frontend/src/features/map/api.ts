@@ -119,6 +119,7 @@ export async function fetchGeoJsonSourceData(
       schema: source.schema,
       table: source.table,
       geometryColumn: source.geometryColumn,
+      filter: source.filter ?? null,
       limit: 5000,
       west: bounds.west,
       south: bounds.south,
@@ -154,6 +155,7 @@ export async function fetchGeoJsonSourceExtent(
       schema: source.schema,
       table: source.table,
       geometryColumn: source.geometryColumn,
+      filter: source.filter ?? null,
     }),
   });
 

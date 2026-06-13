@@ -20,3 +20,14 @@ export interface SavedTableFilter {
   createdAt: string;
   filter: TableFilterDefinition;
 }
+
+export interface SavedTableView {
+  id: string;
+  name: string;
+  connectionId: string;
+  sourceSchema: string;
+  sourceTable: string;
+  createdAt: string;
+  updatedAt: string;
+  filter: TableFilterDefinition;
+}

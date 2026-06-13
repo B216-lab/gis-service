@@ -43,6 +43,7 @@ import {
   IconInfoCircle,
   IconLayersIntersect,
   IconMoonStars,
+  IconPencil,
   IconPlug,
   IconPlugConnected,
   IconPlus,
@@ -63,6 +64,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useMemo,
   useState,
 } from 'react';
 
@@ -77,6 +79,7 @@ import {
   useConnectionStore,
 } from './features/connections/store';
 import type {
+  SavedTableView,
   TableFilterCondition,
   TableFilterDefinition,
   TableFilterOperator,
@@ -115,6 +118,7 @@ interface DraftInsertRow {
 
 type SchemaTablesByName = Record<string, InspectableTableSummary[]>;
 type LoadingSchemaTablesByName = Record<string, boolean>;
+type TableSelectionKind = 'table' | 'view';
 
 interface CatalogState {
   schemas: InspectableSchema[];
@@ -127,6 +131,30 @@ interface CatalogState {
 }
 
 type RightPaneTab = 'layer' | 'data' | 'analysis';
+
+function createSavedViewSelectionKey(viewId: string) {
+  return `view:${viewId}`;
+}
+
+function parseTableSelectionKey(
+  tableKey: string | null,
+): { kind: TableSelectionKind; value: string } | null {
+  if (!tableKey) {
+    return null;
+  }
+
+  if (tableKey.startsWith('view:')) {
+    return {
+      kind: 'view',
+      value: tableKey.slice('view:'.length),
+    };
+  }
+
+  return {
+    kind: 'table',
+    value: tableKey,
+  };
+}
 
 function getMapSelectionBadgeColor(objectType: MapSelection['objectType']) {
   switch (objectType) {
@@ -156,6 +184,10 @@ function formatMapSelectionObjectType(objectType: MapSelection['objectType']) {
 
 function formatMapSelectionCount(count: number) {
   return `${count} row${count === 1 ? '' : 's'}`;
+}
+
+function formatRowCount(count: number | null | undefined) {
+  return typeof count === 'number' ? count.toLocaleString() : 'unknown';
 }
 
 function ColorSchemeToggle() {
@@ -350,8 +382,8 @@ function PanelFrame({
   hint,
   children,
 }: {
-  title: string;
-  hint: string;
+  title?: string;
+  hint?: string;
   children?: ReactNode;
 }) {
   return (
@@ -368,14 +400,20 @@ function PanelFrame({
         overflow: 'hidden',
       }}
     >
-      <Flex align="center" justify="space-between" mb="md">
-        <Title c="text" order={5} tt="uppercase">
-          {title}
-        </Title>
-        <Text c="dimmed" fw={500} size="xs">
-          {hint}
-        </Text>
-      </Flex>
+      {title || hint ? (
+        <Flex align="center" justify="space-between" mb="md">
+          {title ? (
+            <Title c="text" order={5} tt="uppercase">
+              {title}
+            </Title>
+          ) : null}
+          {hint ? (
+            <Text c="dimmed" fw={500} size="xs">
+              {hint}
+            </Text>
+          ) : null}
+        </Flex>
+      ) : null}
 
       <Box
         style={{
@@ -441,8 +479,11 @@ function ConnectionManager({
   onCreateFlowLayer,
   onSelectLayer,
   onSelectCatalogTable,
+  onSelectSavedView,
   onToggleCatalogSchema,
   onToggleCatalogSchemaExpanded,
+  onRemoveSavedView,
+  savedViews,
   selectedInspectableTable,
   selectedTableKey,
   tables,
@@ -468,8 +509,11 @@ function ConnectionManager({
   }) => void;
   onSelectLayer: (layerId: string) => void;
   onSelectCatalogTable: (tableKey: string) => void;
+  onSelectSavedView: (viewId: string) => void;
   onToggleCatalogSchema: (schemaName: string) => void;
   onToggleCatalogSchemaExpanded: (schemaName: string) => void;
+  onRemoveSavedView: (viewId: string, viewName: string) => void;
+  savedViews: SavedTableView[];
   selectedInspectableTable: InspectableTable | null;
   selectedTableKey: string | null;
   tables: InspectableTable[];
@@ -1144,7 +1188,10 @@ function ConnectionManager({
                         catalog={catalog}
                         opened={catalogOpened}
                         selectedTableKey={selectedTableKey}
+                        savedViews={savedViews}
                         onLoadSchemas={onLoadSchemas}
+                        onRemoveSavedView={onRemoveSavedView}
+                        onSelectSavedView={onSelectSavedView}
                         onSelectTable={onSelectCatalogTable}
                         onToggle={handleToggleCatalog}
                         onToggleSchema={onToggleCatalogSchema}
@@ -1374,8 +1421,11 @@ function ConnectionManager({
 function ConnectionCatalog({
   catalog,
   opened,
+  savedViews,
   selectedTableKey,
   onLoadSchemas,
+  onRemoveSavedView,
+  onSelectSavedView,
   onSelectTable,
   onToggle,
   onToggleSchema,
@@ -1383,8 +1433,11 @@ function ConnectionCatalog({
 }: {
   catalog: CatalogState;
   opened: boolean;
+  savedViews: SavedTableView[];
   selectedTableKey: string | null;
   onLoadSchemas: () => void;
+  onRemoveSavedView: (viewId: string, viewName: string) => void;
+  onSelectSavedView: (viewId: string) => void;
   onSelectTable: (tableKey: string) => void;
   onToggle: () => void;
   onToggleSchema: (schemaName: string) => void;
@@ -1467,6 +1520,9 @@ function ConnectionCatalog({
               const isSelected = selectedSchemaNames.has(schema.name);
               const isExpanded = expandedSchemaNames.has(schema.name);
               const tables = catalog.schemaTablesByName[schema.name] ?? [];
+              const schemaViews = savedViews.filter(
+                (view) => view.sourceSchema === schema.name,
+              );
               const isLoadingTables =
                 catalog.loadingSchemaTablesByName[schema.name] ?? false;
 
@@ -1509,7 +1565,9 @@ function ConnectionCatalog({
                         </Text>
                       ) : null}
 
-                      {!isLoadingTables && tables.length === 0 ? (
+                      {!isLoadingTables &&
+                      tables.length === 0 &&
+                      schemaViews.length === 0 ? (
                         <Text c="dimmed" size="xs">
                           No loaded tables.
                         </Text>
@@ -1536,6 +1594,49 @@ function ConnectionCatalog({
                           {table.name}
                         </Button>
                       ))}
+
+                      {schemaViews.map((view) => {
+                        const viewKey = createSavedViewSelectionKey(view.id);
+
+                        return (
+                          <Group gap={4} key={view.id} wrap="nowrap">
+                            <Button
+                              color={
+                                selectedTableKey === viewKey ? 'grape' : 'gray'
+                              }
+                              justify="flex-start"
+                              leftSection={<IconDatabaseSearch size={14} />}
+                              onClick={() => onSelectSavedView(view.id)}
+                              size="compact-xs"
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                              }}
+                              variant={
+                                selectedTableKey === viewKey
+                                  ? 'light'
+                                  : 'subtle'
+                              }
+                            >
+                              <Text size="xs" truncate="end">
+                                {view.name}
+                              </Text>
+                            </Button>
+                            <ActionIcon
+                              aria-label={`Delete saved view ${view.name}`}
+                              color="red"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onRemoveSavedView(view.id, view.name);
+                              }}
+                              size="sm"
+                              variant="subtle"
+                            >
+                              <IconTrash size={14} />
+                            </ActionIcon>
+                          </Group>
+                        );
+                      })}
                     </Stack>
                   </Collapse>
                 </Stack>
@@ -2124,22 +2225,18 @@ function DataInspector({
   connection,
   isLoadingTables,
   isLoadingTableMetadata,
+  selectedView,
   selectedTable,
-  tables,
-  selectedTableKey,
-  onSelectTable,
   tablesError,
 }: {
   connection: DatabaseConnection | null;
   isLoadingTables: boolean;
   isLoadingTableMetadata: boolean;
+  selectedView: SavedTableView | null;
   selectedTable: InspectableTable | null;
-  tables: InspectableTableSummary[];
-  selectedTableKey: string | null;
-  onSelectTable: (tableKey: string | null) => void;
   tablesError: string;
 }) {
-  const [savedFilterOpened, savedFilterModal] = useDisclosure(false);
+  const [savedViewOpened, savedViewModal] = useDisclosure(false);
   const [rowsState, setRowsState] = useState<InspectorRowsResponse | null>(
     null,
   );
@@ -2156,35 +2253,51 @@ function DataInspector({
   const [saveMessage, setSaveMessage] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
-  const [activeSavedFilterId, setActiveSavedFilterId] = useState<string | null>(
+  const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(
     null,
   );
-  const [draftFilterName, setDraftFilterName] = useState('');
-  const [draftFilterCondition, setDraftFilterCondition] =
+  const [editingSavedViewId, setEditingSavedViewId] = useState<string | null>(
+    null,
+  );
+  const [draftViewName, setDraftViewName] = useState('');
+  const [draftViewCondition, setDraftViewCondition] =
     useState<TableFilterCondition>(() =>
       createDefaultTableFilterCondition(selectedTable),
     );
   const deferredSearchInput = useDeferredValue(searchInput);
-  const savedTableFilters = useConnectionStore(
-    (state) => state.savedTableFilters,
+  const savedTableViews = useConnectionStore((state) => state.savedTableViews);
+  const addSavedTableView = useConnectionStore(
+    (state) => state.addSavedTableView,
   );
-  const addSavedTableFilter = useConnectionStore(
-    (state) => state.addSavedTableFilter,
+  const updateSavedTableView = useConnectionStore(
+    (state) => state.updateSavedTableView,
   );
-  const removeSavedTableFilter = useConnectionStore(
-    (state) => state.removeSavedTableFilter,
+  const removeSavedTableView = useConnectionStore(
+    (state) => state.removeSavedTableView,
   );
 
-  const matchingSavedFilters = savedTableFilters.filter(
-    (filter) =>
-      filter.connectionId === connection?.id &&
-      filter.schema === selectedTable?.schema &&
-      filter.table === selectedTable?.name,
+  const matchingSavedViews = useMemo(
+    () =>
+      savedTableViews.filter(
+        (view) =>
+          view.connectionId === connection?.id &&
+          view.sourceSchema === selectedTable?.schema &&
+          view.sourceTable === selectedTable?.name,
+      ),
+    [
+      connection?.id,
+      savedTableViews,
+      selectedTable?.name,
+      selectedTable?.schema,
+    ],
   );
-  const activeSavedFilter =
-    matchingSavedFilters.find((filter) => filter.id === activeSavedFilterId) ??
+  const selectedViewFromList =
+    matchingSavedViews.find((view) => view.id === selectedView?.id) ?? null;
+  const activeSavedView =
+    selectedViewFromList ??
+    matchingSavedViews.find((view) => view.id === activeSavedViewId) ??
     null;
-  const activeTableFilter = activeSavedFilter?.filter ?? null;
+  const activeTableFilter = activeSavedView?.filter ?? null;
   const filterableColumnOptions = (selectedTable?.columns ?? [])
     .filter((column) => isEditableColumnType(column.type))
     .map((column) => ({
@@ -2210,9 +2323,10 @@ function DataInspector({
     setSaveError('');
   }, []);
 
-  const resetSavedFilterDraft = useCallback(() => {
-    setDraftFilterName('');
-    setDraftFilterCondition(createDefaultTableFilterCondition(selectedTable));
+  const resetSavedViewDraft = useCallback(() => {
+    setEditingSavedViewId(null);
+    setDraftViewName('');
+    setDraftViewCondition(createDefaultTableFilterCondition(selectedTable));
   }, [selectedTable]);
 
   const confirmDraftReset = useCallback(
@@ -2246,31 +2360,17 @@ function DataInspector({
 
   useEffect(() => {
     if (
-      activeSavedFilterId &&
-      !matchingSavedFilters.some((filter) => filter.id === activeSavedFilterId)
+      activeSavedViewId &&
+      !matchingSavedViews.some((view) => view.id === activeSavedViewId)
     ) {
-      setActiveSavedFilterId(null);
+      setActiveSavedViewId(null);
     }
-  }, [activeSavedFilterId, matchingSavedFilters]);
+  }, [activeSavedViewId, matchingSavedViews]);
 
   useEffect(() => {
-    setActiveSavedFilterId(null);
-    resetSavedFilterDraft();
-  }, [resetSavedFilterDraft]);
-
-  useEffect(() => {
-    if (!selectedTableKey && tables.length > 0) {
-      onSelectTable(tables[0].fullName);
-      return;
-    }
-
-    if (
-      selectedTableKey &&
-      !tables.some((table) => table.fullName === selectedTableKey)
-    ) {
-      onSelectTable(tables[0]?.fullName ?? null);
-    }
-  }, [onSelectTable, selectedTableKey, tables]);
+    setActiveSavedViewId(selectedView?.id ?? null);
+    resetSavedViewDraft();
+  }, [resetSavedViewDraft, selectedView?.id]);
 
   useEffect(() => {
     if (!connection || !selectedTable) {
@@ -2371,20 +2471,6 @@ function DataInspector({
     } finally {
       setIsLoadingRows(false);
     }
-  }
-
-  function handleSelectTableChange(nextTableKey: string | null) {
-    if (nextTableKey === selectedTableKey) {
-      return;
-    }
-
-    if (!confirmDraftReset('switching table')) {
-      return;
-    }
-
-    resetDraftState();
-    setSaveMessage('');
-    onSelectTable(nextTableKey);
   }
 
   function handleRefreshRows() {
@@ -2586,23 +2672,36 @@ function DataInspector({
     setSaveMessage('');
   }
 
-  function handleOpenSavedFilterModal() {
-    resetSavedFilterDraft();
-    savedFilterModal.open();
+  function handleOpenSavedViewModal() {
+    resetSavedViewDraft();
+    savedViewModal.open();
   }
 
-  function handleCreateSavedFilter() {
+  function handleOpenEditSavedViewModal(view: SavedTableView) {
+    const firstCondition = view.filter.conditions[0];
+    setEditingSavedViewId(view.id);
+    setDraftViewName(view.name);
+    setDraftViewCondition({
+      column: firstCondition?.column ?? '',
+      operator: firstCondition?.operator ?? 'eq',
+      value: firstCondition?.value ?? '',
+      values: firstCondition?.values ?? [],
+    });
+    savedViewModal.open();
+  }
+
+  function handleSaveView() {
     if (!connection || !selectedTable) {
       return;
     }
 
-    const nextName = draftFilterName.trim();
-    const nextColumn = draftFilterCondition.column.trim();
-    const nextOperator = draftFilterCondition.operator;
-    const nextRawValue = (draftFilterCondition.value ?? '').trim();
+    const nextName = draftViewName.trim();
+    const nextColumn = draftViewCondition.column.trim();
+    const nextOperator = draftViewCondition.operator;
+    const nextRawValue = (draftViewCondition.value ?? '').trim();
     const nextValues =
       nextOperator === 'in'
-        ? (draftFilterCondition.values ?? []).filter(Boolean)
+        ? (draftViewCondition.values ?? []).filter(Boolean)
         : [];
 
     if (!nextName || !nextColumn) {
@@ -2617,66 +2716,46 @@ function DataInspector({
       return;
     }
 
-    addSavedTableFilter({
-      name: nextName,
-      connectionId: connection.id,
-      schema: selectedTable.schema,
-      table: selectedTable.name,
-      filter: buildTableFilterDefinition({
-        column: nextColumn,
-        operator: nextOperator,
-        value: nextRawValue,
-        values: nextValues,
-      }),
+    const nextFilter = buildTableFilterDefinition({
+      column: nextColumn,
+      operator: nextOperator,
+      value: nextRawValue,
+      values: nextValues,
     });
 
-    resetSavedFilterDraft();
-    savedFilterModal.close();
+    if (editingSavedViewId) {
+      updateSavedTableView(editingSavedViewId, {
+        name: nextName,
+        filter: nextFilter,
+      });
+    } else {
+      addSavedTableView({
+        name: nextName,
+        connectionId: connection.id,
+        sourceSchema: selectedTable.schema,
+        sourceTable: selectedTable.name,
+        filter: nextFilter,
+      });
+    }
+
+    resetSavedViewDraft();
+    savedViewModal.close();
   }
 
-  function handleSelectSavedFilter(nextFilterId: string | null) {
-    if (nextFilterId === activeSavedFilterId) {
+  function handleRemoveActiveSavedView() {
+    if (!activeSavedView) {
       return;
     }
 
-    if (
-      nextFilterId !== activeSavedFilterId &&
-      !confirmDraftReset('changing saved filter')
-    ) {
+    if (!window.confirm(`Delete saved view "${activeSavedView.name}"?`)) {
       return;
     }
 
-    resetDraftState();
-    setSaveMessage('');
-    setActiveSavedFilterId(nextFilterId);
-  }
-
-  function handleRemoveActiveSavedFilter() {
-    if (!activeSavedFilter) {
-      return;
+    if (activeSavedView.id === activeSavedViewId) {
+      setActiveSavedViewId(null);
     }
 
-    if (!window.confirm(`Delete saved filter "${activeSavedFilter.name}"?`)) {
-      return;
-    }
-
-    if (activeSavedFilter.id === activeSavedFilterId) {
-      setActiveSavedFilterId(null);
-    }
-
-    removeSavedTableFilter(activeSavedFilter.id);
-  }
-
-  function handleRemoveSavedFilter(filterId: string, filterName: string) {
-    if (!window.confirm(`Delete saved filter "${filterName}"?`)) {
-      return;
-    }
-
-    if (filterId === activeSavedFilterId) {
-      setActiveSavedFilterId(null);
-    }
-
-    removeSavedTableFilter(filterId);
+    removeSavedTableView(activeSavedView.id);
   }
 
   if (!connection) {
@@ -2701,28 +2780,28 @@ function DataInspector({
     <>
       <Modal
         centered
-        onClose={savedFilterModal.close}
-        opened={savedFilterOpened}
-        title="Save table filter"
+        onClose={savedViewModal.close}
+        opened={savedViewOpened}
+        title={editingSavedViewId ? 'Edit saved view' : 'Save table view'}
       >
         <Stack gap="sm">
           <TextInput
-            label="Filter name"
-            onChange={(event) => setDraftFilterName(event.currentTarget.value)}
+            label="View name"
+            onChange={(event) => setDraftViewName(event.currentTarget.value)}
             placeholder="Cities"
-            value={draftFilterName}
+            value={draftViewName}
           />
           <Select
             data={filterableColumnOptions}
             label="Column"
             onChange={(value) =>
-              setDraftFilterCondition((current) => ({
+              setDraftViewCondition((current) => ({
                 ...current,
                 column: value ?? '',
               }))
             }
             searchable
-            value={draftFilterCondition.column}
+            value={draftViewCondition.column}
           />
           <Select
             allowDeselect={false}
@@ -2732,25 +2811,25 @@ function DataInspector({
             ]}
             label="Operator"
             onChange={(value) =>
-              setDraftFilterCondition((current) => ({
+              setDraftViewCondition((current) => ({
                 ...current,
                 operator: (value ?? 'eq') as TableFilterOperator,
                 value: value === 'in' ? '' : current.value,
                 values: value === 'in' ? current.values : [],
               }))
             }
-            value={draftFilterCondition.operator}
+            value={draftViewCondition.operator}
           />
           <TextInput
             description={
-              draftFilterCondition.operator === 'in'
+              draftViewCondition.operator === 'in'
                 ? 'Comma-separated values. Example: 7, 8'
                 : 'Single value. Example: 8'
             }
-            label={draftFilterCondition.operator === 'in' ? 'Values' : 'Value'}
+            label={draftViewCondition.operator === 'in' ? 'Values' : 'Value'}
             onChange={(event) => {
               const nextRawValue = event.currentTarget.value;
-              setDraftFilterCondition((current) => ({
+              setDraftViewCondition((current) => ({
                 ...current,
                 value: current.operator === 'eq' ? nextRawValue : current.value,
                 values:
@@ -2762,28 +2841,28 @@ function DataInspector({
                     : current.values,
               }));
             }}
-            placeholder={draftFilterCondition.operator === 'in' ? '7, 8' : '8'}
+            placeholder={draftViewCondition.operator === 'in' ? '7, 8' : '8'}
             value={
-              draftFilterCondition.operator === 'in'
-                ? (draftFilterCondition.values ?? []).join(', ')
-                : (draftFilterCondition.value ?? '')
+              draftViewCondition.operator === 'in'
+                ? (draftViewCondition.values ?? []).join(', ')
+                : (draftViewCondition.value ?? '')
             }
           />
           <Group justify="space-between" pt="xs">
             <Text c="dimmed" size="xs">
-              First slice: one condition, operators `=` and `in`.
+              Local virtual view over current table.
             </Text>
             <Button
               disabled={
-                !draftFilterName.trim() ||
-                !draftFilterCondition.column ||
-                (draftFilterCondition.operator === 'eq'
-                  ? !(draftFilterCondition.value ?? '').trim()
-                  : (draftFilterCondition.values ?? []).length === 0)
+                !draftViewName.trim() ||
+                !draftViewCondition.column ||
+                (draftViewCondition.operator === 'eq'
+                  ? !(draftViewCondition.value ?? '').trim()
+                  : (draftViewCondition.values ?? []).length === 0)
               }
-              onClick={handleCreateSavedFilter}
+              onClick={handleSaveView}
             >
-              Save filter
+              {editingSavedViewId ? 'Update View' : 'Save View'}
             </Button>
           </Group>
         </Stack>
@@ -2791,28 +2870,12 @@ function DataInspector({
 
       <Stack h="100%" gap="sm">
         <Group justify="space-between" wrap="nowrap">
-          <Group grow wrap="nowrap">
-            <Select
-              data={tables.map((table) => ({
-                label: table.fullName,
-                value: table.fullName,
-              }))}
-              disabled={isLoadingTables}
-              leftSection={
-                isLoadingTables || isLoadingTableMetadata ? (
-                  <Loader size={14} />
-                ) : null
-              }
-              onChange={handleSelectTableChange}
-              placeholder={
-                isLoadingTables ? 'Loading database tables...' : 'Select table'
-              }
-              value={selectedTableKey}
-            />
+          <Group gap="xs" grow wrap="nowrap">
             <TextInput
               leftSection={<IconSearch size={14} />}
               onChange={(event) => setSearchInput(event.currentTarget.value)}
               placeholder="Search rows"
+              disabled={!selectedTable}
               rightSection={
                 searchInput ? (
                   <ActionIcon
@@ -2828,16 +2891,24 @@ function DataInspector({
               }
               value={searchInput}
             />
+            {isLoadingTables || isLoadingTableMetadata ? (
+              <Group gap={6} wrap="nowrap">
+                <Loader size={14} />
+                <Text c="dimmed" size="xs">
+                  Loading catalog
+                </Text>
+              </Group>
+            ) : null}
           </Group>
           <Group gap="xs" wrap="nowrap">
             <Button
               disabled={!selectedTable || filterableColumnOptions.length === 0}
               leftSection={<IconPlus size={14} />}
-              onClick={handleOpenSavedFilterModal}
+              onClick={handleOpenSavedViewModal}
               size="compact-sm"
               variant="default"
             >
-              Filter
+              View
             </Button>
             {selectedTable?.isEditable ? (
               <Button
@@ -2883,70 +2954,31 @@ function DataInspector({
           </Group>
         </Group>
 
-        <Group justify="space-between" wrap="nowrap">
-          <Group grow wrap="nowrap">
-            <Select
-              clearable
-              data={matchingSavedFilters.map((filter) => ({
-                label: filter.name,
-                value: filter.id,
-              }))}
-              disabled={!selectedTable}
-              onChange={handleSelectSavedFilter}
-              placeholder="Saved filter"
-              size="xs"
-              value={activeSavedFilterId}
-            />
-            {activeSavedFilter ? (
-              <Badge color="grape" size="sm" variant="light">
-                {activeSavedFilter.name}
-              </Badge>
-            ) : (
-              <Text c="dimmed" size="xs">
-                No saved filter applied
-              </Text>
-            )}
-          </Group>
-          {activeSavedFilter ? (
-            <ActionIcon
-              aria-label="Delete active saved filter"
-              color="red"
-              onClick={handleRemoveActiveSavedFilter}
-              size="sm"
-              variant="subtle"
-            >
-              <IconTrash size={14} />
-            </ActionIcon>
-          ) : null}
-        </Group>
-
-        {matchingSavedFilters.length > 0 ? (
-          <Group gap="xs">
-            {matchingSavedFilters.map((filter) => (
-              <Group gap={4} key={filter.id} wrap="nowrap">
-                <Button
-                  color={filter.id === activeSavedFilterId ? 'grape' : 'gray'}
-                  onClick={() => handleSelectSavedFilter(filter.id)}
-                  size="compact-xs"
-                  variant={
-                    filter.id === activeSavedFilterId ? 'light' : 'subtle'
-                  }
-                >
-                  {filter.name}
-                </Button>
-                <ActionIcon
-                  aria-label={`Delete saved filter ${filter.name}`}
-                  color="red"
-                  onClick={() =>
-                    handleRemoveSavedFilter(filter.id, filter.name)
-                  }
-                  size="sm"
-                  variant="subtle"
-                >
-                  <IconTrash size={14} />
-                </ActionIcon>
-              </Group>
-            ))}
+        {activeSavedView ? (
+          <Group justify="space-between" wrap="nowrap">
+            <Badge color="grape" size="sm" variant="light">
+              View: {activeSavedView.name}
+            </Badge>
+            <Group gap={4} wrap="nowrap">
+              <ActionIcon
+                aria-label="Edit active saved view"
+                color="grape"
+                onClick={() => handleOpenEditSavedViewModal(activeSavedView)}
+                size="sm"
+                variant="subtle"
+              >
+                <IconPencil size={14} />
+              </ActionIcon>
+              <ActionIcon
+                aria-label="Delete active saved view"
+                color="red"
+                onClick={handleRemoveActiveSavedView}
+                size="sm"
+                variant="subtle"
+              >
+                <IconTrash size={14} />
+              </ActionIcon>
+            </Group>
           </Group>
         ) : null}
 
@@ -3028,9 +3060,10 @@ function DataInspector({
             <Group justify="space-between">
               <Group gap="xs">
                 <Text c="dimmed" size="xs">
-                  {selectedTable.fullName} • {selectedTable.kind} • showing rows{' '}
-                  {rowsState.offset + 1}-
-                  {rowsState.offset + rowsState.rows.length}
+                  {selectedTable.fullName} • {selectedTable.kind} • rows{' '}
+                  {rowsState.rows.length === 0 ? 0 : rowsState.offset + 1}-
+                  {rowsState.offset + rowsState.rows.length} of{' '}
+                  {formatRowCount(rowsState.totalRows)}
                 </Text>
                 {rowsState.primaryKey.length > 0 ? (
                   <Badge color="gray" size="sm" variant="light">
@@ -3053,9 +3086,9 @@ function DataInspector({
                     Search: {appliedSearch}
                   </Badge>
                 ) : null}
-                {activeSavedFilter ? (
+                {activeSavedView ? (
                   <Badge color="grape" size="sm" variant="light">
-                    Filter: {activeSavedFilter.name}
+                    View: {activeSavedView.name}
                   </Badge>
                 ) : null}
               </Group>
@@ -3087,12 +3120,12 @@ function DataInspector({
             {rowsState.rows.length === 0 && draftInserts.length === 0 ? (
               <EmptyState
                 detail={
-                  appliedSearch || activeSavedFilter
-                    ? 'No rows match current search/filter.'
+                  appliedSearch || activeSavedView
+                    ? 'No rows match current search/view.'
                     : 'Selected page has no rows.'
                 }
                 label={
-                  appliedSearch || activeSavedFilter ? 'No Matches' : 'No Rows'
+                  appliedSearch || activeSavedView ? 'No Matches' : 'No Rows'
                 }
               />
             ) : (
@@ -4215,6 +4248,7 @@ export function App() {
   const connections = useConnectionStore((state) => state.connections);
   const mapSources = useConnectionStore((state) => state.mapSources);
   const mapLayers = useConnectionStore((state) => state.mapLayers);
+  const savedTableViews = useConnectionStore((state) => state.savedTableViews);
   const selectedBasemapId = useConnectionStore(
     (state) => state.selectedBasemapId,
   );
@@ -4229,6 +4263,9 @@ export function App() {
   );
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
+  const removeSavedTableView = useConnectionStore(
+    (state) => state.removeSavedTableView,
+  );
   const [schemas, setSchemas] = useState<InspectableSchema[]>([]);
   const [schemaTablesByName, setSchemaTablesByName] =
     useState<SchemaTablesByName>({});
@@ -4252,13 +4289,44 @@ export function App() {
   const selectedTableKey = selectedConnectionId
     ? (selectedTableByConnectionId[selectedConnectionId] ?? null)
     : null;
-  const selectedInspectableTable = selectedTableKey
-    ? (tableMetadataByKey[selectedTableKey] ?? null)
-    : null;
-  const visibleTableOptions = selectedSchemaNames.flatMap(
-    (schemaName) => schemaTablesByName[schemaName] ?? [],
+  const selectedTableSelection = useMemo(
+    () => parseTableSelectionKey(selectedTableKey),
+    [selectedTableKey],
   );
-  const metadataTables = Object.values(tableMetadataByKey);
+  const selectedSavedView =
+    selectedTableSelection?.kind === 'view'
+      ? (savedTableViews.find(
+          (view) =>
+            view.connectionId === selectedConnectionId &&
+            view.id === selectedTableSelection.value,
+        ) ?? null)
+      : null;
+  const selectedSourceTableKey = selectedSavedView
+    ? `${selectedSavedView.sourceSchema}.${selectedSavedView.sourceTable}`
+    : selectedTableSelection?.kind === 'table'
+      ? selectedTableSelection.value
+      : null;
+  const selectedInspectableTable = selectedSourceTableKey
+    ? (tableMetadataByKey[selectedSourceTableKey] ?? null)
+    : null;
+  const visibleTableOptions = useMemo(
+    () =>
+      selectedSchemaNames.flatMap(
+        (schemaName) => schemaTablesByName[schemaName] ?? [],
+      ),
+    [schemaTablesByName, selectedSchemaNames],
+  );
+  const metadataTables = useMemo(
+    () => Object.values(tableMetadataByKey),
+    [tableMetadataByKey],
+  );
+  const selectedConnectionSavedViews = useMemo(
+    () =>
+      savedTableViews.filter(
+        (view) => view.connectionId === selectedConnectionId,
+      ),
+    [savedTableViews, selectedConnectionId],
+  );
   const catalog: CatalogState = {
     schemas,
     schemaTablesByName,
@@ -4269,12 +4337,31 @@ export function App() {
     error: catalogError,
   };
 
-  function handleSelectTable(tableKey: string | null) {
-    if (!selectedConnectionId) {
+  const handleSelectTable = useCallback(
+    (tableKey: string | null) => {
+      if (!selectedConnectionId) {
+        return;
+      }
+
+      setSelectedTable(selectedConnectionId, tableKey);
+    },
+    [selectedConnectionId, setSelectedTable],
+  );
+
+  function handleSelectSavedView(viewId: string) {
+    handleSelectTable(createSavedViewSelectionKey(viewId));
+  }
+
+  function handleRemoveSavedView(viewId: string, viewName: string) {
+    if (!window.confirm(`Delete saved view "${viewName}"?`)) {
       return;
     }
 
-    setSelectedTable(selectedConnectionId, tableKey);
+    if (selectedTableKey === createSavedViewSelectionKey(viewId)) {
+      handleSelectTable(null);
+    }
+
+    removeSavedTableView(viewId);
   }
 
   async function loadCatalogSchemas() {
@@ -4334,7 +4421,10 @@ export function App() {
   function handleToggleCatalogSchema(schemaName: string) {
     setSelectedSchemaNames((current) => {
       if (current.includes(schemaName)) {
-        if (selectedTableKey?.startsWith(`${schemaName}.`)) {
+        if (
+          selectedSourceTableKey?.startsWith(`${schemaName}.`) ||
+          selectedSavedView?.sourceSchema === schemaName
+        ) {
           handleSelectTable(null);
         }
 
@@ -4381,9 +4471,10 @@ export function App() {
       table: selectedInspectableTable.name,
       fullName: selectedInspectableTable.fullName,
       kind: selectedInspectableTable.kind,
-      name: selectedInspectableTable.name,
+      name: selectedSavedView?.name ?? selectedInspectableTable.name,
       geometryColumn: geometryColumn.name,
       geometryType: geometryColumn.geometryType,
+      filter: selectedSavedView?.filter ?? null,
     });
   }
 
@@ -4426,11 +4517,14 @@ export function App() {
     });
   }
 
-  const selectedConnectionMapLayers = mapLayers.filter(
-    (layer) => layer.connectionId === selectedConnectionId,
+  const selectedConnectionMapLayers = useMemo(
+    () =>
+      mapLayers.filter((layer) => layer.connectionId === selectedConnectionId),
+    [mapLayers, selectedConnectionId],
   );
-  const selectedVisibleMapLayers = selectedConnectionMapLayers.filter(
-    (layer) => layer.visible,
+  const selectedVisibleMapLayers = useMemo(
+    () => selectedConnectionMapLayers.filter((layer) => layer.visible),
+    [selectedConnectionMapLayers],
   );
   const activeLayer =
     selectedConnectionMapLayers.find((layer) => layer.id === activeLayerId) ??
@@ -4470,6 +4564,12 @@ export function App() {
   }, [activeLayerId, selectedConnectionMapLayers]);
 
   useEffect(() => {
+    if (selectedTableSelection?.kind === 'view' && !selectedSavedView) {
+      handleSelectTable(null);
+    }
+  }, [handleSelectTable, selectedSavedView, selectedTableSelection]);
+
+  useEffect(() => {
     if (
       mapSelection &&
       !selectedConnectionMapLayers.some(
@@ -4498,15 +4598,15 @@ export function App() {
   }, [selectedConnection]);
 
   useEffect(() => {
-    if (!selectedConnection || !selectedTableKey) {
+    if (!selectedConnection || !selectedSourceTableKey) {
       setIsLoadingTableMetadata(false);
       return;
     }
 
     const tableSummary = visibleTableOptions.find(
-      (table) => table.fullName === selectedTableKey,
+      (table) => table.fullName === selectedSourceTableKey,
     );
-    if (!tableSummary || tableMetadataByKey[selectedTableKey]) {
+    if (!tableSummary || tableMetadataByKey[selectedSourceTableKey]) {
       return;
     }
 
@@ -4557,7 +4657,7 @@ export function App() {
     };
   }, [
     selectedConnection,
-    selectedTableKey,
+    selectedSourceTableKey,
     tableMetadataByKey,
     visibleTableOptions,
   ]);
@@ -4622,14 +4722,8 @@ export function App() {
         <Flex align="center" justify="space-between">
           <div>
             <Title order={3}>Geopanel</Title>
-            <Text c="dimmed" size="sm">
-              Phase 1 layout base
-            </Text>
           </div>
           <Group gap="sm">
-            <Text c="dimmed" fw={500} size="sm">
-              Resizable workspace shell
-            </Text>
             <ColorSchemeToggle />
           </Group>
         </Flex>
@@ -4648,7 +4742,7 @@ export function App() {
           }}
         >
           <Split.Pane initialWidth={280} maxWidth={480} minWidth={0}>
-            <PanelFrame hint="Resizable" title="Data & Layers">
+            <PanelFrame title="Data & Layers">
               <ConnectionManager
                 activeLayerId={activeLayerId}
                 catalog={catalog}
@@ -4657,12 +4751,15 @@ export function App() {
                 onLoadSchemas={() => void loadCatalogSchemas()}
                 onImportSelectedTable={handleImportSelectedTable}
                 onCreateFlowLayer={handleCreateFlowLayer}
+                onRemoveSavedView={handleRemoveSavedView}
                 onSelectLayer={handleSelectLayer}
                 onSelectCatalogTable={handleSelectTable}
+                onSelectSavedView={handleSelectSavedView}
                 onToggleCatalogSchema={handleToggleCatalogSchema}
                 onToggleCatalogSchemaExpanded={
                   handleToggleCatalogSchemaExpanded
                 }
+                savedViews={selectedConnectionSavedViews}
                 selectedInspectableTable={selectedInspectableTable}
                 selectedTableKey={selectedTableKey}
                 tables={metadataTables}
@@ -4680,7 +4777,7 @@ export function App() {
               }}
             >
               <Split.Pane grow minHeight={0}>
-                <PanelFrame hint="Resizable" title="Map">
+                <PanelFrame>
                   <MapPane
                     basemapId={selectedBasemapId ?? defaultBasemapId}
                     connection={selectedConnection}
@@ -4694,7 +4791,7 @@ export function App() {
               <Split.Resizer />
 
               <Split.Pane initialHeight={260} minHeight={0}>
-                <PanelFrame hint="Resizable" title="Table">
+                <PanelFrame>
                   <DataInspector
                     connection={selectedConnection}
                     isLoadingTableMetadata={isLoadingTableMetadata}
@@ -4703,11 +4800,9 @@ export function App() {
                       Object.values(loadingSchemaTablesByName).some(Boolean)
                     }
                     key={`${selectedConnectionId ?? 'none'}:${selectedTableKey ?? 'none'}`}
-                    onSelectTable={handleSelectTable}
+                    selectedView={selectedSavedView}
                     selectedTable={selectedInspectableTable}
-                    selectedTableKey={selectedTableKey}
                     tablesError={catalogError}
-                    tables={visibleTableOptions}
                   />
                 </PanelFrame>
               </Split.Pane>
@@ -4717,7 +4812,7 @@ export function App() {
           <Split.Resizer />
 
           <Split.Pane initialWidth={340} maxWidth={520} minWidth={0}>
-            <PanelFrame hint="Tabs" title="Workspace">
+            <PanelFrame title="Workspace">
               <RightPaneTabs
                 activeLayer={activeLayer}
                 activeSource={activeLayerSource}
