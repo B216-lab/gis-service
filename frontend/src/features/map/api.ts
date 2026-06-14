@@ -101,6 +101,7 @@ export async function fetchGeoJsonSourceData(
   connection: DatabaseConnection,
   source: GeoJsonTableSource,
   bounds: GeoBounds,
+  zoom: number | null,
   signal?: AbortSignal,
 ) {
   const response = await fetch('/api/v1/database-connections/layer-features', {
@@ -121,6 +122,7 @@ export async function fetchGeoJsonSourceData(
       geometryColumn: source.geometryColumn,
       filter: source.filter ?? null,
       limit: 5000,
+      zoom,
       west: bounds.west,
       south: bounds.south,
       east: bounds.east,

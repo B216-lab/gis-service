@@ -50,6 +50,7 @@ type SourceCacheEntry = {
   payload: LoadedSourceData;
 };
 type SourceDataCache = Record<string, SourceCacheEntry>;
+type GeoJsonSourceCache = Record<string, SourceCacheEntry[]>;
 type SourceExtentCacheEntry = {
   signature: string;
   bounds: GeoBounds | null;
@@ -57,6 +58,12 @@ type SourceExtentCacheEntry = {
 type SourceExtentCache = Record<string, SourceExtentCacheEntry>;
 
 const geoJsonFetchBufferRatio = 0.5;
+const maxGeoJsonCacheEntriesPerSource = 8;
+
+interface MapViewport {
+  bounds: GeoBounds;
+  zoom: number;
+}
 
 function roundCoordinate(value: number) {
   return Math.round(value * 10_000) / 10_000;
@@ -64,6 +71,21 @@ function roundCoordinate(value: number) {
 
 function getSourceSignature(source: MapSource) {
   return JSON.stringify(source);
+}
+
+function getZoomBucket(zoom: number | null | undefined) {
+  return Math.max(0, Math.floor(zoom ?? 0));
+}
+
+function getSourceCacheSignature(source: MapSource, zoom: number | null) {
+  if (source.type === 'geojson-table') {
+    return JSON.stringify({
+      source,
+      zoom: getZoomBucket(zoom),
+    });
+  }
+
+  return getSourceSignature(source);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -93,6 +115,39 @@ function boundsContain(container: GeoBounds | null, inner: GeoBounds | null) {
     container.east >= inner.east &&
     container.north >= inner.north
   );
+}
+
+function findReusableGeoJsonCacheEntry(
+  entries: SourceCacheEntry[] | undefined,
+  signature: string,
+  viewportBounds: GeoBounds | null,
+) {
+  return entries?.find(
+    (entry) =>
+      entry.signature === signature &&
+      boundsContain(entry.bounds, viewportBounds),
+  );
+}
+
+function addGeoJsonCacheEntry(
+  cache: GeoJsonSourceCache,
+  sourceId: string,
+  entry: SourceCacheEntry,
+) {
+  const currentEntries = cache[sourceId] ?? [];
+  const nextEntries = [
+    entry,
+    ...currentEntries.filter(
+      (candidate) =>
+        candidate.signature !== entry.signature ||
+        JSON.stringify(candidate.bounds) !== JSON.stringify(entry.bounds),
+    ),
+  ].slice(0, maxGeoJsonCacheEntriesPerSource);
+
+  return {
+    ...cache,
+    [sourceId]: nextEntries,
+  };
 }
 
 function registerPmtilesProtocol() {
@@ -369,6 +424,7 @@ async function fetchSourceData(
   connection: DatabaseConnection,
   source: MapSource,
   viewportBounds: GeoBounds | null,
+  zoom: number | null,
   signal?: AbortSignal,
 ): Promise<LoadedSourceData> {
   if (source.type === 'geojson-table') {
@@ -380,6 +436,7 @@ async function fetchSourceData(
       connection,
       source,
       viewportBounds,
+      zoom,
       signal,
     );
     return {
@@ -413,6 +470,7 @@ export function MapPane({
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const activeBasemapIdRef = useRef<BasemapId>(basemapId);
   const sourceCacheRef = useRef<SourceDataCache>({});
+  const geoJsonSourceCacheRef = useRef<GeoJsonSourceCache>({});
   const sourceExtentCacheRef = useRef<SourceExtentCache>({});
   const fittedSourceIdsRef = useRef<string>('');
   const [isMapReady, setIsMapReady] = useState(false);
@@ -421,7 +479,7 @@ export function MapPane({
   const [cacheVersion, setCacheVersion] = useState(0);
   const [extentVersion, setExtentVersion] = useState(0);
   const [styleVersion, setStyleVersion] = useState(0);
-  const [viewportBounds, setViewportBounds] = useState<GeoBounds | null>(null);
+  const [viewport, setViewport] = useState<MapViewport | null>(null);
 
   const visibleSourceIds = Array.from(
     new Set(visibleLayers.map((layer) => layer.sourceId)),
@@ -465,11 +523,14 @@ export function MapPane({
 
     function syncViewportBounds() {
       const nextBounds = map.getBounds();
-      setViewportBounds({
-        west: nextBounds.getWest(),
-        south: nextBounds.getSouth(),
-        east: nextBounds.getEast(),
-        north: nextBounds.getNorth(),
+      setViewport({
+        bounds: {
+          west: nextBounds.getWest(),
+          south: nextBounds.getSouth(),
+          east: nextBounds.getEast(),
+          north: nextBounds.getNorth(),
+        },
+        zoom: map.getZoom(),
       });
     }
 
@@ -541,6 +602,7 @@ export function MapPane({
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
       sourceCacheRef.current = {};
+      geoJsonSourceCacheRef.current = {};
       sourceExtentCacheRef.current = {};
       fittedSourceIdsRef.current = '';
       setLayerError('');
@@ -560,22 +622,46 @@ export function MapPane({
 
     if (
       visibleSources.some((source) => source.type === 'geojson-table') &&
-      !viewportBounds
+      !viewport?.bounds
     ) {
       return;
     }
 
+    let promotedCachedSource = false;
+    const nextActiveCache = { ...sourceCacheRef.current };
     const missingSources = visibleSources.filter((source) => {
-      const cacheEntry = sourceCacheRef.current[source.id];
-      if (!cacheEntry || cacheEntry.signature !== getSourceSignature(source)) {
+      const signature = getSourceCacheSignature(source, viewport?.zoom ?? null);
+      const cacheEntry = nextActiveCache[source.id];
+      if (
+        !cacheEntry ||
+        cacheEntry.signature !== signature ||
+        (source.type === 'geojson-table' &&
+          !boundsContain(cacheEntry.bounds, viewport?.bounds ?? null))
+      ) {
+        const reusableEntry =
+          source.type === 'geojson-table'
+            ? findReusableGeoJsonCacheEntry(
+                geoJsonSourceCacheRef.current[source.id],
+                signature,
+                viewport?.bounds ?? null,
+              )
+            : undefined;
+        if (reusableEntry) {
+          nextActiveCache[source.id] = reusableEntry;
+          promotedCachedSource = true;
+          return false;
+        }
+
         return true;
       }
 
-      return (
-        source.type === 'geojson-table' &&
-        !boundsContain(cacheEntry.bounds, viewportBounds)
-      );
+      return false;
     });
+
+    if (promotedCachedSource) {
+      sourceCacheRef.current = nextActiveCache;
+      setCacheVersion((value) => value + 1);
+    }
 
     if (missingSources.length === 0) {
       setLayerError('');
@@ -594,20 +680,25 @@ export function MapPane({
         const loadedEntries = await Promise.all(
           missingSources.map(async (source) => {
             const fetchBounds =
-              source.type === 'geojson-table' && viewportBounds
-                ? expandGeoBounds(viewportBounds, geoJsonFetchBufferRatio)
+              source.type === 'geojson-table' && viewport?.bounds
+                ? expandGeoBounds(viewport.bounds, geoJsonFetchBufferRatio)
                 : null;
             const data = await fetchSourceData(
               activeConnection,
               source,
               fetchBounds,
+              viewport?.zoom ?? null,
               abortController.signal,
             );
 
             return [
               source.id,
+              source,
               {
-                signature: getSourceSignature(source),
+                signature: getSourceCacheSignature(
+                  source,
+                  viewport?.zoom ?? null,
+                ),
                 bounds: fetchBounds,
                 payload: data,
               },
@@ -620,10 +711,19 @@ export function MapPane({
         }
 
         const nextCache = { ...sourceCacheRef.current };
-        for (const [sourceId, data] of loadedEntries) {
+        let nextGeoJsonCache = geoJsonSourceCacheRef.current;
+        for (const [sourceId, source, data] of loadedEntries) {
           nextCache[sourceId] = data;
+          if (source.type === 'geojson-table') {
+            nextGeoJsonCache = addGeoJsonCacheEntry(
+              nextGeoJsonCache,
+              sourceId,
+              data,
+            );
+          }
         }
         sourceCacheRef.current = nextCache;
+        geoJsonSourceCacheRef.current = nextGeoJsonCache;
         setCacheVersion((value) => value + 1);
       } catch (error) {
         if (!isActive || abortController.signal.aborted) {
@@ -648,13 +748,7 @@ export function MapPane({
       isActive = false;
       abortController.abort();
     };
-  }, [
-    connection,
-    isMapReady,
-    onSelectMapObject,
-    viewportBounds,
-    visibleSources,
-  ]);
+  }, [connection, isMapReady, onSelectMapObject, viewport, visibleSources]);
 
   useEffect(() => {
     if (!isMapReady || !connection || connection.testStatus !== 'success') {

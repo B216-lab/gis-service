@@ -127,6 +127,7 @@ type ListLayerFeaturesRequest struct {
 	GeometryColumn string       `json:"geometryColumn"`
 	Filter         *QueryFilter `json:"filter"`
 	Limit          int          `json:"limit"`
+	Zoom           *float64     `json:"zoom"`
 	West           *float64     `json:"west"`
 	South          *float64     `json:"south"`
 	East           *float64     `json:"east"`
@@ -655,6 +656,10 @@ func (request ListLayerFeaturesRequest) Validate() error {
 
 	if err := validateQueryFilter(request.Filter); err != nil {
 		return err
+	}
+
+	if request.Zoom != nil && (*request.Zoom < 0 || *request.Zoom > 24) {
+		return errors.New("Zoom must be between 0 and 24.")
 	}
 
 	if request.hasViewportBounds() {
@@ -1541,6 +1546,10 @@ func (service *Service) ListLayerFeatures(
 		selectedGeometryColumn.StorageType,
 		selectedGeometryColumn.SRID,
 	)
+	renderGeometryExpression := simplifiedGeometryExpression(
+		geometryExpression,
+		request.Zoom,
+	)
 
 	whereClauses := []string{request.whereClauseForGeometry(geometryExpression)}
 	filterClause, parameters, err := buildQueryFilterClause(
@@ -1572,7 +1581,7 @@ func (service *Service) ListLayerFeatures(
 		select coalesce(json_agg(feature), '[]'::json)
 		from source_features
 		`,
-		geometryExpression,
+		renderGeometryExpression,
 		propertyExpression,
 		rowRefExpression,
 		quoteIdentifier(request.Schema),
@@ -2774,6 +2783,28 @@ func geometryColumnWGS84Expression(
 	}
 
 	return fmt.Sprintf("ST_Transform(%s, 4326)", geometryExpression)
+}
+
+func simplifiedGeometryExpression(expression string, zoom *float64) string {
+	if zoom == nil || *zoom >= 12 {
+		return expression
+	}
+
+	tolerance := 0.02
+	switch {
+	case *zoom >= 11:
+		tolerance = 0.0005
+	case *zoom >= 10:
+		tolerance = 0.001
+	case *zoom >= 9:
+		tolerance = 0.0025
+	case *zoom >= 8:
+		tolerance = 0.005
+	case *zoom >= 7:
+		tolerance = 0.01
+	}
+
+	return fmt.Sprintf("ST_SimplifyPreserveTopology(%s, %f)", expression, tolerance)
 }
 
 func normalizeValue(value interface{}) interface{} {
