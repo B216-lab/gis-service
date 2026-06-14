@@ -2,17 +2,37 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"sync"
+	"time"
 
 	"geopanel/backend/internal/postgres"
 )
 
 type Server struct {
-	service *postgres.Service
-	mux     *http.ServeMux
+	service        *postgres.Service
+	mux            *http.ServeMux
+	tileSources    map[string]tileSourceEntry
+	tileSourcesMux sync.RWMutex
 }
+
+type tileSourceEntry struct {
+	request   postgres.LayerTileSourceRequest
+	createdAt time.Time
+}
+
+type layerTileSourceResult struct {
+	Token       string   `json:"token"`
+	Tiles       []string `json:"tiles"`
+	SourceLayer string   `json:"sourceLayer"`
+}
+
+const tileSourceTTL = 12 * time.Hour
 
 type apiError struct {
 	Code    string `json:"code"`
@@ -25,8 +45,9 @@ type errorResponse struct {
 
 func NewServer(service *postgres.Service) *http.ServeMux {
 	server := &Server{
-		service: service,
-		mux:     http.NewServeMux(),
+		service:     service,
+		mux:         http.NewServeMux(),
+		tileSources: make(map[string]tileSourceEntry),
 	}
 
 	server.routes()
@@ -75,6 +96,14 @@ func (server *Server) routes() {
 	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/layer-features",
 		server.handleListLayerFeatures,
+	)
+	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/layer-tile-source",
+		server.handleRegisterLayerTileSource,
+	)
+	server.mux.HandleFunc(
+		"GET /api/v1/vector-tiles/{token}/{z}/{x}/{y}",
+		server.handleLayerVectorTile,
 	)
 	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/flowmap-data",
@@ -434,6 +463,140 @@ func (server *Server) handleListLayerFeatures(
 	writeJSON(writer, http.StatusOK, result)
 }
 
+func (server *Server) handleRegisterLayerTileSource(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.LayerTileSourceRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_layer_tile_source_request",
+			err.Error(),
+		)
+		return
+	}
+
+	server.pruneExpiredTileSources(time.Now())
+
+	token, err := generateTileSourceToken()
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"layer_tile_source_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	server.tileSourcesMux.Lock()
+	server.tileSources[token] = tileSourceEntry{
+		request:   payload,
+		createdAt: time.Now(),
+	}
+	server.tileSourcesMux.Unlock()
+
+	writeJSON(writer, http.StatusOK, layerTileSourceResult{
+		Token:       token,
+		Tiles:       []string{"/api/v1/vector-tiles/" + token + "/{z}/{x}/{y}"},
+		SourceLayer: postgres.LayerVectorTileName,
+	})
+}
+
+func (server *Server) handleLayerVectorTile(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	z, err := strconv.Atoi(request.PathValue("z"))
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_tile", "Invalid tile zoom.")
+		return
+	}
+
+	x, err := strconv.Atoi(request.PathValue("x"))
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_tile", "Invalid tile x.")
+		return
+	}
+
+	y, err := strconv.Atoi(request.PathValue("y"))
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_tile", "Invalid tile y.")
+		return
+	}
+
+	token := request.PathValue("token")
+	server.tileSourcesMux.RLock()
+	entry, ok := server.tileSources[token]
+	server.tileSourcesMux.RUnlock()
+	if !ok {
+		writeError(
+			writer,
+			http.StatusNotFound,
+			"tile_source_not_found",
+			"Tile source not found.",
+		)
+		return
+	}
+	if time.Since(entry.createdAt) > tileSourceTTL {
+		server.tileSourcesMux.Lock()
+		delete(server.tileSources, token)
+		server.tileSourcesMux.Unlock()
+		writeError(
+			writer,
+			http.StatusNotFound,
+			"tile_source_expired",
+			"Tile source expired.",
+		)
+		return
+	}
+	server.tileSourcesMux.Lock()
+	if currentEntry, ok := server.tileSources[token]; ok {
+		currentEntry.createdAt = time.Now()
+		server.tileSources[token] = currentEntry
+	}
+	server.tileSourcesMux.Unlock()
+
+	tile, err := server.service.GetLayerVectorTile(
+		request.Context(),
+		postgres.LayerVectorTileRequest{
+			LayerTileSourceRequest: entry.request,
+			Z:                      z,
+			X:                      x,
+			Y:                      y,
+		},
+	)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"database_vector_tile_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writer.Header().Set("Content-Type", "application/vnd.mapbox-vector-tile")
+	writer.Header().Set("Cache-Control", "private, max-age=3600")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(tile)
+}
+
 func (server *Server) handleLayerExtent(
 	writer http.ResponseWriter,
 	request *http.Request,
@@ -643,5 +806,25 @@ func writeJSON(
 
 	if err := json.NewEncoder(writer).Encode(payload); err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func generateTileSourceToken() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(bytes), nil
+}
+
+func (server *Server) pruneExpiredTileSources(now time.Time) {
+	server.tileSourcesMux.Lock()
+	defer server.tileSourcesMux.Unlock()
+
+	for token, entry := range server.tileSources {
+		if now.Sub(entry.createdAt) > tileSourceTTL {
+			delete(server.tileSources, token)
+		}
 	}
 }

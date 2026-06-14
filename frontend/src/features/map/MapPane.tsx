@@ -1,14 +1,20 @@
-import { GeoJsonLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { FlowmapLayer } from '@flowmap.gl/layers';
 import { Box, Center, Loader, Stack, Text } from '@mantine/core';
-import maplibregl, { LngLatBounds, NavigationControl } from 'maplibre-gl';
+import maplibregl, {
+  LngLatBounds,
+  type MapGeoJSONFeature,
+  type MapMouseEvent,
+  type MapSourceDataEvent,
+  NavigationControl,
+} from 'maplibre-gl';
 import { Protocol } from 'pmtiles';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   DatabaseConnection,
   FlowmapMapLayer,
+  FlowmapTableSource,
   GeoJsonMapLayer,
   GeoJsonTableSource,
   MapLayer,
@@ -17,10 +23,10 @@ import type {
 import {
   type FlowmapDataResponse,
   fetchFlowmapSourceData,
-  fetchGeoJsonSourceData,
   fetchGeoJsonSourceExtent,
   type GeoBounds,
-  type GeoJsonFeatureCollection,
+  type LayerTileSourceResponse,
+  registerVectorTileSource,
 } from './api';
 import { type BasemapId, getBasemapStyle } from './basemaps';
 import type { MapSelection, RowReference } from './selection';
@@ -33,121 +39,33 @@ declare global {
   }
 }
 
-type GeoJsonSourceData = {
-  sourceType: 'geojson-table';
-  data: GeoJsonFeatureCollection;
-};
-
 type FlowmapSourceData = {
   sourceType: 'flowmap-table';
   data: FlowmapDataResponse;
 };
 
-type LoadedSourceData = GeoJsonSourceData | FlowmapSourceData;
+type LoadedSourceData = FlowmapSourceData;
 type SourceCacheEntry = {
   signature: string;
-  bounds: GeoBounds | null;
   payload: LoadedSourceData;
 };
 type SourceDataCache = Record<string, SourceCacheEntry>;
-type GeoJsonSourceCache = Record<string, SourceCacheEntry[]>;
 type SourceExtentCacheEntry = {
   signature: string;
   bounds: GeoBounds | null;
 };
 type SourceExtentCache = Record<string, SourceExtentCacheEntry>;
+type VectorTileSourceCacheEntry = {
+  signature: string;
+  source: LayerTileSourceResponse;
+};
+type VectorTileSourceCache = Record<string, VectorTileSourceCacheEntry>;
 
-const geoJsonFetchBufferRatio = 0.5;
-const maxGeoJsonCacheEntriesPerSource = 8;
-
-interface MapViewport {
-  bounds: GeoBounds;
-  zoom: number;
-}
-
-function roundCoordinate(value: number) {
-  return Math.round(value * 10_000) / 10_000;
-}
+const vectorTileSourcePrefix = 'geopanel-source';
+const vectorTileLayerPrefix = 'geopanel-layer';
 
 function getSourceSignature(source: MapSource) {
   return JSON.stringify(source);
-}
-
-function getZoomBucket(zoom: number | null | undefined) {
-  return Math.max(0, Math.floor(zoom ?? 0));
-}
-
-function getSourceCacheSignature(source: MapSource, zoom: number | null) {
-  if (source.type === 'geojson-table') {
-    return JSON.stringify({
-      source,
-      zoom: getZoomBucket(zoom),
-    });
-  }
-
-  return getSourceSignature(source);
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function expandGeoBounds(bounds: GeoBounds, ratio: number): GeoBounds {
-  const longitudePadding = (bounds.east - bounds.west) * ratio;
-  const latitudePadding = (bounds.north - bounds.south) * ratio;
-
-  return {
-    west: roundCoordinate(clamp(bounds.west - longitudePadding, -180, 180)),
-    south: roundCoordinate(clamp(bounds.south - latitudePadding, -90, 90)),
-    east: roundCoordinate(clamp(bounds.east + longitudePadding, -180, 180)),
-    north: roundCoordinate(clamp(bounds.north + latitudePadding, -90, 90)),
-  };
-}
-
-function boundsContain(container: GeoBounds | null, inner: GeoBounds | null) {
-  if (!container || !inner) {
-    return false;
-  }
-
-  return (
-    container.west <= inner.west &&
-    container.south <= inner.south &&
-    container.east >= inner.east &&
-    container.north >= inner.north
-  );
-}
-
-function findReusableGeoJsonCacheEntry(
-  entries: SourceCacheEntry[] | undefined,
-  signature: string,
-  viewportBounds: GeoBounds | null,
-) {
-  return entries?.find(
-    (entry) =>
-      entry.signature === signature &&
-      boundsContain(entry.bounds, viewportBounds),
-  );
-}
-
-function addGeoJsonCacheEntry(
-  cache: GeoJsonSourceCache,
-  sourceId: string,
-  entry: SourceCacheEntry,
-) {
-  const currentEntries = cache[sourceId] ?? [];
-  const nextEntries = [
-    entry,
-    ...currentEntries.filter(
-      (candidate) =>
-        candidate.signature !== entry.signature ||
-        JSON.stringify(candidate.bounds) !== JSON.stringify(entry.bounds),
-    ),
-  ].slice(0, maxGeoJsonCacheEntriesPerSource);
-
-  return {
-    ...cache,
-    [sourceId]: nextEntries,
-  };
 }
 
 function registerPmtilesProtocol() {
@@ -160,63 +78,10 @@ function registerPmtilesProtocol() {
   window.__geopanelPmtilesProtocolRegistered = true;
 }
 
-function hexToRgba(hex: string, opacity: number) {
-  const normalized = hex.replace('#', '');
-  const fullHex =
-    normalized.length === 3
-      ? normalized
-          .split('')
-          .map((character) => `${character}${character}`)
-          .join('')
-      : normalized.padEnd(6, '0').slice(0, 6);
-
-  return [
-    Number.parseInt(fullHex.slice(0, 2), 16),
-    Number.parseInt(fullHex.slice(2, 4), 16),
-    Number.parseInt(fullHex.slice(4, 6), 16),
-    Math.round((opacity / 100) * 255),
-  ] as [number, number, number, number];
-}
-
-function visitCoordinates(
-  coordinates: unknown,
-  callback: (longitude: number, latitude: number) => void,
-) {
-  if (
-    Array.isArray(coordinates) &&
-    coordinates.length >= 2 &&
-    typeof coordinates[0] === 'number' &&
-    typeof coordinates[1] === 'number'
-  ) {
-    callback(coordinates[0], coordinates[1]);
-    return;
-  }
-
-  if (Array.isArray(coordinates)) {
-    for (const value of coordinates) {
-      visitCoordinates(value, callback);
-    }
-  }
-}
-
 function extendBoundsWithSourceData(
   bounds: LngLatBounds,
   sourceData: LoadedSourceData,
 ) {
-  if (sourceData.sourceType === 'geojson-table') {
-    for (const feature of sourceData.data.features) {
-      if (!feature.geometry) {
-        continue;
-      }
-
-      visitCoordinates(feature.geometry.coordinates, (longitude, latitude) => {
-        bounds.extend([longitude, latitude]);
-      });
-    }
-
-    return;
-  }
-
   for (const location of sourceData.data.locations) {
     bounds.extend([location.lon, location.lat]);
   }
@@ -257,31 +122,6 @@ function computeVisibleBounds(params: {
   }
 
   return hasCoordinates ? bounds : null;
-}
-
-function createGeoJsonDeckLayer(
-  layer: GeoJsonMapLayer,
-  source: GeoJsonTableSource,
-  sourceData: GeoJsonFeatureCollection,
-) {
-  const color = hexToRgba(layer.color, layer.opacity);
-  const isLineLayer = /line/i.test(source.geometryType);
-  const isPointLayer = /point/i.test(source.geometryType);
-
-  return new GeoJsonLayer({
-    id: layer.id,
-    data: sourceData as never,
-    pickable: true,
-    stroked: true,
-    filled: !isLineLayer,
-    pointType: 'circle',
-    lineWidthMinPixels: isPointLayer ? 0 : 2,
-    getLineColor: color,
-    getFillColor: isLineLayer ? [0, 0, 0, 0] : color,
-    getPointRadius: 6,
-    getLineWidth: isLineLayer ? 3 : 2,
-    getRadius: 6,
-  });
 }
 
 function createFlowmapDeckLayer(
@@ -330,6 +170,71 @@ function extractRowRefs(
   }
 
   return rowRef ? [rowRef] : [];
+}
+
+function mapLibreSourceId(sourceId: string) {
+  return `${vectorTileSourcePrefix}-${sourceId}`;
+}
+
+function mapLibreLayerBaseId(layerId: string) {
+  return `${vectorTileLayerPrefix}-${layerId}`;
+}
+
+function getVectorStyleLayerIds(layer: GeoJsonMapLayer) {
+  const baseId = mapLibreLayerBaseId(layer.id);
+
+  return [`${baseId}-fill`, `${baseId}-line`, `${baseId}-circle`];
+}
+
+function parseJSONProperty(value: unknown) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function buildVectorMapSelection(
+  feature: MapGeoJSONFeature,
+  layer: GeoJsonMapLayer,
+  source: GeoJsonTableSource,
+): MapSelection {
+  const properties = { ...(feature.properties ?? {}) };
+  const primaryKey = parseJSONProperty(properties._geopanel_primary_key);
+  const rowKey = parseJSONProperty(properties._geopanel_row_key);
+  delete properties._geopanel_primary_key;
+  delete properties._geopanel_row_key;
+  delete properties._geopanel_empty;
+
+  const rowRef =
+    Array.isArray(primaryKey) &&
+    primaryKey.every((value) => typeof value === 'string') &&
+    rowKey &&
+    typeof rowKey === 'object' &&
+    !Array.isArray(rowKey)
+      ? {
+          primaryKey,
+          rowKey: rowKey as Record<string, unknown>,
+        }
+      : null;
+
+  return {
+    layerId: layer.id,
+    layerName: layer.name,
+    sourceId: source.id,
+    sourceType: source.type,
+    sourceFullName: source.fullName,
+    schema: source.schema,
+    table: source.table,
+    objectType: 'feature',
+    rowRefs: rowRef ? [rowRef] : [],
+    inlineProperties: properties,
+    title: layer.name,
+  };
 }
 
 function buildMapSelection(
@@ -420,31 +325,97 @@ function resolvePickedMapLayer(
   );
 }
 
-async function fetchSourceData(
-  connection: DatabaseConnection,
-  source: MapSource,
-  viewportBounds: GeoBounds | null,
-  zoom: number | null,
-  signal?: AbortSignal,
-): Promise<LoadedSourceData> {
-  if (source.type === 'geojson-table') {
-    if (!viewportBounds) {
-      throw new Error('Viewport bounds are required to load map features.');
-    }
+function isGeoJsonMapLayer(layer: MapLayer): layer is GeoJsonMapLayer {
+  return layer.type === 'geojson';
+}
 
-    const response = await fetchGeoJsonSourceData(
-      connection,
-      source,
-      viewportBounds,
-      zoom,
-      signal,
-    );
-    return {
-      sourceType: 'geojson-table',
-      data: response.data,
-    };
+function isGeoJsonTableSource(source: MapSource): source is GeoJsonTableSource {
+  return source.type === 'geojson-table';
+}
+
+function isVectorTileRequestError(event: ErrorEvent) {
+  const error = event.error as
+    | {
+        status?: number;
+        url?: string;
+      }
+    | undefined;
+
+  return (
+    error?.status === 404 &&
+    typeof error.url === 'string' &&
+    error.url.includes('/api/v1/vector-tiles/')
+  );
+}
+
+function addVectorStyleLayers(params: {
+  map: maplibregl.Map;
+  layer: GeoJsonMapLayer;
+  source: GeoJsonTableSource;
+  sourceLayer: string;
+}) {
+  const { layer, map, source, sourceLayer } = params;
+  const color = layer.color;
+  const opacity = layer.opacity / 100;
+  const [fillLayerId, lineLayerId, circleLayerId] =
+    getVectorStyleLayerIds(layer);
+  const sourceId = mapLibreSourceId(source.id);
+
+  if (/polygon/i.test(source.geometryType) && !map.getLayer(fillLayerId)) {
+    map.addLayer({
+      id: fillLayerId,
+      type: 'fill',
+      source: sourceId,
+      'source-layer': sourceLayer,
+      paint: {
+        'fill-color': color,
+        'fill-opacity': opacity,
+      },
+    });
   }
 
+  if (
+    (/polygon|line/i.test(source.geometryType) || source.geometryType === '') &&
+    !map.getLayer(lineLayerId)
+  ) {
+    map.addLayer({
+      id: lineLayerId,
+      type: 'line',
+      source: sourceId,
+      'source-layer': sourceLayer,
+      paint: {
+        'line-color': color,
+        'line-opacity': Math.min(1, opacity + 0.15),
+        'line-width': /line/i.test(source.geometryType) ? 3 : 1.5,
+      },
+    });
+  }
+
+  if (
+    (/point/i.test(source.geometryType) || source.geometryType === '') &&
+    !map.getLayer(circleLayerId)
+  ) {
+    map.addLayer({
+      id: circleLayerId,
+      type: 'circle',
+      source: sourceId,
+      'source-layer': sourceLayer,
+      paint: {
+        'circle-color': color,
+        'circle-opacity': opacity,
+        'circle-radius': 6,
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 1,
+      },
+    });
+  }
+}
+
+async function fetchSourceData(
+  connection: DatabaseConnection,
+  source: FlowmapTableSource,
+  signal?: AbortSignal,
+): Promise<LoadedSourceData> {
   const response = await fetchFlowmapSourceData(connection, source, signal);
   return {
     sourceType: 'flowmap-table',
@@ -470,27 +441,53 @@ export function MapPane({
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const activeBasemapIdRef = useRef<BasemapId>(basemapId);
   const sourceCacheRef = useRef<SourceDataCache>({});
-  const geoJsonSourceCacheRef = useRef<GeoJsonSourceCache>({});
   const sourceExtentCacheRef = useRef<SourceExtentCache>({});
+  const vectorTileSourceCacheRef = useRef<VectorTileSourceCache>({});
+  const appliedVectorSourceSignaturesRef = useRef<Record<string, string>>({});
   const fittedSourceIdsRef = useRef<string>('');
+  const visibleLayersRef = useRef<MapLayer[]>(visibleLayers);
+  const sourcesRef = useRef<MapSource[]>(sources);
+  const onSelectMapObjectRef = useRef(onSelectMapObject);
+  const loadingVectorSourceIdsRef = useRef<Set<string>>(new Set());
   const [isMapReady, setIsMapReady] = useState(false);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
+  const [isLoadingVectorTiles, setIsLoadingVectorTiles] = useState(false);
   const [layerError, setLayerError] = useState('');
   const [cacheVersion, setCacheVersion] = useState(0);
   const [extentVersion, setExtentVersion] = useState(0);
   const [styleVersion, setStyleVersion] = useState(0);
-  const [viewport, setViewport] = useState<MapViewport | null>(null);
 
-  const visibleSourceIds = Array.from(
-    new Set(visibleLayers.map((layer) => layer.sourceId)),
+  visibleLayersRef.current = visibleLayers;
+  sourcesRef.current = sources;
+  onSelectMapObjectRef.current = onSelectMapObject;
+
+  const visibleSourceIds = useMemo(
+    () => Array.from(new Set(visibleLayers.map((layer) => layer.sourceId))),
+    [visibleLayers],
   );
-  const visibleSources = visibleSourceIds.flatMap((sourceId) => {
-    const source = sources.find((candidate) => candidate.id === sourceId);
-    return source ? [source] : [];
-  });
-  const visibleSourceSignature = visibleSourceIds.sort().join('|');
-  const geoJsonVisibleSources = visibleSources.filter(
-    (source): source is GeoJsonTableSource => source.type === 'geojson-table',
+  const visibleSources = useMemo(
+    () =>
+      visibleSourceIds.flatMap((sourceId) => {
+        const source = sources.find((candidate) => candidate.id === sourceId);
+        return source ? [source] : [];
+      }),
+    [sources, visibleSourceIds],
+  );
+  const visibleSourceSignature = useMemo(
+    () => [...visibleSourceIds].sort().join('|'),
+    [visibleSourceIds],
+  );
+  const geoJsonVisibleSources = useMemo(
+    () => visibleSources.filter(isGeoJsonTableSource),
+    [visibleSources],
+  );
+  const flowmapVisibleSources = useMemo(
+    () =>
+      visibleSources.filter(
+        (source): source is FlowmapTableSource =>
+          source.type === 'flowmap-table',
+      ),
+    [visibleSources],
   );
 
   useEffect(() => {
@@ -521,31 +518,129 @@ export function MapPane({
     map.addControl(navigation, 'top-left');
     map.addControl(overlay);
 
-    function syncViewportBounds() {
-      const nextBounds = map.getBounds();
-      setViewport({
-        bounds: {
-          west: nextBounds.getWest(),
-          south: nextBounds.getSouth(),
-          east: nextBounds.getEast(),
-          north: nextBounds.getNorth(),
-        },
-        zoom: map.getZoom(),
+    function handleMapClick(event: MapMouseEvent) {
+      const currentVisibleLayers = visibleLayersRef.current;
+      const currentSources = sourcesRef.current;
+      const geoJsonLayers = currentVisibleLayers.filter(isGeoJsonMapLayer);
+      const styleLayerIds = geoJsonLayers.flatMap(getVectorStyleLayerIds);
+      const queryableLayerIds = styleLayerIds.filter((layerId) =>
+        map.getLayer(layerId),
+      );
+
+      if (queryableLayerIds.length === 0) {
+        onSelectMapObjectRef.current(null);
+        return;
+      }
+
+      const [feature] = map.queryRenderedFeatures(event.point, {
+        layers: queryableLayerIds,
       });
+      if (!feature?.layer.id) {
+        onSelectMapObjectRef.current(null);
+        return;
+      }
+
+      const layer = geoJsonLayers.find((candidate) =>
+        getVectorStyleLayerIds(candidate).includes(feature.layer.id),
+      );
+      if (!layer) {
+        onSelectMapObjectRef.current(null);
+        return;
+      }
+
+      const source = currentSources.find(
+        (candidate): candidate is GeoJsonTableSource =>
+          candidate.id === layer.sourceId && isGeoJsonTableSource(candidate),
+      );
+      if (!source) {
+        onSelectMapObjectRef.current(null);
+        return;
+      }
+
+      onSelectMapObjectRef.current(
+        buildVectorMapSelection(feature, layer, source),
+      );
+    }
+
+    function updateVectorTileLoadingState() {
+      setIsLoadingVectorTiles(loadingVectorSourceIdsRef.current.size > 0);
+    }
+
+    function handleSourceDataLoading(event: MapSourceDataEvent) {
+      if (
+        typeof event.sourceId !== 'string' ||
+        !event.sourceId.startsWith(vectorTileSourcePrefix)
+      ) {
+        return;
+      }
+
+      loadingVectorSourceIdsRef.current.add(event.sourceId);
+      updateVectorTileLoadingState();
+    }
+
+    function handleSourceData(event: MapSourceDataEvent) {
+      if (
+        typeof event.sourceId !== 'string' ||
+        !event.sourceId.startsWith(vectorTileSourcePrefix) ||
+        !event.isSourceLoaded
+      ) {
+        return;
+      }
+
+      loadingVectorSourceIdsRef.current.delete(event.sourceId);
+      updateVectorTileLoadingState();
+    }
+
+    function handleSourceDataAbort(event: MapSourceDataEvent) {
+      if (
+        typeof event.sourceId !== 'string' ||
+        !event.sourceId.startsWith(vectorTileSourcePrefix)
+      ) {
+        return;
+      }
+
+      loadingVectorSourceIdsRef.current.delete(event.sourceId);
+      updateVectorTileLoadingState();
+    }
+
+    function handleMapError(event: ErrorEvent) {
+      if (!isVectorTileRequestError(event)) {
+        return;
+      }
+
+      vectorTileSourceCacheRef.current = {};
+      appliedVectorSourceSignaturesRef.current = {};
+      loadingVectorSourceIdsRef.current.clear();
+      setIsLoadingVectorTiles(false);
+      setStyleVersion((current) => current + 1);
+    }
+
+    function handleMapIdle() {
+      loadingVectorSourceIdsRef.current.clear();
+      updateVectorTileLoadingState();
     }
 
     map.once('load', () => {
       setIsMapReady(true);
       map.resize();
-      syncViewportBounds();
     });
-    map.on('moveend', syncViewportBounds);
+    map.on('click', handleMapClick);
+    map.on('sourcedataloading', handleSourceDataLoading);
+    map.on('sourcedata', handleSourceData);
+    map.on('sourcedataabort', handleSourceDataAbort);
+    map.on('error', handleMapError);
+    map.on('idle', handleMapIdle);
 
     mapRef.current = map;
     overlayRef.current = overlay;
 
     return () => {
-      map.off('moveend', syncViewportBounds);
+      map.off('click', handleMapClick);
+      map.off('sourcedataloading', handleSourceDataLoading);
+      map.off('sourcedata', handleSourceData);
+      map.off('sourcedataabort', handleSourceDataAbort);
+      map.off('error', handleMapError);
+      map.off('idle', handleMapIdle);
       if (overlayRef.current) {
         map.removeControl(overlayRef.current);
         overlayRef.current.finalize();
@@ -602,69 +697,27 @@ export function MapPane({
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
       sourceCacheRef.current = {};
-      geoJsonSourceCacheRef.current = {};
       sourceExtentCacheRef.current = {};
+      vectorTileSourceCacheRef.current = {};
       fittedSourceIdsRef.current = '';
       setLayerError('');
       setIsLoadingSources(false);
-      onSelectMapObject(null);
+      onSelectMapObjectRef.current(null);
       return;
     }
 
-    if (visibleSources.length === 0) {
+    if (flowmapVisibleSources.length === 0) {
       overlayRef.current.setProps({ layers: [] });
-      fittedSourceIdsRef.current = '';
-      setLayerError('');
       setIsLoadingSources(false);
-      onSelectMapObject(null);
       return;
     }
 
-    if (
-      visibleSources.some((source) => source.type === 'geojson-table') &&
-      !viewport?.bounds
-    ) {
-      return;
-    }
-
-    let promotedCachedSource = false;
-    const nextActiveCache = { ...sourceCacheRef.current };
-    const missingSources = visibleSources.filter((source) => {
-      const signature = getSourceCacheSignature(source, viewport?.zoom ?? null);
-      const cacheEntry = nextActiveCache[source.id];
-      if (
-        !cacheEntry ||
-        cacheEntry.signature !== signature ||
-        (source.type === 'geojson-table' &&
-          !boundsContain(cacheEntry.bounds, viewport?.bounds ?? null))
-      ) {
-        const reusableEntry =
-          source.type === 'geojson-table'
-            ? findReusableGeoJsonCacheEntry(
-                geoJsonSourceCacheRef.current[source.id],
-                signature,
-                viewport?.bounds ?? null,
-              )
-            : undefined;
-        if (reusableEntry) {
-          nextActiveCache[source.id] = reusableEntry;
-          promotedCachedSource = true;
-          return false;
-        }
-
-        return true;
-      }
-
-      return false;
+    const missingSources = flowmapVisibleSources.filter((source) => {
+      const signature = getSourceSignature(source);
+      const cacheEntry = sourceCacheRef.current[source.id];
+      return !cacheEntry || cacheEntry.signature !== signature;
     });
-
-    if (promotedCachedSource) {
-      sourceCacheRef.current = nextActiveCache;
-      setCacheVersion((value) => value + 1);
-    }
-
     if (missingSources.length === 0) {
-      setLayerError('');
       setIsLoadingSources(false);
       return;
     }
@@ -679,27 +732,16 @@ export function MapPane({
       try {
         const loadedEntries = await Promise.all(
           missingSources.map(async (source) => {
-            const fetchBounds =
-              source.type === 'geojson-table' && viewport?.bounds
-                ? expandGeoBounds(viewport.bounds, geoJsonFetchBufferRatio)
-                : null;
             const data = await fetchSourceData(
               activeConnection,
               source,
-              fetchBounds,
-              viewport?.zoom ?? null,
               abortController.signal,
             );
 
             return [
               source.id,
-              source,
               {
-                signature: getSourceCacheSignature(
-                  source,
-                  viewport?.zoom ?? null,
-                ),
-                bounds: fetchBounds,
+                signature: getSourceSignature(source),
                 payload: data,
               },
             ] as const;
@@ -711,19 +753,10 @@ export function MapPane({
         }
 
         const nextCache = { ...sourceCacheRef.current };
-        let nextGeoJsonCache = geoJsonSourceCacheRef.current;
-        for (const [sourceId, source, data] of loadedEntries) {
+        for (const [sourceId, data] of loadedEntries) {
           nextCache[sourceId] = data;
-          if (source.type === 'geojson-table') {
-            nextGeoJsonCache = addGeoJsonCacheEntry(
-              nextGeoJsonCache,
-              sourceId,
-              data,
-            );
-          }
         }
         sourceCacheRef.current = nextCache;
-        geoJsonSourceCacheRef.current = nextGeoJsonCache;
         setCacheVersion((value) => value + 1);
       } catch (error) {
         if (!isActive || abortController.signal.aborted) {
@@ -748,7 +781,186 @@ export function MapPane({
       isActive = false;
       abortController.abort();
     };
-  }, [connection, isMapReady, onSelectMapObject, viewport, visibleSources]);
+  }, [connection, flowmapVisibleSources, isMapReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    void styleVersion;
+
+    if (!map || !isMapReady) {
+      return;
+    }
+    const activeMap = map;
+
+    function removeAllVectorLayers() {
+      for (const styleLayer of activeMap.getStyle().layers ?? []) {
+        if (styleLayer.id.startsWith(vectorTileLayerPrefix)) {
+          activeMap.removeLayer(styleLayer.id);
+        }
+      }
+    }
+
+    function removeUnusedVectorSources(expectedSourceIds: Set<string>) {
+      for (const sourceId of Object.keys(activeMap.getStyle().sources)) {
+        if (
+          sourceId.startsWith(vectorTileSourcePrefix) &&
+          !expectedSourceIds.has(sourceId)
+        ) {
+          activeMap.removeSource(sourceId);
+          delete appliedVectorSourceSignaturesRef.current[sourceId];
+        }
+      }
+    }
+
+    function applyVectorLayers() {
+      removeAllVectorLayers();
+
+      const expectedSourceIds = new Set<string>();
+      for (const source of geoJsonVisibleSources) {
+        const sourceId = mapLibreSourceId(source.id);
+        const signature = getSourceSignature(source);
+        const cacheEntry = vectorTileSourceCacheRef.current[source.id];
+        if (!cacheEntry || cacheEntry.signature !== signature) {
+          continue;
+        }
+
+        expectedSourceIds.add(sourceId);
+        if (
+          activeMap.getSource(sourceId) &&
+          appliedVectorSourceSignaturesRef.current[sourceId] !== signature
+        ) {
+          activeMap.removeSource(sourceId);
+        }
+
+        if (!activeMap.getSource(sourceId)) {
+          activeMap.addSource(sourceId, {
+            type: 'vector',
+            tiles: cacheEntry.source.tiles,
+          });
+          appliedVectorSourceSignaturesRef.current[sourceId] = signature;
+        }
+      }
+
+      removeUnusedVectorSources(expectedSourceIds);
+
+      for (const layer of visibleLayers.filter(isGeoJsonMapLayer)) {
+        const source = sources.find(
+          (candidate): candidate is GeoJsonTableSource =>
+            candidate.id === layer.sourceId && isGeoJsonTableSource(candidate),
+        );
+        if (!source) {
+          continue;
+        }
+
+        const cacheEntry = vectorTileSourceCacheRef.current[source.id];
+        if (!cacheEntry || !activeMap.getSource(mapLibreSourceId(source.id))) {
+          continue;
+        }
+
+        addVectorStyleLayers({
+          map: activeMap,
+          layer,
+          source,
+          sourceLayer: cacheEntry.source.sourceLayer,
+        });
+      }
+    }
+
+    if (!connection || connection.testStatus !== 'success') {
+      removeAllVectorLayers();
+      removeUnusedVectorSources(new Set());
+      vectorTileSourceCacheRef.current = {};
+      appliedVectorSourceSignaturesRef.current = {};
+      loadingVectorSourceIdsRef.current.clear();
+      setIsLoadingVectorTiles(false);
+      return;
+    }
+
+    if (geoJsonVisibleSources.length === 0) {
+      removeAllVectorLayers();
+      removeUnusedVectorSources(new Set());
+      loadingVectorSourceIdsRef.current.clear();
+      setIsLoadingVectorTiles(false);
+      onSelectMapObjectRef.current(null);
+      return;
+    }
+
+    const missingSources = geoJsonVisibleSources.filter((source) => {
+      const cacheEntry = vectorTileSourceCacheRef.current[source.id];
+      return !cacheEntry || cacheEntry.signature !== getSourceSignature(source);
+    });
+
+    if (missingSources.length === 0) {
+      applyVectorLayers();
+      return;
+    }
+
+    const activeConnection = connection;
+    let isActive = true;
+    const abortController = new AbortController();
+    setIsLoadingSources(true);
+    setLayerError('');
+
+    async function registerMissingSources() {
+      try {
+        const loadedEntries = await Promise.all(
+          missingSources.map(async (source) => {
+            const tileSource = await registerVectorTileSource(
+              activeConnection,
+              source,
+              abortController.signal,
+            );
+
+            return [
+              source.id,
+              {
+                signature: getSourceSignature(source),
+                source: tileSource,
+              },
+            ] as const;
+          }),
+        );
+
+        if (!isActive) {
+          return;
+        }
+
+        vectorTileSourceCacheRef.current = {
+          ...vectorTileSourceCacheRef.current,
+          ...Object.fromEntries(loadedEntries),
+        };
+        applyVectorLayers();
+      } catch (error) {
+        if (!isActive || abortController.signal.aborted) {
+          return;
+        }
+
+        setLayerError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to register vector tile source.',
+        );
+      } finally {
+        if (isActive) {
+          setIsLoadingSources(false);
+        }
+      }
+    }
+
+    void registerMissingSources();
+
+    return () => {
+      isActive = false;
+      abortController.abort();
+    };
+  }, [
+    connection,
+    geoJsonVisibleSources,
+    isMapReady,
+    sources,
+    styleVersion,
+    visibleLayers,
+  ]);
 
   useEffect(() => {
     if (!isMapReady || !connection || connection.testStatus !== 'success') {
@@ -837,7 +1049,7 @@ export function MapPane({
 
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
-      onSelectMapObject(null);
+      onSelectMapObjectRef.current(null);
       return;
     }
 
@@ -851,17 +1063,6 @@ export function MapPane({
 
       const sourceData = sourceCacheRef.current[source.id];
       if (!sourceData) {
-        return layersList;
-      }
-
-      if (
-        layer.type === 'geojson' &&
-        source.type === 'geojson-table' &&
-        sourceData.payload.sourceType === 'geojson-table'
-      ) {
-        layersList.push(
-          createGeoJsonDeckLayer(layer, source, sourceData.payload.data),
-        );
         return layersList;
       }
 
@@ -885,13 +1086,13 @@ export function MapPane({
       }) => {
         const pickedLayerId = pickInfo.layer?.id;
         if (!pickedLayerId) {
-          onSelectMapObject(null);
+          onSelectMapObjectRef.current(null);
           return;
         }
 
         const layer = resolvePickedMapLayer(pickedLayerId, visibleLayers);
         if (!layer) {
-          onSelectMapObject(null);
+          onSelectMapObjectRef.current(null);
           return;
         }
 
@@ -899,11 +1100,13 @@ export function MapPane({
           (candidate) => candidate.id === layer.sourceId,
         );
         if (!source) {
-          onSelectMapObject(null);
+          onSelectMapObjectRef.current(null);
           return;
         }
 
-        onSelectMapObject(buildMapSelection(pickInfo.object, layer, source));
+        onSelectMapObjectRef.current(
+          buildMapSelection(pickInfo.object, layer, source),
+        );
       },
     });
 
@@ -933,7 +1136,6 @@ export function MapPane({
     visibleLayers,
     visibleSources,
     visibleSourceSignature,
-    onSelectMapObject,
   ]);
 
   return (
@@ -974,7 +1176,8 @@ export function MapPane({
         </Center>
       ) : null}
 
-      {isMapReady && (isLoadingSources || layerError) ? (
+      {isMapReady &&
+      (isLoadingSources || isLoadingVectorTiles || layerError) ? (
         <Box
           style={{
             position: 'absolute',
@@ -994,7 +1197,7 @@ export function MapPane({
             }}
           >
             <Stack gap={4}>
-              {isLoadingSources ? (
+              {isLoadingSources || isLoadingVectorTiles ? (
                 <Box
                   style={{
                     alignItems: 'center',

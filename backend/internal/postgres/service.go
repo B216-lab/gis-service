@@ -7,21 +7,36 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var ErrConnectionFailed = errors.New("database connection failed")
 var ErrInvalidWriteRequest = errors.New("invalid write request")
 var ErrWriteConflict = errors.New("database write conflict")
 
+const LayerVectorTileName = "features"
+
+const tilePoolTTL = 12 * time.Hour
+
 type Service struct {
-	timeout time.Duration
+	timeout      time.Duration
+	tilePools    map[string]tilePoolEntry
+	tilePoolsMux sync.Mutex
+}
+
+type tilePoolEntry struct {
+	pool       *pgxpool.Pool
+	lastUsedAt time.Time
 }
 
 type ConnectionTestRequest struct {
@@ -132,6 +147,21 @@ type ListLayerFeaturesRequest struct {
 	South          *float64     `json:"south"`
 	East           *float64     `json:"east"`
 	North          *float64     `json:"north"`
+}
+
+type LayerTileSourceRequest struct {
+	ConnectionTestRequest
+	Schema         string       `json:"schema"`
+	Table          string       `json:"table"`
+	GeometryColumn string       `json:"geometryColumn"`
+	Filter         *QueryFilter `json:"filter"`
+}
+
+type LayerVectorTileRequest struct {
+	LayerTileSourceRequest
+	Z int
+	X int
+	Y int
 }
 
 type LayerExtentRequest struct {
@@ -294,7 +324,8 @@ type queryRunner interface {
 
 func NewService(timeout time.Duration) *Service {
 	return &Service{
-		timeout: timeout,
+		timeout:   timeout,
+		tilePools: make(map[string]tilePoolEntry),
 	}
 }
 
@@ -369,6 +400,14 @@ func (request *TableMetadataRequest) TrimSpaces() {
 }
 
 func (request *ListLayerFeaturesRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
+	trimQueryFilter(request.Filter)
+}
+
+func (request *LayerTileSourceRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
@@ -634,28 +673,12 @@ func (request CommitTableChangesRequest) Validate() error {
 }
 
 func (request ListLayerFeaturesRequest) Validate() error {
-	if err := request.ConnectionTestRequest.Validate(); err != nil {
+	if err := request.layerSourceFields().Validate(); err != nil {
 		return err
-	}
-
-	if request.Schema == "" {
-		return errors.New("Schema is required.")
-	}
-
-	if request.Table == "" {
-		return errors.New("Table is required.")
-	}
-
-	if request.GeometryColumn == "" {
-		return errors.New("Geometry column is required.")
 	}
 
 	if request.Limit < 1 || request.Limit > 5000 {
 		return errors.New("Limit must be between 1 and 5000.")
-	}
-
-	if err := validateQueryFilter(request.Filter); err != nil {
-		return err
 	}
 
 	if request.Zoom != nil && (*request.Zoom < 0 || *request.Zoom > 24) {
@@ -676,6 +699,54 @@ func (request ListLayerFeaturesRequest) Validate() error {
 			*request.North < -90 || *request.North > 90 {
 			return errors.New("Viewport bounds must be valid longitude and latitude values.")
 		}
+	}
+
+	return nil
+}
+
+func (request ListLayerFeaturesRequest) layerSourceFields() LayerTileSourceRequest {
+	return LayerTileSourceRequest{
+		ConnectionTestRequest: request.ConnectionTestRequest,
+		Schema:                request.Schema,
+		Table:                 request.Table,
+		GeometryColumn:        request.GeometryColumn,
+		Filter:                request.Filter,
+	}
+}
+
+func (request LayerTileSourceRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	if request.GeometryColumn == "" {
+		return errors.New("Geometry column is required.")
+	}
+
+	return validateQueryFilter(request.Filter)
+}
+
+func (request LayerVectorTileRequest) Validate() error {
+	if err := request.LayerTileSourceRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Z < 0 || request.Z > 24 {
+		return errors.New("Tile zoom must be between 0 and 24.")
+	}
+
+	maxCoordinate := 1 << request.Z
+	if request.X < 0 || request.X >= maxCoordinate ||
+		request.Y < 0 || request.Y >= maxCoordinate {
+		return errors.New("Tile coordinates are outside zoom range.")
 	}
 
 	return nil
@@ -1614,6 +1685,152 @@ func (service *Service) ListLayerFeatures(
 	}, nil
 }
 
+func (service *Service) GetLayerVectorTile(
+	ctx context.Context,
+	request LayerVectorTileRequest,
+) ([]byte, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	runner, err := service.tilePool(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+
+	geometryColumns, err := service.listGeometryColumns(
+		timeoutCtx,
+		runner,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var selectedGeometryColumn *geometryColumnDefinition
+	for index := range geometryColumns {
+		if geometryColumns[index].Name == request.GeometryColumn {
+			selectedGeometryColumn = &geometryColumns[index]
+		}
+	}
+
+	if selectedGeometryColumn == nil {
+		return nil, fmt.Errorf(
+			"%w: selected geometry column not found on table",
+			ErrConnectionFailed,
+		)
+	}
+
+	columnDefinitions, err := service.listColumnDefinitions(
+		timeoutCtx,
+		runner,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	primaryKey, err := service.listPrimaryKeyColumns(
+		timeoutCtx,
+		runner,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	renderGeometryExpression := geometryColumnWebMercatorExpression(
+		request.GeometryColumn,
+		selectedGeometryColumn.StorageType,
+		selectedGeometryColumn.SRID,
+	)
+	tileGeometryExpression := simplifiedMVTGeometryExpression(
+		renderGeometryExpression,
+		request.Z,
+	)
+	predicateGeometryExpression := geometryColumnNativeExpression(
+		request.GeometryColumn,
+		selectedGeometryColumn.SRID,
+	)
+	predicateTileBoundsExpression := tileBoundsForGeometryColumn(
+		selectedGeometryColumn.StorageType,
+		selectedGeometryColumn.SRID,
+	)
+	propertyExpressions := []string{
+		fmt.Sprintf("%s as _geopanel_primary_key", primaryKeyJSONExpression(primaryKey)),
+		fmt.Sprintf("%s as _geopanel_row_key", rowKeyJSONExpression(primaryKey)),
+	}
+
+	whereClauses := []string{
+		fmt.Sprintf("%s is not null", predicateGeometryExpression),
+		fmt.Sprintf(
+			"%s && %s",
+			predicateGeometryExpression,
+			predicateTileBoundsExpression,
+		),
+		fmt.Sprintf(
+			"ST_Intersects(%s, %s)",
+			predicateGeometryExpression,
+			predicateTileBoundsExpression,
+		),
+	}
+	filterClause, filterParameters, err := buildQueryFilterClause(
+		columnDefinitions,
+		request.Filter,
+		3,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if filterClause != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", filterClause))
+	}
+
+	parameters := []interface{}{request.Z, request.X, request.Y}
+	parameters = append(parameters, filterParameters...)
+
+	query := fmt.Sprintf(
+		`
+		with tile_bounds as (
+		  select ST_TileEnvelope($1, $2, $3) as geom
+		),
+		source_features as (
+		  select
+		    ST_AsMVTGeom(%s, tile_bounds.geom, 4096, 256, true) as geom,
+		    %s
+		  from %s.%s as source_row
+		  cross join tile_bounds
+		  where %s
+		)
+		select coalesce(ST_AsMVT(tile_rows, %s, 4096, 'geom'), ''::bytea)
+		from (
+		  select *
+		  from source_features
+		  where geom is not null
+		) as tile_rows
+		`,
+		tileGeometryExpression,
+		strings.Join(propertyExpressions, ",\n\t\t    "),
+		quoteIdentifier(request.Schema),
+		quoteIdentifier(request.Table),
+		strings.Join(whereClauses, " and "),
+		quoteLiteral(LayerVectorTileName),
+	)
+
+	var tile []byte
+	if err := runner.QueryRow(timeoutCtx, query, parameters...).Scan(&tile); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return tile, nil
+}
+
 func (service *Service) GetLayerExtent(
 	ctx context.Context,
 	request LayerExtentRequest,
@@ -2419,14 +2636,7 @@ func (service *Service) connect(
 	ctx context.Context,
 	request ConnectionTestRequest,
 ) (*pgx.Conn, error) {
-	databaseURL := fmt.Sprintf(
-		"postgres://%s:%s@%s:%s/%s",
-		request.User,
-		request.Password,
-		request.Host,
-		request.Port,
-		request.Database,
-	)
+	databaseURL := databaseURLForRequest(request)
 
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
@@ -2434,6 +2644,61 @@ func (service *Service) connect(
 	}
 
 	return conn, nil
+}
+
+func (service *Service) tilePool(
+	ctx context.Context,
+	request ConnectionTestRequest,
+) (*pgxpool.Pool, error) {
+	databaseURL := databaseURLForRequest(request)
+	now := time.Now()
+
+	service.tilePoolsMux.Lock()
+	defer service.tilePoolsMux.Unlock()
+
+	for key, entry := range service.tilePools {
+		if now.Sub(entry.lastUsedAt) > tilePoolTTL {
+			entry.pool.Close()
+			delete(service.tilePools, key)
+		}
+	}
+
+	if entry, ok := service.tilePools[databaseURL]; ok {
+		entry.lastUsedAt = now
+		service.tilePools[databaseURL] = entry
+		return entry.pool, nil
+	}
+
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	config.MaxConns = 8
+	config.MinConns = 0
+	config.MaxConnLifetime = 30 * time.Minute
+	config.MaxConnIdleTime = 5 * time.Minute
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	service.tilePools[databaseURL] = tilePoolEntry{
+		pool:       pool,
+		lastUsedAt: now,
+	}
+	return pool, nil
+}
+
+func databaseURLForRequest(request ConnectionTestRequest) string {
+	databaseURL := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(request.User, request.Password),
+		Host:   net.JoinHostPort(request.Host, request.Port),
+		Path:   "/" + request.Database,
+	}
+
+	return databaseURL.String()
 }
 
 func isEditableTable(access tableAccess, primaryKey []string) bool {
@@ -2785,6 +3050,42 @@ func geometryColumnWGS84Expression(
 	return fmt.Sprintf("ST_Transform(%s, 4326)", geometryExpression)
 }
 
+func geometryColumnNativeExpression(columnName string, srid int) string {
+	geometryExpression := fmt.Sprintf("source_row.%s::geometry", quoteIdentifier(columnName))
+	if srid == 0 {
+		return fmt.Sprintf("ST_SetSRID(%s, 4326)", geometryExpression)
+	}
+
+	return geometryExpression
+}
+
+func geometryColumnWebMercatorExpression(
+	columnName string,
+	storageType string,
+	srid int,
+) string {
+	geometryExpression := geometryColumnNativeExpression(columnName, srid)
+	if srid == 3857 {
+		return geometryExpression
+	}
+	if storageType == "geography" || srid == 4326 || srid == 0 {
+		return fmt.Sprintf("ST_Transform(%s, 3857)", geometryExpression)
+	}
+
+	return fmt.Sprintf("ST_Transform(%s, 3857)", geometryExpression)
+}
+
+func tileBoundsForGeometryColumn(storageType string, srid int) string {
+	if srid == 3857 {
+		return "tile_bounds.geom"
+	}
+	if storageType == "geography" || srid == 4326 || srid == 0 {
+		return "ST_Transform(tile_bounds.geom, 4326)"
+	}
+
+	return fmt.Sprintf("ST_Transform(tile_bounds.geom, %d)", srid)
+}
+
 func simplifiedGeometryExpression(expression string, zoom *float64) string {
 	if zoom == nil || *zoom >= 12 {
 		return expression
@@ -2805,6 +3106,63 @@ func simplifiedGeometryExpression(expression string, zoom *float64) string {
 	}
 
 	return fmt.Sprintf("ST_SimplifyPreserveTopology(%s, %f)", expression, tolerance)
+}
+
+func simplifiedMVTGeometryExpression(expression string, zoom int) string {
+	if zoom >= 12 {
+		return expression
+	}
+
+	const (
+		webMercatorWorldWidthMeters = 40075016.68557849
+		mvtExtent                   = 4096.0
+		toleranceTileUnits          = 4.0
+	)
+
+	tileWidthMeters := webMercatorWorldWidthMeters / math.Pow(2, float64(zoom))
+	toleranceMeters := tileWidthMeters / mvtExtent * toleranceTileUnits
+
+	return fmt.Sprintf(
+		"ST_SimplifyPreserveTopology(%s, %f)",
+		expression,
+		toleranceMeters,
+	)
+}
+
+func primaryKeyJSONExpression(primaryKey []string) string {
+	if len(primaryKey) == 0 {
+		return "null::text"
+	}
+
+	primaryKeyLiterals := make([]string, 0, len(primaryKey))
+	for _, columnName := range primaryKey {
+		primaryKeyLiterals = append(primaryKeyLiterals, quoteLiteral(columnName))
+	}
+
+	return fmt.Sprintf(
+		"jsonb_build_array(%s)::text",
+		strings.Join(primaryKeyLiterals, ", "),
+	)
+}
+
+func rowKeyJSONExpression(primaryKey []string) string {
+	if len(primaryKey) == 0 {
+		return "null::text"
+	}
+
+	rowKeyParts := make([]string, 0, len(primaryKey)*2)
+	for _, columnName := range primaryKey {
+		rowKeyParts = append(
+			rowKeyParts,
+			quoteLiteral(columnName),
+			fmt.Sprintf("to_jsonb(source_row.%s)", quoteIdentifier(columnName)),
+		)
+	}
+
+	return fmt.Sprintf(
+		"jsonb_build_object(%s)::text",
+		strings.Join(rowKeyParts, ", "),
+	)
 }
 
 func normalizeValue(value interface{}) interface{} {

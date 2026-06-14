@@ -51,6 +51,12 @@ export interface LayerExtentResponse {
   bounds: GeoBounds | null;
 }
 
+export interface LayerTileSourceResponse {
+  token: string;
+  tiles: string[];
+  sourceLayer: string;
+}
+
 export interface FlowmapLocation {
   id: string;
   lat: number;
@@ -80,6 +86,16 @@ interface ErrorResponse {
     code: string;
     message: string;
   };
+}
+
+function normalizeTileTemplateUrl(tileUrl: string) {
+  if (/^https?:\/\//i.test(tileUrl)) {
+    return tileUrl;
+  }
+
+  const normalizedPath = tileUrl.startsWith('/') ? tileUrl : `/${tileUrl}`;
+
+  return `${window.location.origin}${normalizedPath}`;
 }
 
 async function decodePayload<T extends object>(
@@ -165,6 +181,45 @@ export async function fetchGeoJsonSourceExtent(
     response,
     'Failed to load layer extent.',
   );
+}
+
+export async function registerVectorTileSource(
+  connection: DatabaseConnection,
+  source: GeoJsonTableSource,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(
+    '/api/v1/database-connections/layer-tile-source',
+    {
+      method: 'POST',
+      signal,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: connection.name,
+        host: connection.host,
+        port: connection.port,
+        database: connection.database,
+        user: connection.user,
+        password: connection.password,
+        schema: source.schema,
+        table: source.table,
+        geometryColumn: source.geometryColumn,
+        filter: source.filter ?? null,
+      }),
+    },
+  );
+
+  const payload = await decodePayload<LayerTileSourceResponse>(
+    response,
+    'Failed to register vector tile source.',
+  );
+
+  return {
+    ...payload,
+    tiles: payload.tiles.map(normalizeTileTemplateUrl),
+  };
 }
 
 export async function fetchFlowmapSourceData(
