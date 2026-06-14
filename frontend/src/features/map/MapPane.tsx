@@ -46,6 +46,7 @@ type FlowmapSourceData = {
 type LoadedSourceData = GeoJsonSourceData | FlowmapSourceData;
 type SourceCacheEntry = {
   signature: string;
+  bounds: GeoBounds | null;
   payload: LoadedSourceData;
 };
 type SourceDataCache = Record<string, SourceCacheEntry>;
@@ -55,35 +56,43 @@ type SourceExtentCacheEntry = {
 };
 type SourceExtentCache = Record<string, SourceExtentCacheEntry>;
 
+const geoJsonFetchBufferRatio = 0.5;
+
 function roundCoordinate(value: number) {
   return Math.round(value * 10_000) / 10_000;
 }
 
-function getViewportBoundsSignature(bounds: GeoBounds | null) {
-  if (!bounds) {
-    return 'no-bounds';
-  }
-
-  return JSON.stringify({
-    west: roundCoordinate(bounds.west),
-    south: roundCoordinate(bounds.south),
-    east: roundCoordinate(bounds.east),
-    north: roundCoordinate(bounds.north),
-  });
+function getSourceSignature(source: MapSource) {
+  return JSON.stringify(source);
 }
 
-function getSourceSignature(
-  source: MapSource,
-  viewportBounds: GeoBounds | null,
-) {
-  if (source.type === 'geojson-table') {
-    return JSON.stringify({
-      source,
-      viewportBounds: getViewportBoundsSignature(viewportBounds),
-    });
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function expandGeoBounds(bounds: GeoBounds, ratio: number): GeoBounds {
+  const longitudePadding = (bounds.east - bounds.west) * ratio;
+  const latitudePadding = (bounds.north - bounds.south) * ratio;
+
+  return {
+    west: roundCoordinate(clamp(bounds.west - longitudePadding, -180, 180)),
+    south: roundCoordinate(clamp(bounds.south - latitudePadding, -90, 90)),
+    east: roundCoordinate(clamp(bounds.east + longitudePadding, -180, 180)),
+    north: roundCoordinate(clamp(bounds.north + latitudePadding, -90, 90)),
+  };
+}
+
+function boundsContain(container: GeoBounds | null, inner: GeoBounds | null) {
+  if (!container || !inner) {
+    return false;
   }
 
-  return JSON.stringify(source);
+  return (
+    container.west <= inner.west &&
+    container.south <= inner.south &&
+    container.east >= inner.east &&
+    container.north >= inner.north
+  );
 }
 
 function registerPmtilesProtocol() {
@@ -556,12 +565,17 @@ export function MapPane({
       return;
     }
 
-    const missingSources = visibleSources.filter(
-      (source) =>
-        !sourceCacheRef.current[source.id] ||
-        sourceCacheRef.current[source.id].signature !==
-          getSourceSignature(source, viewportBounds),
-    );
+    const missingSources = visibleSources.filter((source) => {
+      const cacheEntry = sourceCacheRef.current[source.id];
+      if (!cacheEntry || cacheEntry.signature !== getSourceSignature(source)) {
+        return true;
+      }
+
+      return (
+        source.type === 'geojson-table' &&
+        !boundsContain(cacheEntry.bounds, viewportBounds)
+      );
+    });
 
     if (missingSources.length === 0) {
       setLayerError('');
@@ -579,17 +593,22 @@ export function MapPane({
       try {
         const loadedEntries = await Promise.all(
           missingSources.map(async (source) => {
+            const fetchBounds =
+              source.type === 'geojson-table' && viewportBounds
+                ? expandGeoBounds(viewportBounds, geoJsonFetchBufferRatio)
+                : null;
             const data = await fetchSourceData(
               activeConnection,
               source,
-              viewportBounds,
+              fetchBounds,
               abortController.signal,
             );
 
             return [
               source.id,
               {
-                signature: getSourceSignature(source, viewportBounds),
+                signature: getSourceSignature(source),
+                bounds: fetchBounds,
                 payload: data,
               },
             ] as const;
