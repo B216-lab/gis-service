@@ -90,6 +90,10 @@ func (server *Server) routes() {
 		server.handleCommitTableChanges,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/features",
+		server.handleCreateFeature,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/layer-extent",
 		server.handleLayerExtent,
 	)
@@ -673,6 +677,48 @@ func (server *Server) handleCommitTableChanges(
 			writer,
 			err,
 			"database_table_commit_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleCreateFeature(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.CreateFeatureRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_feature_create_request",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.CreateFeature(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"database_feature_create_failed",
 			"Unexpected server error.",
 		)
 		return

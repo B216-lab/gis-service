@@ -57,6 +57,11 @@ export interface LayerTileSourceResponse {
   sourceLayer: string;
 }
 
+export interface CreateFeatureResponse {
+  schema: string;
+  table: string;
+}
+
 export interface FlowmapLocation {
   id: string;
   lat: number;
@@ -85,6 +90,17 @@ interface ErrorResponse {
   error: {
     code: string;
     message: string;
+  };
+}
+
+function connectionPayload(connection: DatabaseConnection) {
+  return {
+    name: connection.name,
+    host: connection.host,
+    port: connection.port,
+    database: connection.database,
+    user: connection.user,
+    password: connection.password,
   };
 }
 
@@ -220,6 +236,39 @@ export async function registerVectorTileSource(
     ...payload,
     tiles: payload.tiles.map(normalizeTileTemplateUrl),
   };
+}
+
+export async function createPolygonFeature(
+  connection: DatabaseConnection,
+  payload: {
+    schema: string;
+    table: string;
+    geometryColumn: string;
+    geometry: GeoJsonGeometry;
+    values: Record<string, unknown>;
+  },
+  signal?: AbortSignal,
+) {
+  const response = await fetch('/api/v1/database-connections/features', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...connectionPayload(connection),
+      schema: payload.schema,
+      table: payload.table,
+      geometryColumn: payload.geometryColumn,
+      geometry: payload.geometry,
+      values: payload.values,
+    }),
+  });
+
+  return await decodePayload<CreateFeatureResponse>(
+    response,
+    'Failed to create feature.',
+  );
 }
 
 export async function fetchFlowmapSourceData(

@@ -1,6 +1,27 @@
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { FlowmapLayer } from '@flowmap.gl/layers';
-import { Box, Center, Loader, Stack, Text } from '@mantine/core';
+import {
+  ActionIcon,
+  Alert,
+  Box,
+  Button,
+  Center,
+  Group,
+  Loader,
+  Modal,
+  ScrollArea,
+  Select,
+  Stack,
+  Text,
+  TextInput,
+  Tooltip,
+} from '@mantine/core';
+import {
+  IconDeviceFloppy,
+  IconPolygon,
+  IconPolygonOff,
+  IconX,
+} from '@tabler/icons-react';
 import maplibregl, {
   LngLatBounds,
   type MapGeoJSONFeature,
@@ -10,6 +31,8 @@ import maplibregl, {
 } from 'maplibre-gl';
 import { Protocol } from 'pmtiles';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { type HexColor, TerraDraw, TerraDrawPolygonMode } from 'terra-draw';
+import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter';
 
 import type {
   DatabaseConnection,
@@ -20,11 +43,14 @@ import type {
   MapLayer,
   MapSource,
 } from '../connections/store';
+import type { InspectableTable, InspectorColumn } from '../inspector/api';
 import {
+  createPolygonFeature,
   type FlowmapDataResponse,
   fetchFlowmapSourceData,
   fetchGeoJsonSourceExtent,
   type GeoBounds,
+  type GeoJsonGeometry,
   type LayerTileSourceResponse,
   registerVectorTileSource,
 } from './api';
@@ -60,6 +86,11 @@ type VectorTileSourceCacheEntry = {
   source: LayerTileSourceResponse;
 };
 type VectorTileSourceCache = Record<string, VectorTileSourceCacheEntry>;
+type DrawTarget = {
+  layer: GeoJsonMapLayer;
+  source: GeoJsonTableSource;
+  table: InspectableTable;
+};
 
 const vectorTileSourcePrefix = 'geopanel-source';
 const vectorTileLayerPrefix = 'geopanel-layer';
@@ -333,6 +364,59 @@ function isGeoJsonTableSource(source: MapSource): source is GeoJsonTableSource {
   return source.type === 'geojson-table';
 }
 
+function isPolygonGeometryType(geometryType: string) {
+  return /polygon/i.test(geometryType);
+}
+
+function isNumericColumnType(columnType: string) {
+  return /int|numeric|double|real|decimal|serial/i.test(columnType);
+}
+
+function isBooleanColumnType(columnType: string) {
+  return /bool/i.test(columnType);
+}
+
+function isEditableFeatureColumn(column: InspectorColumn) {
+  return (
+    isNumericColumnType(column.type) ||
+    isBooleanColumnType(column.type) ||
+    /text|character|uuid|date|timestamp/i.test(column.type)
+  );
+}
+
+function normalizeFeatureValue(column: InspectorColumn, rawValue: string) {
+  const trimmedValue = rawValue.trim();
+  if (trimmedValue === '') {
+    return undefined;
+  }
+  if (isBooleanColumnType(column.type)) {
+    return trimmedValue === 'true';
+  }
+
+  return trimmedValue;
+}
+
+function defaultFeatureValues(source: GeoJsonTableSource) {
+  const values: Record<string, string> = {};
+  for (const condition of source.filter?.conditions ?? []) {
+    if (condition.operator === 'eq' && condition.value !== undefined) {
+      values[condition.column] = condition.value;
+    }
+  }
+
+  return values;
+}
+
+function isGeoJsonPolygonGeometry(value: unknown): value is GeoJsonGeometry {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'type' in value &&
+    ((value as { type?: unknown }).type === 'Polygon' ||
+      (value as { type?: unknown }).type === 'MultiPolygon')
+  );
+}
+
 function isVectorTileRequestError(event: ErrorEvent) {
   const error = event.error as
     | {
@@ -424,21 +508,28 @@ async function fetchSourceData(
 }
 
 export function MapPane({
+  activeLayerId,
   basemapId,
   connection,
+  tables,
   visibleLayers,
   sources,
+  onFeatureCreated,
   onSelectMapObject,
 }: {
+  activeLayerId: string | null;
   basemapId: BasemapId;
   connection: DatabaseConnection | null;
+  tables: InspectableTable[];
   visibleLayers: MapLayer[];
   sources: MapSource[];
+  onFeatureCreated?: () => void;
   onSelectMapObject: (selection: MapSelection | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const drawRef = useRef<TerraDraw | null>(null);
   const activeBasemapIdRef = useRef<BasemapId>(basemapId);
   const sourceCacheRef = useRef<SourceDataCache>({});
   const sourceExtentCacheRef = useRef<SourceExtentCache>({});
@@ -456,6 +547,17 @@ export function MapPane({
   const [cacheVersion, setCacheVersion] = useState(0);
   const [extentVersion, setExtentVersion] = useState(0);
   const [styleVersion, setStyleVersion] = useState(0);
+  const [isDrawingPolygon, setIsDrawingPolygon] = useState(false);
+  const [pendingGeometry, setPendingGeometry] =
+    useState<GeoJsonGeometry | null>(null);
+  const [pendingDrawTarget, setPendingDrawTarget] = useState<DrawTarget | null>(
+    null,
+  );
+  const [featureValues, setFeatureValues] = useState<Record<string, string>>(
+    {},
+  );
+  const [isSavingFeature, setIsSavingFeature] = useState(false);
+  const [featureError, setFeatureError] = useState('');
 
   visibleLayersRef.current = visibleLayers;
   sourcesRef.current = sources;
@@ -489,6 +591,48 @@ export function MapPane({
       ),
     [visibleSources],
   );
+  const drawTarget = useMemo<DrawTarget | null>(() => {
+    const geoJsonLayers = visibleLayers.filter(isGeoJsonMapLayer);
+    const candidateLayers = activeLayerId
+      ? geoJsonLayers.filter((layer) => layer.id === activeLayerId)
+      : geoJsonLayers;
+
+    for (const layer of candidateLayers) {
+      const source = sources.find(
+        (candidate): candidate is GeoJsonTableSource =>
+          candidate.id === layer.sourceId && isGeoJsonTableSource(candidate),
+      );
+      if (!source || !isPolygonGeometryType(source.geometryType)) {
+        continue;
+      }
+
+      const table = tables.find(
+        (candidate) =>
+          candidate.schema === source.schema && candidate.name === source.table,
+      );
+      if (!table?.isEditable) {
+        continue;
+      }
+
+      return {
+        layer,
+        source,
+        table,
+      };
+    }
+
+    return null;
+  }, [activeLayerId, sources, tables, visibleLayers]);
+  const featureTarget = pendingDrawTarget ?? drawTarget;
+  const editableFeatureColumns = useMemo(
+    () =>
+      featureTarget?.table.columns.filter(
+        (column) =>
+          column.name !== featureTarget.source.geometryColumn &&
+          isEditableFeatureColumn(column),
+      ) ?? [],
+    [featureTarget],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -519,6 +663,10 @@ export function MapPane({
     map.addControl(overlay);
 
     function handleMapClick(event: MapMouseEvent) {
+      if (drawRef.current) {
+        return;
+      }
+
       const currentVisibleLayers = visibleLayersRef.current;
       const currentSources = sourcesRef.current;
       const geoJsonLayers = currentVisibleLayers.filter(isGeoJsonMapLayer);
@@ -635,6 +783,8 @@ export function MapPane({
     overlayRef.current = overlay;
 
     return () => {
+      drawRef.current?.stop();
+      drawRef.current = null;
       map.off('click', handleMapClick);
       map.off('sourcedataloading', handleSourceDataLoading);
       map.off('sourcedata', handleSourceData);
@@ -1138,6 +1288,155 @@ export function MapPane({
     visibleSourceSignature,
   ]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!isMapReady || !map || !isDrawingPolygon || !drawTarget) {
+      return;
+    }
+    const target = drawTarget;
+
+    const draw = new TerraDraw({
+      adapter: new TerraDrawMapLibreGLAdapter({
+        map,
+        prefixId: 'geopanel-draw',
+      }),
+      modes: [
+        new TerraDrawPolygonMode({
+          editable: false,
+          styles: {
+            fillColor: target.layer.color as HexColor,
+            fillOpacity: 0.22,
+            outlineColor: target.layer.color as HexColor,
+            outlineWidth: 2,
+          },
+        }),
+      ],
+    });
+
+    drawRef.current = draw;
+
+    function handleFinish(id: string | number) {
+      const feature = draw.getSnapshotFeature(id);
+      if (!isGeoJsonPolygonGeometry(feature?.geometry)) {
+        setFeatureError('Drawn geometry must be polygon.');
+        setIsDrawingPolygon(false);
+        return;
+      }
+
+      setPendingGeometry(feature.geometry);
+      setPendingDrawTarget(target);
+      setFeatureValues(defaultFeatureValues(target.source));
+      setFeatureError('');
+      setIsDrawingPolygon(false);
+    }
+
+    draw.on('finish', handleFinish);
+    draw.start();
+    draw.setMode('polygon');
+
+    return () => {
+      draw.off('finish', handleFinish);
+      draw.stop();
+      if (drawRef.current === draw) {
+        drawRef.current = null;
+      }
+    };
+  }, [drawTarget, isDrawingPolygon, isMapReady]);
+
+  function invalidateVectorSource(sourceId: string) {
+    const map = mapRef.current;
+    const mapSourceId = mapLibreSourceId(sourceId);
+
+    delete vectorTileSourceCacheRef.current[sourceId];
+    delete appliedVectorSourceSignaturesRef.current[mapSourceId];
+    delete sourceExtentCacheRef.current[sourceId];
+    loadingVectorSourceIdsRef.current.delete(mapSourceId);
+
+    if (map?.getSource(mapSourceId)) {
+      for (const styleLayer of map.getStyle().layers ?? []) {
+        if (styleLayer.id.startsWith(vectorTileLayerPrefix)) {
+          map.removeLayer(styleLayer.id);
+        }
+      }
+      map.removeSource(mapSourceId);
+    }
+
+    setIsLoadingVectorTiles(false);
+    setExtentVersion((value) => value + 1);
+    setStyleVersion((value) => value + 1);
+  }
+
+  function handleStartPolygonDraw() {
+    if (!drawTarget) {
+      setFeatureError('Select editable polygon layer first.');
+      return;
+    }
+
+    setFeatureError('');
+    setPendingGeometry(null);
+    setPendingDrawTarget(null);
+    setFeatureValues(defaultFeatureValues(drawTarget.source));
+    onSelectMapObjectRef.current(null);
+    setIsDrawingPolygon(true);
+  }
+
+  function handleCancelPolygonDraw() {
+    setIsDrawingPolygon(false);
+    setPendingGeometry(null);
+    setPendingDrawTarget(null);
+    setFeatureError('');
+  }
+
+  function handleFeatureValueChange(columnName: string, value: string) {
+    setFeatureValues((current) => ({
+      ...current,
+      [columnName]: value,
+    }));
+    setFeatureError('');
+  }
+
+  async function handleSaveFeature() {
+    if (!connection || !featureTarget || !pendingGeometry) {
+      return;
+    }
+
+    const values: Record<string, unknown> = {};
+    for (const column of editableFeatureColumns) {
+      const value = normalizeFeatureValue(
+        column,
+        featureValues[column.name] ?? '',
+      );
+      if (value !== undefined) {
+        values[column.name] = value;
+      }
+    }
+
+    setIsSavingFeature(true);
+    setFeatureError('');
+
+    try {
+      await createPolygonFeature(connection, {
+        schema: featureTarget.source.schema,
+        table: featureTarget.source.table,
+        geometryColumn: featureTarget.source.geometryColumn,
+        geometry: pendingGeometry,
+        values,
+      });
+
+      invalidateVectorSource(featureTarget.source.id);
+      setPendingGeometry(null);
+      setPendingDrawTarget(null);
+      setFeatureValues({});
+      onFeatureCreated?.();
+    } catch (error) {
+      setFeatureError(
+        error instanceof Error ? error.message : 'Failed to create feature.',
+      );
+    } finally {
+      setIsSavingFeature(false);
+    }
+  }
+
   return (
     <Box
       style={{
@@ -1157,6 +1456,124 @@ export function MapPane({
           width: '100%',
         }}
       />
+
+      {isMapReady ? (
+        <Box
+          style={{
+            left: 12,
+            position: 'absolute',
+            top: 88,
+            zIndex: 2,
+          }}
+        >
+          <Stack gap={8}>
+            <Tooltip
+              label={
+                drawTarget
+                  ? `Draw polygon in ${drawTarget.layer.name}`
+                  : 'No editable polygon layer selected'
+              }
+              position="right"
+              withArrow
+            >
+              <ActionIcon
+                aria-label="Draw polygon"
+                color={isDrawingPolygon ? 'red' : 'blue'}
+                disabled={!drawTarget || Boolean(pendingGeometry)}
+                onClick={
+                  isDrawingPolygon
+                    ? handleCancelPolygonDraw
+                    : handleStartPolygonDraw
+                }
+                size="lg"
+                variant={isDrawingPolygon ? 'filled' : 'default'}
+              >
+                {isDrawingPolygon ? (
+                  <IconPolygonOff size={18} />
+                ) : (
+                  <IconPolygon size={18} />
+                )}
+              </ActionIcon>
+            </Tooltip>
+          </Stack>
+        </Box>
+      ) : null}
+
+      <Modal
+        centered
+        onClose={handleCancelPolygonDraw}
+        opened={Boolean(pendingGeometry)}
+        title={
+          featureTarget
+            ? `New feature: ${featureTarget.layer.name}`
+            : 'New feature'
+        }
+      >
+        <Stack gap="sm">
+          {featureError ? (
+            <Alert color="red" variant="light">
+              {featureError}
+            </Alert>
+          ) : null}
+
+          <ScrollArea.Autosize mah={360} type="auto">
+            <Stack gap="xs" pr="xs">
+              {editableFeatureColumns.length === 0 ? (
+                <Text c="dimmed" size="sm">
+                  Geometry only.
+                </Text>
+              ) : null}
+
+              {editableFeatureColumns.map((column) =>
+                isBooleanColumnType(column.type) ? (
+                  <Select
+                    clearable
+                    data={[
+                      { label: 'true', value: 'true' },
+                      { label: 'false', value: 'false' },
+                    ]}
+                    key={column.name}
+                    label={`${column.name} (${column.type})`}
+                    onChange={(value) =>
+                      handleFeatureValueChange(column.name, value ?? '')
+                    }
+                    value={featureValues[column.name] ?? ''}
+                  />
+                ) : (
+                  <TextInput
+                    key={column.name}
+                    label={`${column.name} (${column.type})`}
+                    onChange={(event) =>
+                      handleFeatureValueChange(
+                        column.name,
+                        event.currentTarget.value,
+                      )
+                    }
+                    value={featureValues[column.name] ?? ''}
+                  />
+                ),
+              )}
+            </Stack>
+          </ScrollArea.Autosize>
+
+          <Group justify="flex-end">
+            <Button
+              leftSection={<IconX size={16} />}
+              onClick={handleCancelPolygonDraw}
+              variant="default"
+            >
+              Cancel
+            </Button>
+            <Button
+              leftSection={<IconDeviceFloppy size={16} />}
+              loading={isSavingFeature}
+              onClick={() => void handleSaveFeature()}
+            >
+              Save
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
 
       {!isMapReady ? (
         <Center

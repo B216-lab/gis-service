@@ -240,6 +240,24 @@ type CommitTableChangesResult struct {
 	Applied int    `json:"applied"`
 }
 
+type CreateFeatureRequest struct {
+	ConnectionTestRequest
+	Schema         string                 `json:"schema"`
+	Table          string                 `json:"table"`
+	GeometryColumn string                 `json:"geometryColumn"`
+	Geometry       json.RawMessage        `json:"geometry"`
+	Values         map[string]interface{} `json:"values"`
+}
+
+type CreateFeatureResult struct {
+	Schema string `json:"schema"`
+	Table  string `json:"table"`
+}
+
+type geoJSONGeometryHeader struct {
+	Type string `json:"type"`
+}
+
 type GeoJSONFeatureCollection struct {
 	Type     string                   `json:"type"`
 	Features []map[string]interface{} `json:"features"`
@@ -646,6 +664,13 @@ func (request *CommitTableChangesRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 }
 
+func (request *CreateFeatureRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
+}
+
 func (request CommitTableChangesRequest) Validate() error {
 	if err := request.ConnectionTestRequest.Validate(); err != nil {
 		return err
@@ -667,6 +692,39 @@ func (request CommitTableChangesRequest) Validate() error {
 		if err := operation.Validate(); err != nil {
 			return fmt.Errorf("Operation %d: %w", index+1, err)
 		}
+	}
+
+	return nil
+}
+
+func (request CreateFeatureRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	if request.GeometryColumn == "" {
+		return errors.New("Geometry column is required.")
+	}
+
+	if len(request.Geometry) == 0 {
+		return errors.New("Geometry is required.")
+	}
+
+	var geometryHeader geoJSONGeometryHeader
+	if err := json.Unmarshal(request.Geometry, &geometryHeader); err != nil {
+		return errors.New("Geometry must be valid GeoJSON.")
+	}
+
+	if geometryHeader.Type != "Polygon" && geometryHeader.Type != "MultiPolygon" {
+		return errors.New("Geometry must be Polygon or MultiPolygon.")
 	}
 
 	return nil
@@ -1526,6 +1584,147 @@ func (service *Service) CommitTableChanges(
 		Schema:  request.Schema,
 		Table:   request.Table,
 		Applied: applied,
+	}, nil
+}
+
+func (service *Service) CreateFeature(
+	ctx context.Context,
+	request CreateFeatureRequest,
+) (*CreateFeatureResult, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	access, err := service.getTableAccess(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	columnDefinitions, err := service.listColumnDefinitions(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	primaryKey, err := service.listPrimaryKeyColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isEditableTable(access, primaryKey) {
+		return nil, fmt.Errorf(
+			"%w: selected table does not support transactional editing",
+			ErrInvalidWriteRequest,
+		)
+	}
+
+	geometryColumns, err := service.listGeometryColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var selectedGeometryColumn *geometryColumnDefinition
+	for index := range geometryColumns {
+		if geometryColumns[index].Name == request.GeometryColumn {
+			selectedGeometryColumn = &geometryColumns[index]
+		}
+	}
+	if selectedGeometryColumn == nil {
+		return nil, fmt.Errorf(
+			"%w: selected geometry column not found on table",
+			ErrInvalidWriteRequest,
+		)
+	}
+
+	columnByName := make(map[string]columnDefinition, len(columnDefinitions))
+	for _, definition := range columnDefinitions {
+		columnByName[definition.Name] = definition
+	}
+
+	insertColumns := make([]string, 0, len(request.Values)+1)
+	placeholders := make([]string, 0, len(request.Values)+1)
+	parameters := make([]interface{}, 0, len(request.Values)+1)
+
+	for _, columnName := range sortedMapKeys(request.Values) {
+		if columnName == request.GeometryColumn {
+			return nil, fmt.Errorf(
+				"%w: geometry column must be supplied as GeoJSON geometry",
+				ErrInvalidWriteRequest,
+			)
+		}
+
+		definition, ok := columnByName[columnName]
+		if !ok {
+			return nil, fmt.Errorf("%w: column %q does not exist", ErrInvalidWriteRequest, columnName)
+		}
+		if !isColumnEditable(definition) {
+			return nil, fmt.Errorf("%w: column %q is read-only", ErrInvalidWriteRequest, columnName)
+		}
+
+		value, err := convertColumnValue(definition, request.Values[columnName])
+		if err != nil {
+			return nil, err
+		}
+
+		parameters = append(parameters, value)
+		insertColumns = append(insertColumns, quoteIdentifier(columnName))
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(parameters)))
+	}
+
+	parameters = append(parameters, string(request.Geometry))
+	insertColumns = append(insertColumns, quoteIdentifier(request.GeometryColumn))
+	placeholders = append(
+		placeholders,
+		geometryInsertExpression(
+			len(parameters),
+			selectedGeometryColumn.StorageType,
+			selectedGeometryColumn.SRID,
+		),
+	)
+
+	query := fmt.Sprintf(
+		"insert into %s.%s (%s) values (%s)",
+		quoteIdentifier(request.Schema),
+		quoteIdentifier(request.Table),
+		strings.Join(insertColumns, ", "),
+		strings.Join(placeholders, ", "),
+	)
+
+	if _, err := conn.Exec(timeoutCtx, query, parameters...); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return &CreateFeatureResult{
+		Schema: request.Schema,
+		Table:  request.Table,
 	}, nil
 }
 
@@ -3084,6 +3283,21 @@ func tileBoundsForGeometryColumn(storageType string, srid int) string {
 	}
 
 	return fmt.Sprintf("ST_Transform(tile_bounds.geom, %d)", srid)
+}
+
+func geometryInsertExpression(parameterIndex int, storageType string, srid int) string {
+	geometryExpression := fmt.Sprintf(
+		"ST_SetSRID(ST_GeomFromGeoJSON($%d), 4326)",
+		parameterIndex,
+	)
+	if storageType == "geography" {
+		return fmt.Sprintf("%s::geography", geometryExpression)
+	}
+	if srid == 0 || srid == 4326 {
+		return geometryExpression
+	}
+
+	return fmt.Sprintf("ST_Transform(%s, %d)", geometryExpression, srid)
 }
 
 func simplifiedGeometryExpression(expression string, zoom *float64) string {

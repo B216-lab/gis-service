@@ -2223,6 +2223,7 @@ function MapLayerEditor({
 
 function DataInspector({
   connection,
+  featureCreateRefreshToken,
   isLoadingTables,
   isLoadingTableMetadata,
   selectedView,
@@ -2230,6 +2231,7 @@ function DataInspector({
   tablesError,
 }: {
   connection: DatabaseConnection | null;
+  featureCreateRefreshToken: number;
   isLoadingTables: boolean;
   isLoadingTableMetadata: boolean;
   selectedView: SavedTableView | null;
@@ -2386,9 +2388,11 @@ function DataInspector({
 
     const activeConnection = connection;
     const activeTable = selectedTable;
+    const featureRefreshVersion = featureCreateRefreshToken;
     const refreshVersion = rowsRefreshToken;
     let isActive = true;
 
+    void featureRefreshVersion;
     void refreshVersion;
 
     async function loadRows(offset: number) {
@@ -2435,6 +2439,7 @@ function DataInspector({
     activeTableFilter,
     appliedSearch,
     connection,
+    featureCreateRefreshToken,
     rowsRefreshToken,
     selectedTable,
   ]);
@@ -4282,6 +4287,7 @@ export function App() {
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
   const [mapSelection, setMapSelection] = useState<MapSelection | null>(null);
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('layer');
+  const [featureCreateRefreshToken, setFeatureCreateRefreshToken] = useState(0);
 
   const selectedConnection =
     connections.find((connection) => connection.id === selectedConnectionId) ??
@@ -4678,6 +4684,10 @@ export function App() {
     setRightPaneTab('data');
   }
 
+  function handleFeatureCreated() {
+    setFeatureCreateRefreshToken((value) => value + 1);
+  }
+
   async function handleOpenTable(tableKey: string) {
     const [schemaName] = tableKey.split('.');
     if (!schemaName) {
@@ -4779,10 +4789,13 @@ export function App() {
               <Split.Pane grow minHeight={0}>
                 <PanelFrame>
                   <MapPane
+                    activeLayerId={activeLayerId}
                     basemapId={selectedBasemapId ?? defaultBasemapId}
                     connection={selectedConnection}
+                    onFeatureCreated={handleFeatureCreated}
                     onSelectMapObject={handleSelectMapObject}
                     sources={mapSources}
+                    tables={metadataTables}
                     visibleLayers={selectedVisibleMapLayers}
                   />
                 </PanelFrame>
@@ -4794,6 +4807,7 @@ export function App() {
                 <PanelFrame>
                   <DataInspector
                     connection={selectedConnection}
+                    featureCreateRefreshToken={featureCreateRefreshToken}
                     isLoadingTableMetadata={isLoadingTableMetadata}
                     isLoadingTables={
                       isLoadingSchemas ||

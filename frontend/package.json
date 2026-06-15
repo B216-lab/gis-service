@@ -22,6 +22,8 @@
     "pmtiles": "^4.3.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "terra-draw": "^1.31.1",
+    "terra-draw-maplibre-gl-adapter": "^1.4.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
