@@ -73,6 +73,7 @@ import {
   type FlowmapMapLayer,
   type FlowmapTableSource,
   type GeoJsonMapLayer,
+  type GeoJsonTableSource,
   type LayerGlyphIcon,
   type MapLayer,
   type MapSource,
@@ -2434,6 +2435,9 @@ function DataInspector({
   const removeSavedTableView = useConnectionStore(
     (state) => state.removeSavedTableView,
   );
+  const refreshGeoJsonSourcesForTable = useConnectionStore(
+    (state) => state.refreshGeoJsonSourcesForTable,
+  );
 
   const matchingSavedViews = useMemo(
     () =>
@@ -2797,6 +2801,11 @@ function DataInspector({
       setSaveMessage(
         `Saved ${payload.applied} change${payload.applied === 1 ? '' : 's'}.`,
       );
+      refreshGeoJsonSourcesForTable({
+        connectionId: connection.id,
+        schema: selectedTable.schema,
+        table: selectedTable.name,
+      });
       startTransition(() => {
         setRowsRefreshToken((value) => value + 1);
       });
@@ -4306,6 +4315,9 @@ export function App() {
   );
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
+  const refreshGeoJsonSourcesForTable = useConnectionStore(
+    (state) => state.refreshGeoJsonSourcesForTable,
+  );
   const removeSavedTableView = useConnectionStore(
     (state) => state.removeSavedTableView,
   );
@@ -4519,6 +4531,7 @@ export function App() {
       geometryColumn: geometryColumn.name,
       geometryType: geometryColumn.geometryType,
       filter: selectedSavedView?.filter ?? null,
+      sourceViewId: selectedSavedView?.id ?? null,
     });
   }
 
@@ -4722,7 +4735,13 @@ export function App() {
     setRightPaneTab('data');
   }
 
-  function handleFeatureCreated() {
+  function handleFeatureCreated(source: GeoJsonTableSource) {
+    refreshGeoJsonSourcesForTable({
+      connectionId: source.connectionId,
+      schema: source.schema,
+      table: source.table,
+    });
+
     setFeatureCreateRefreshToken((value) => value + 1);
   }
 

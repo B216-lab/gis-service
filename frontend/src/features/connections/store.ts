@@ -37,6 +37,8 @@ export interface GeoJsonTableSource {
   geometryColumn: string;
   geometryType: string;
   filter?: TableFilterDefinition | null;
+  sourceViewId?: string | null;
+  refreshKey?: string;
 }
 
 export interface FlowmapTableSource {
@@ -153,6 +155,12 @@ interface ConnectionStoreState {
     geometryColumn: string;
     geometryType: string;
     filter?: TableFilterDefinition | null;
+    sourceViewId?: string | null;
+  }) => void;
+  refreshGeoJsonSourcesForTable: (payload: {
+    connectionId: string;
+    schema: string;
+    table: string;
   }) => void;
   addFlowmapLayer: (payload: {
     connectionId: string;
@@ -323,6 +331,8 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
       geometryColumn: source.geometryColumn ?? 'geom',
       geometryType: source.geometryType ?? '',
       filter: source.filter ?? null,
+      sourceViewId: source.sourceViewId ?? null,
+      refreshKey: source.refreshKey ?? '',
     };
   }
 
@@ -404,6 +414,7 @@ function findGeoJsonSource(
     table: string;
     geometryColumn: string;
     filter?: TableFilterDefinition | null;
+    sourceViewId?: string | null;
   },
 ) {
   return sources.find(
@@ -413,8 +424,30 @@ function findGeoJsonSource(
       source.schema === payload.schema &&
       source.table === payload.table &&
       source.geometryColumn === payload.geometryColumn &&
+      (source.sourceViewId ?? null) === (payload.sourceViewId ?? null) &&
       JSON.stringify(source.filter ?? null) ===
         JSON.stringify(payload.filter ?? null),
+  );
+}
+
+function touchGeoJsonSource(source: GeoJsonTableSource): GeoJsonTableSource {
+  return {
+    ...source,
+    refreshKey: crypto.randomUUID(),
+  };
+}
+
+function isGeoJsonSourceLinkedToView(
+  source: GeoJsonTableSource,
+  view: SavedTableView,
+) {
+  return (
+    source.sourceViewId === view.id ||
+    ((source.sourceViewId ?? null) === null &&
+      source.connectionId === view.connectionId &&
+      source.schema === view.sourceSchema &&
+      source.table === view.sourceTable &&
+      JSON.stringify(source.filter ?? null) === JSON.stringify(view.filter))
   );
 }
 
@@ -580,23 +613,60 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           ],
         })),
       updateSavedTableView: (viewId, patch) =>
-        set((state) => ({
-          savedTableViews: state.savedTableViews.map((view) =>
+        set((state) => {
+          const updatedAt = new Date().toISOString();
+          const previousView =
+            state.savedTableViews.find((view) => view.id === viewId) ?? null;
+          const nextSavedTableViews = state.savedTableViews.map((view) =>
             view.id === viewId
               ? {
                   ...view,
                   ...patch,
-                  updatedAt: new Date().toISOString(),
+                  updatedAt,
                 }
               : view,
-          ),
-        })),
+          );
+          const nextView = nextSavedTableViews.find(
+            (view) => view.id === viewId,
+          );
+
+          return {
+            savedTableViews: nextSavedTableViews,
+            mapSources: state.mapSources.map((source) =>
+              source.type === 'geojson-table' &&
+              previousView &&
+              isGeoJsonSourceLinkedToView(source, previousView) &&
+              nextView
+                ? touchGeoJsonSource({
+                    ...source,
+                    filter: nextView.filter,
+                    sourceViewId: viewId,
+                  })
+                : source,
+            ),
+          };
+        }),
       removeSavedTableView: (viewId) =>
-        set((state) => ({
-          savedTableViews: state.savedTableViews.filter(
-            (view) => view.id !== viewId,
-          ),
-        })),
+        set((state) => {
+          const previousView =
+            state.savedTableViews.find((view) => view.id === viewId) ?? null;
+
+          return {
+            savedTableViews: state.savedTableViews.filter(
+              (view) => view.id !== viewId,
+            ),
+            mapSources: state.mapSources.map((source) =>
+              source.type === 'geojson-table' &&
+              previousView &&
+              isGeoJsonSourceLinkedToView(source, previousView)
+                ? touchGeoJsonSource({
+                    ...source,
+                    sourceViewId: null,
+                  })
+                : source,
+            ),
+          };
+        }),
       setSelectedBasemap: (basemapId) =>
         set({
           selectedBasemapId: basemapId,
@@ -629,6 +699,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               geometryColumn: payload.geometryColumn,
               geometryType: payload.geometryType,
               filter: payload.filter ?? null,
+              sourceViewId: payload.sourceViewId ?? null,
+              refreshKey: '',
             };
             nextSources.push(source);
           }
@@ -669,6 +741,17 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             ],
           };
         }),
+      refreshGeoJsonSourcesForTable: (payload) =>
+        set((state) => ({
+          mapSources: state.mapSources.map((source) =>
+            source.type === 'geojson-table' &&
+            source.connectionId === payload.connectionId &&
+            source.schema === payload.schema &&
+            source.table === payload.table
+              ? touchGeoJsonSource(source)
+              : source,
+          ),
+        })),
       addFlowmapLayer: (payload) =>
         set((state) => {
           let source = findFlowmapSource(state.mapSources, payload);

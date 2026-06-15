@@ -614,7 +614,7 @@ export function MapPane({
   tables: InspectableTable[];
   visibleLayers: MapLayer[];
   sources: MapSource[];
-  onFeatureCreated?: () => void;
+  onFeatureCreated?: (source: GeoJsonTableSource) => void;
   onSelectMapObject: (selection: MapSelection | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1582,7 +1582,7 @@ export function MapPane({
       setPendingGeometry(null);
       setPendingDrawTarget(null);
       setFeatureValues({});
-      onFeatureCreated?.();
+      onFeatureCreated?.(featureTarget.source);
     } catch (error) {
       setFeatureError(
         error instanceof Error ? error.message : 'Failed to create feature.',
