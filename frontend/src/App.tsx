@@ -2221,6 +2221,169 @@ function MapLayerEditor({
   );
 }
 
+function SavedViewModal({
+  opened,
+  selectedTable,
+  view,
+  onClose,
+  onSave,
+}: {
+  opened: boolean;
+  selectedTable: InspectableTable | null;
+  view: SavedTableView | null;
+  onClose: () => void;
+  onSave: (payload: {
+    viewId: string | null;
+    name: string;
+    filter: TableFilterDefinition;
+  }) => void;
+}) {
+  const [draftViewName, setDraftViewName] = useState('');
+  const [draftViewCondition, setDraftViewCondition] =
+    useState<TableFilterCondition>(() =>
+      createDefaultTableFilterCondition(selectedTable),
+    );
+  const filterableColumnOptions = useMemo(
+    () =>
+      (selectedTable?.columns ?? [])
+        .filter((column) => isEditableColumnType(column.type))
+        .map((column) => ({
+          label: `${column.name} (${column.type})`,
+          value: column.name,
+        })),
+    [selectedTable],
+  );
+
+  useEffect(() => {
+    if (!opened) {
+      return;
+    }
+
+    const firstCondition = view?.filter.conditions[0];
+    setDraftViewName(view?.name ?? '');
+    setDraftViewCondition({
+      column:
+        firstCondition?.column ??
+        createDefaultTableFilterCondition(selectedTable).column,
+      operator: firstCondition?.operator ?? 'eq',
+      value: firstCondition?.value ?? '',
+      values: firstCondition?.values ?? [],
+    });
+  }, [opened, selectedTable, view]);
+
+  const nextName = draftViewName.trim();
+  const nextColumn = draftViewCondition.column.trim();
+  const nextOperator = draftViewCondition.operator;
+  const nextRawValue = (draftViewCondition.value ?? '').trim();
+  const nextValues =
+    nextOperator === 'in'
+      ? (draftViewCondition.values ?? []).filter(Boolean)
+      : [];
+  const canSave =
+    Boolean(nextName && nextColumn) &&
+    (nextOperator === 'eq' ? Boolean(nextRawValue) : nextValues.length > 0);
+
+  function handleSave() {
+    if (!canSave) {
+      return;
+    }
+
+    onSave({
+      viewId: view?.id ?? null,
+      name: nextName,
+      filter: buildTableFilterDefinition({
+        column: nextColumn,
+        operator: nextOperator,
+        value: nextRawValue,
+        values: nextValues,
+      }),
+    });
+  }
+
+  return (
+    <Modal
+      centered
+      onClose={onClose}
+      opened={opened}
+      title={view ? 'Edit saved view' : 'Save table view'}
+    >
+      <Stack gap="sm">
+        <TextInput
+          label="View name"
+          onChange={(event) => setDraftViewName(event.currentTarget.value)}
+          placeholder="Cities"
+          value={draftViewName}
+        />
+        <Select
+          data={filterableColumnOptions}
+          label="Column"
+          onChange={(value) =>
+            setDraftViewCondition((current) => ({
+              ...current,
+              column: value ?? '',
+            }))
+          }
+          searchable
+          value={draftViewCondition.column}
+        />
+        <Select
+          allowDeselect={false}
+          data={[
+            { label: 'Equals', value: 'eq' },
+            { label: 'In list', value: 'in' },
+          ]}
+          label="Operator"
+          onChange={(value) =>
+            setDraftViewCondition((current) => ({
+              ...current,
+              operator: (value ?? 'eq') as TableFilterOperator,
+              value: value === 'in' ? '' : current.value,
+              values: value === 'in' ? current.values : [],
+            }))
+          }
+          value={draftViewCondition.operator}
+        />
+        <TextInput
+          description={
+            draftViewCondition.operator === 'in'
+              ? 'Comma-separated values. Example: 7, 8'
+              : 'Single value. Example: 8'
+          }
+          label={draftViewCondition.operator === 'in' ? 'Values' : 'Value'}
+          onChange={(event) => {
+            const nextRawInput = event.currentTarget.value;
+            setDraftViewCondition((current) => ({
+              ...current,
+              value: current.operator === 'eq' ? nextRawInput : current.value,
+              values:
+                current.operator === 'in'
+                  ? nextRawInput
+                      .split(',')
+                      .map((value) => value.trim())
+                      .filter(Boolean)
+                  : current.values,
+            }));
+          }}
+          placeholder={draftViewCondition.operator === 'in' ? '7, 8' : '8'}
+          value={
+            draftViewCondition.operator === 'in'
+              ? (draftViewCondition.values ?? []).join(', ')
+              : (draftViewCondition.value ?? '')
+          }
+        />
+        <Group justify="space-between" pt="xs">
+          <Text c="dimmed" size="xs">
+            Local virtual view over current table.
+          </Text>
+          <Button disabled={!canSave} onClick={handleSave}>
+            {view ? 'Update View' : 'Save View'}
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
+
 function DataInspector({
   connection,
   featureCreateRefreshToken,
@@ -2258,14 +2421,8 @@ function DataInspector({
   const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(
     null,
   );
-  const [editingSavedViewId, setEditingSavedViewId] = useState<string | null>(
-    null,
-  );
-  const [draftViewName, setDraftViewName] = useState('');
-  const [draftViewCondition, setDraftViewCondition] =
-    useState<TableFilterCondition>(() =>
-      createDefaultTableFilterCondition(selectedTable),
-    );
+  const [editingSavedView, setEditingSavedView] =
+    useState<SavedTableView | null>(null);
   const deferredSearchInput = useDeferredValue(searchInput);
   const savedTableViews = useConnectionStore((state) => state.savedTableViews);
   const addSavedTableView = useConnectionStore(
@@ -2300,13 +2457,9 @@ function DataInspector({
     matchingSavedViews.find((view) => view.id === activeSavedViewId) ??
     null;
   const activeTableFilter = activeSavedView?.filter ?? null;
-  const filterableColumnOptions = (selectedTable?.columns ?? [])
-    .filter((column) => isEditableColumnType(column.type))
-    .map((column) => ({
-      label: `${column.name} (${column.type})`,
-      value: column.name,
-    }));
-
+  const canCreateSavedView = Boolean(
+    selectedTable?.columns.some((column) => isEditableColumnType(column.type)),
+  );
   const activePrimaryKey =
     rowsState?.primaryKey ?? selectedTable?.primaryKey ?? [];
   const hasDirtyChanges =
@@ -2324,12 +2477,6 @@ function DataInspector({
     setDraftInserts([]);
     setSaveError('');
   }, []);
-
-  const resetSavedViewDraft = useCallback(() => {
-    setEditingSavedViewId(null);
-    setDraftViewName('');
-    setDraftViewCondition(createDefaultTableFilterCondition(selectedTable));
-  }, [selectedTable]);
 
   const confirmDraftReset = useCallback(
     (actionLabel: string) => {
@@ -2371,8 +2518,8 @@ function DataInspector({
 
   useEffect(() => {
     setActiveSavedViewId(selectedView?.id ?? null);
-    resetSavedViewDraft();
-  }, [resetSavedViewDraft, selectedView?.id]);
+    setEditingSavedView(null);
+  }, [selectedView?.id]);
 
   useEffect(() => {
     if (!connection || !selectedTable) {
@@ -2678,72 +2825,45 @@ function DataInspector({
   }
 
   function handleOpenSavedViewModal() {
-    resetSavedViewDraft();
+    setEditingSavedView(null);
     savedViewModal.open();
   }
 
   function handleOpenEditSavedViewModal(view: SavedTableView) {
-    const firstCondition = view.filter.conditions[0];
-    setEditingSavedViewId(view.id);
-    setDraftViewName(view.name);
-    setDraftViewCondition({
-      column: firstCondition?.column ?? '',
-      operator: firstCondition?.operator ?? 'eq',
-      value: firstCondition?.value ?? '',
-      values: firstCondition?.values ?? [],
-    });
+    setEditingSavedView(view);
     savedViewModal.open();
   }
 
-  function handleSaveView() {
+  function handleCloseSavedViewModal() {
+    setEditingSavedView(null);
+    savedViewModal.close();
+  }
+
+  function handleSaveView(payload: {
+    viewId: string | null;
+    name: string;
+    filter: TableFilterDefinition;
+  }) {
     if (!connection || !selectedTable) {
       return;
     }
 
-    const nextName = draftViewName.trim();
-    const nextColumn = draftViewCondition.column.trim();
-    const nextOperator = draftViewCondition.operator;
-    const nextRawValue = (draftViewCondition.value ?? '').trim();
-    const nextValues =
-      nextOperator === 'in'
-        ? (draftViewCondition.values ?? []).filter(Boolean)
-        : [];
-
-    if (!nextName || !nextColumn) {
-      return;
-    }
-
-    if (nextOperator === 'eq' && !nextRawValue) {
-      return;
-    }
-
-    if (nextOperator === 'in' && nextValues.length === 0) {
-      return;
-    }
-
-    const nextFilter = buildTableFilterDefinition({
-      column: nextColumn,
-      operator: nextOperator,
-      value: nextRawValue,
-      values: nextValues,
-    });
-
-    if (editingSavedViewId) {
-      updateSavedTableView(editingSavedViewId, {
-        name: nextName,
-        filter: nextFilter,
+    if (payload.viewId) {
+      updateSavedTableView(payload.viewId, {
+        name: payload.name,
+        filter: payload.filter,
       });
     } else {
       addSavedTableView({
-        name: nextName,
+        name: payload.name,
         connectionId: connection.id,
         sourceSchema: selectedTable.schema,
         sourceTable: selectedTable.name,
-        filter: nextFilter,
+        filter: payload.filter,
       });
     }
 
-    resetSavedViewDraft();
+    setEditingSavedView(null);
     savedViewModal.close();
   }
 
@@ -2783,95 +2903,13 @@ function DataInspector({
 
   return (
     <>
-      <Modal
-        centered
-        onClose={savedViewModal.close}
+      <SavedViewModal
+        onClose={handleCloseSavedViewModal}
+        onSave={handleSaveView}
         opened={savedViewOpened}
-        title={editingSavedViewId ? 'Edit saved view' : 'Save table view'}
-      >
-        <Stack gap="sm">
-          <TextInput
-            label="View name"
-            onChange={(event) => setDraftViewName(event.currentTarget.value)}
-            placeholder="Cities"
-            value={draftViewName}
-          />
-          <Select
-            data={filterableColumnOptions}
-            label="Column"
-            onChange={(value) =>
-              setDraftViewCondition((current) => ({
-                ...current,
-                column: value ?? '',
-              }))
-            }
-            searchable
-            value={draftViewCondition.column}
-          />
-          <Select
-            allowDeselect={false}
-            data={[
-              { label: 'Equals', value: 'eq' },
-              { label: 'In list', value: 'in' },
-            ]}
-            label="Operator"
-            onChange={(value) =>
-              setDraftViewCondition((current) => ({
-                ...current,
-                operator: (value ?? 'eq') as TableFilterOperator,
-                value: value === 'in' ? '' : current.value,
-                values: value === 'in' ? current.values : [],
-              }))
-            }
-            value={draftViewCondition.operator}
-          />
-          <TextInput
-            description={
-              draftViewCondition.operator === 'in'
-                ? 'Comma-separated values. Example: 7, 8'
-                : 'Single value. Example: 8'
-            }
-            label={draftViewCondition.operator === 'in' ? 'Values' : 'Value'}
-            onChange={(event) => {
-              const nextRawValue = event.currentTarget.value;
-              setDraftViewCondition((current) => ({
-                ...current,
-                value: current.operator === 'eq' ? nextRawValue : current.value,
-                values:
-                  current.operator === 'in'
-                    ? nextRawValue
-                        .split(',')
-                        .map((value) => value.trim())
-                        .filter(Boolean)
-                    : current.values,
-              }));
-            }}
-            placeholder={draftViewCondition.operator === 'in' ? '7, 8' : '8'}
-            value={
-              draftViewCondition.operator === 'in'
-                ? (draftViewCondition.values ?? []).join(', ')
-                : (draftViewCondition.value ?? '')
-            }
-          />
-          <Group justify="space-between" pt="xs">
-            <Text c="dimmed" size="xs">
-              Local virtual view over current table.
-            </Text>
-            <Button
-              disabled={
-                !draftViewName.trim() ||
-                !draftViewCondition.column ||
-                (draftViewCondition.operator === 'eq'
-                  ? !(draftViewCondition.value ?? '').trim()
-                  : (draftViewCondition.values ?? []).length === 0)
-              }
-              onClick={handleSaveView}
-            >
-              {editingSavedViewId ? 'Update View' : 'Save View'}
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        selectedTable={selectedTable}
+        view={editingSavedView}
+      />
 
       <Stack h="100%" gap="sm">
         <Group justify="space-between" wrap="nowrap">
@@ -2907,7 +2945,7 @@ function DataInspector({
           </Group>
           <Group gap="xs" wrap="nowrap">
             <Button
-              disabled={!selectedTable || filterableColumnOptions.length === 0}
+              disabled={!canCreateSavedView}
               leftSection={<IconPlus size={14} />}
               onClick={handleOpenSavedViewModal}
               size="compact-sm"
