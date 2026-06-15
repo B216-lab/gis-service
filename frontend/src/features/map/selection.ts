@@ -16,5 +16,6 @@ export interface MapSelection {
   objectType: MapSelectionObjectType;
   rowRefs: RowReference[];
   inlineProperties: Record<string, unknown> | null;
+  featureKey?: string;
   title: string;
 }

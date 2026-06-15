@@ -4792,6 +4792,7 @@ export function App() {
                     activeLayerId={activeLayerId}
                     basemapId={selectedBasemapId ?? defaultBasemapId}
                     connection={selectedConnection}
+                    mapSelection={mapSelection}
                     onFeatureCreated={handleFeatureCreated}
                     onSelectMapObject={handleSelectMapObject}
                     sources={mapSources}

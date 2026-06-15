@@ -94,6 +94,7 @@ type DrawTarget = {
 
 const vectorTileSourcePrefix = 'geopanel-source';
 const vectorTileLayerPrefix = 'geopanel-layer';
+const vectorTileHighlightLayerPrefix = 'geopanel-selection';
 
 function getSourceSignature(source: MapSource) {
   return JSON.stringify(source);
@@ -217,6 +218,19 @@ function getVectorStyleLayerIds(layer: GeoJsonMapLayer) {
   return [`${baseId}-fill`, `${baseId}-line`, `${baseId}-circle`];
 }
 
+function getVectorHighlightLayerIds(layer: GeoJsonMapLayer) {
+  const baseId = `${vectorTileHighlightLayerPrefix}-${layer.id}`;
+
+  return [`${baseId}-fill`, `${baseId}-line`, `${baseId}-circle`];
+}
+
+function getQueryableVectorLayerIds(map: maplibregl.Map, layers: MapLayer[]) {
+  return layers
+    .filter(isGeoJsonMapLayer)
+    .flatMap(getVectorStyleLayerIds)
+    .filter((layerId) => map.getLayer(layerId));
+}
+
 function parseJSONProperty(value: unknown) {
   if (typeof value !== 'string') {
     return null;
@@ -237,6 +251,10 @@ function buildVectorMapSelection(
   const properties = { ...(feature.properties ?? {}) };
   const primaryKey = parseJSONProperty(properties._geopanel_primary_key);
   const rowKey = parseJSONProperty(properties._geopanel_row_key);
+  const featureKey =
+    typeof properties._geopanel_row_key === 'string'
+      ? properties._geopanel_row_key
+      : undefined;
   delete properties._geopanel_primary_key;
   delete properties._geopanel_row_key;
   delete properties._geopanel_empty;
@@ -264,6 +282,7 @@ function buildVectorMapSelection(
     objectType: 'feature',
     rowRefs: rowRef ? [rowRef] : [],
     inlineProperties: properties,
+    featureKey,
     title: layer.name,
   };
 }
@@ -495,6 +514,76 @@ function addVectorStyleLayers(params: {
   }
 }
 
+function addVectorHighlightLayers(params: {
+  map: maplibregl.Map;
+  layer: GeoJsonMapLayer;
+  source: GeoJsonTableSource;
+  sourceLayer: string;
+  featureKey: string;
+}) {
+  const { featureKey, layer, map, source, sourceLayer } = params;
+  const [fillLayerId, lineLayerId, circleLayerId] =
+    getVectorHighlightLayerIds(layer);
+  const sourceId = mapLibreSourceId(source.id);
+  const filter: maplibregl.FilterSpecification = [
+    '==',
+    ['get', '_geopanel_row_key'],
+    featureKey,
+  ];
+
+  if (/polygon/i.test(source.geometryType) && !map.getLayer(fillLayerId)) {
+    map.addLayer({
+      id: fillLayerId,
+      type: 'fill',
+      source: sourceId,
+      'source-layer': sourceLayer,
+      filter,
+      paint: {
+        'fill-color': '#ffd43b',
+        'fill-opacity': 0.3,
+      },
+    });
+  }
+
+  if (
+    (/polygon|line/i.test(source.geometryType) || source.geometryType === '') &&
+    !map.getLayer(lineLayerId)
+  ) {
+    map.addLayer({
+      id: lineLayerId,
+      type: 'line',
+      source: sourceId,
+      'source-layer': sourceLayer,
+      filter,
+      paint: {
+        'line-color': '#ffd43b',
+        'line-opacity': 1,
+        'line-width': /line/i.test(source.geometryType) ? 6 : 4,
+      },
+    });
+  }
+
+  if (
+    (/point/i.test(source.geometryType) || source.geometryType === '') &&
+    !map.getLayer(circleLayerId)
+  ) {
+    map.addLayer({
+      id: circleLayerId,
+      type: 'circle',
+      source: sourceId,
+      'source-layer': sourceLayer,
+      filter,
+      paint: {
+        'circle-color': '#ffd43b',
+        'circle-opacity': 0.95,
+        'circle-radius': 9,
+        'circle-stroke-color': '#212529',
+        'circle-stroke-width': 2,
+      },
+    });
+  }
+}
+
 async function fetchSourceData(
   connection: DatabaseConnection,
   source: FlowmapTableSource,
@@ -511,6 +600,7 @@ export function MapPane({
   activeLayerId,
   basemapId,
   connection,
+  mapSelection,
   tables,
   visibleLayers,
   sources,
@@ -520,6 +610,7 @@ export function MapPane({
   activeLayerId: string | null;
   basemapId: BasemapId;
   connection: DatabaseConnection | null;
+  mapSelection: MapSelection | null;
   tables: InspectableTable[];
   visibleLayers: MapLayer[];
   sources: MapSource[];
@@ -670,9 +761,9 @@ export function MapPane({
       const currentVisibleLayers = visibleLayersRef.current;
       const currentSources = sourcesRef.current;
       const geoJsonLayers = currentVisibleLayers.filter(isGeoJsonMapLayer);
-      const styleLayerIds = geoJsonLayers.flatMap(getVectorStyleLayerIds);
-      const queryableLayerIds = styleLayerIds.filter((layerId) =>
-        map.getLayer(layerId),
+      const queryableLayerIds = getQueryableVectorLayerIds(
+        map,
+        currentVisibleLayers,
       );
 
       if (queryableLayerIds.length === 0) {
@@ -708,6 +799,27 @@ export function MapPane({
       onSelectMapObjectRef.current(
         buildVectorMapSelection(feature, layer, source),
       );
+    }
+
+    function handleMapMouseMove(event: MapMouseEvent) {
+      if (drawRef.current) {
+        map.getCanvas().style.cursor = '';
+        return;
+      }
+
+      const queryableLayerIds = getQueryableVectorLayerIds(
+        map,
+        visibleLayersRef.current,
+      );
+      if (queryableLayerIds.length === 0) {
+        map.getCanvas().style.cursor = '';
+        return;
+      }
+
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: queryableLayerIds,
+      });
+      map.getCanvas().style.cursor = features.length > 0 ? 'pointer' : '';
     }
 
     function updateVectorTileLoadingState() {
@@ -773,6 +885,7 @@ export function MapPane({
       map.resize();
     });
     map.on('click', handleMapClick);
+    map.on('mousemove', handleMapMouseMove);
     map.on('sourcedataloading', handleSourceDataLoading);
     map.on('sourcedata', handleSourceData);
     map.on('sourcedataabort', handleSourceDataAbort);
@@ -786,6 +899,7 @@ export function MapPane({
       drawRef.current?.stop();
       drawRef.current = null;
       map.off('click', handleMapClick);
+      map.off('mousemove', handleMapMouseMove);
       map.off('sourcedataloading', handleSourceDataLoading);
       map.off('sourcedata', handleSourceData);
       map.off('sourcedataabort', handleSourceDataAbort);
@@ -944,7 +1058,10 @@ export function MapPane({
 
     function removeAllVectorLayers() {
       for (const styleLayer of activeMap.getStyle().layers ?? []) {
-        if (styleLayer.id.startsWith(vectorTileLayerPrefix)) {
+        if (
+          styleLayer.id.startsWith(vectorTileLayerPrefix) ||
+          styleLayer.id.startsWith(vectorTileHighlightLayerPrefix)
+        ) {
           activeMap.removeLayer(styleLayer.id);
         }
       }
@@ -1013,6 +1130,40 @@ export function MapPane({
           source,
           sourceLayer: cacheEntry.source.sourceLayer,
         });
+      }
+
+      if (
+        mapSelection?.objectType === 'feature' &&
+        mapSelection.featureKey &&
+        mapSelection.sourceType === 'geojson-table'
+      ) {
+        const selectedLayer = visibleLayers.find(
+          (layer): layer is GeoJsonMapLayer =>
+            layer.id === mapSelection.layerId && isGeoJsonMapLayer(layer),
+        );
+        const selectedSource = sources.find(
+          (candidate): candidate is GeoJsonTableSource =>
+            candidate.id === mapSelection.sourceId &&
+            isGeoJsonTableSource(candidate),
+        );
+        const cacheEntry = selectedSource
+          ? vectorTileSourceCacheRef.current[selectedSource.id]
+          : null;
+
+        if (
+          selectedLayer &&
+          selectedSource &&
+          cacheEntry &&
+          activeMap.getSource(mapLibreSourceId(selectedSource.id))
+        ) {
+          addVectorHighlightLayers({
+            map: activeMap,
+            layer: selectedLayer,
+            source: selectedSource,
+            sourceLayer: cacheEntry.source.sourceLayer,
+            featureKey: mapSelection.featureKey,
+          });
+        }
       }
     }
 
@@ -1107,6 +1258,7 @@ export function MapPane({
     connection,
     geoJsonVisibleSources,
     isMapReady,
+    mapSelection,
     sources,
     styleVersion,
     visibleLayers,
@@ -1354,7 +1506,10 @@ export function MapPane({
 
     if (map?.getSource(mapSourceId)) {
       for (const styleLayer of map.getStyle().layers ?? []) {
-        if (styleLayer.id.startsWith(vectorTileLayerPrefix)) {
+        if (
+          styleLayer.id.startsWith(vectorTileLayerPrefix) ||
+          styleLayer.id.startsWith(vectorTileHighlightLayerPrefix)
+        ) {
           map.removeLayer(styleLayer.id);
         }
       }
