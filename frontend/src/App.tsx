@@ -25,8 +25,6 @@ import {
   TextInput,
   ThemeIcon,
   Title,
-  useComputedColorScheme,
-  useMantineColorScheme,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
@@ -42,7 +40,6 @@ import {
   IconFolder,
   IconInfoCircle,
   IconLayersIntersect,
-  IconMoonStars,
   IconPencil,
   IconPlug,
   IconPlugConnected,
@@ -52,14 +49,12 @@ import {
   IconRoute,
   IconSearch,
   IconSettings,
-  IconSun,
   IconTable,
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
 import {
   type ChangeEvent,
-  type ReactNode,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -68,6 +63,28 @@ import {
   useState,
 } from 'react';
 
+import {
+  createEmptyInsertRow,
+  createFlowLayerDefaults,
+  createSavedViewSelectionKey,
+  type DraftInsertRow,
+  type FlowLayerFormState,
+  findLayerSource,
+  formatFlowmapSourceColumns,
+  formatMapSelectionCount,
+  formatMapSelectionObjectType,
+  formatRowCount,
+  getMapSelectionBadgeColor,
+  parseTableSelectionKey,
+  serializeRowKey,
+  validateFlowLayerForm,
+} from './features/app/app-utils';
+import {
+  ColorSchemeToggle,
+  EmptyState,
+  LayerGlyph,
+  PanelFrame,
+} from './features/app/chrome';
 import {
   type DatabaseConnection,
   type FlowmapMapLayer,
@@ -79,11 +96,10 @@ import {
   type MapSource,
   useConnectionStore,
 } from './features/connections/store';
+import { SavedViewModal } from './features/filters/SavedViewModal';
 import type {
   SavedTableView,
-  TableFilterCondition,
   TableFilterDefinition,
-  TableFilterOperator,
 } from './features/filters/types';
 import {
   commitInspectorRows,
@@ -102,6 +118,16 @@ import {
   type TableChangeOperation,
 } from './features/inspector/api';
 import {
+  areEditorValuesEqual,
+  formatCellValue,
+  getCellFontFamily,
+  getCellTextAlign,
+  isEditableColumnType,
+  isNumericColumnType,
+  normalizeEditorValue,
+  renderEditableCell,
+} from './features/inspector/table-editing';
+import {
   type BasemapId,
   basemapOptions,
   defaultBasemapId,
@@ -110,16 +136,9 @@ import { MapPane } from './features/map/MapPane';
 import type { MapSelection } from './features/map/selection';
 
 const pageSize = 100;
-const emptyCellLabel = 'NULL';
-
-interface DraftInsertRow {
-  id: string;
-  values: Record<string, unknown>;
-}
 
 type SchemaTablesByName = Record<string, InspectableTableSummary[]>;
 type LoadingSchemaTablesByName = Record<string, boolean>;
-type TableSelectionKind = 'table' | 'view';
 
 interface CatalogState {
   schemas: InspectableSchema[];
@@ -132,325 +151,6 @@ interface CatalogState {
 }
 
 type RightPaneTab = 'layer' | 'data' | 'analysis';
-
-function createSavedViewSelectionKey(viewId: string) {
-  return `view:${viewId}`;
-}
-
-function parseTableSelectionKey(
-  tableKey: string | null,
-): { kind: TableSelectionKind; value: string } | null {
-  if (!tableKey) {
-    return null;
-  }
-
-  if (tableKey.startsWith('view:')) {
-    return {
-      kind: 'view',
-      value: tableKey.slice('view:'.length),
-    };
-  }
-
-  return {
-    kind: 'table',
-    value: tableKey,
-  };
-}
-
-function getMapSelectionBadgeColor(objectType: MapSelection['objectType']) {
-  switch (objectType) {
-    case 'feature':
-      return 'blue';
-    case 'flow':
-      return 'grape';
-    case 'location':
-      return 'teal';
-    default:
-      return 'gray';
-  }
-}
-
-function formatMapSelectionObjectType(objectType: MapSelection['objectType']) {
-  switch (objectType) {
-    case 'feature':
-      return 'Feature';
-    case 'flow':
-      return 'Flow';
-    case 'location':
-      return 'Location';
-    default:
-      return objectType;
-  }
-}
-
-function formatMapSelectionCount(count: number) {
-  return `${count} row${count === 1 ? '' : 's'}`;
-}
-
-function formatRowCount(count: number | null | undefined) {
-  return typeof count === 'number' ? count.toLocaleString() : 'unknown';
-}
-
-function ColorSchemeToggle() {
-  const computedColorScheme = useComputedColorScheme('light');
-  const { setColorScheme } = useMantineColorScheme();
-
-  const isDark = computedColorScheme === 'dark';
-
-  return (
-    <ActionIcon
-      aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
-      onClick={() => setColorScheme(isDark ? 'light' : 'dark')}
-      size="lg"
-      variant="default"
-    >
-      {isDark ? <IconSun size={18} /> : <IconMoonStars size={18} />}
-    </ActionIcon>
-  );
-}
-
-function createDraftInsertId() {
-  return `draft-${crypto.randomUUID()}`;
-}
-
-function serializeRowKey(
-  rowKey: Record<string, unknown> | null,
-  primaryKey: string[],
-) {
-  if (!rowKey || primaryKey.length === 0) {
-    return null;
-  }
-
-  return JSON.stringify(
-    primaryKey.map((columnName) => [columnName, rowKey[columnName]]),
-  );
-}
-
-function createEmptyInsertRow(columns: InspectorColumn[]) {
-  const values: Record<string, unknown> = {};
-
-  for (const column of columns) {
-    if (isBooleanColumnType(column.type)) {
-      values[column.name] = false;
-      continue;
-    }
-
-    values[column.name] = '';
-  }
-
-  return {
-    id: createDraftInsertId(),
-    values,
-  } satisfies DraftInsertRow;
-}
-
-function findLayerSource(sources: MapSource[], layer: MapLayer) {
-  return sources.find((source) => source.id === layer.sourceId) ?? null;
-}
-
-function formatFlowmapSourceColumns(columns: FlowmapTableSource['columns']) {
-  const departure =
-    columns.startMode === 'geometry'
-      ? columns.startGeometry
-      : `${columns.startLat}/${columns.startLon}`;
-  const destination =
-    columns.endMode === 'geometry'
-      ? columns.endGeometry
-      : `${columns.endLat}/${columns.endLon}`;
-  const density = columns.magnitude || columns.defaultMagnitude;
-
-  return `${departure} -> ${destination} • density ${density}`;
-}
-
-function findNumericColumnName(columns: InspectorColumn[], patterns: RegExp[]) {
-  return (
-    columns.find(
-      (column) =>
-        isNumericColumnType(column.type) &&
-        patterns.some((pattern) => pattern.test(column.name)),
-    )?.name ?? null
-  );
-}
-
-function createFlowLayerDefaults(table: InspectableTable | null) {
-  const columns = table?.columns ?? [];
-
-  return {
-    name: table ? `${table.name} flows` : 'Flow layer',
-    startMode: 'coordinates',
-    startLon: findNumericColumnName(columns, [
-      /(start|origin|from).*(lon|lng|long|x)/i,
-      /^src_?(lon|lng|long|x)$/i,
-    ]),
-    startLat: findNumericColumnName(columns, [
-      /(start|origin|from).*(lat|y)/i,
-      /^src_?(lat|y)$/i,
-    ]),
-    startGeometry: table?.geometryColumns[0]?.name ?? null,
-    endMode: 'coordinates',
-    endLon: findNumericColumnName(columns, [
-      /(end|dest|to).*(lon|lng|long|x)/i,
-      /^dst_?(lon|lng|long|x)$/i,
-    ]),
-    endLat: findNumericColumnName(columns, [
-      /(end|dest|to).*(lat|y)/i,
-      /^dst_?(lat|y)$/i,
-    ]),
-    endGeometry: table?.geometryColumns[0]?.name ?? null,
-    magnitude: null,
-    defaultMagnitude: 1,
-  } satisfies FlowLayerFormState;
-}
-
-type FlowPointMode = 'coordinates' | 'geometry';
-
-interface FlowLayerFormState {
-  name: string;
-  startMode: FlowPointMode;
-  startLon: string | null;
-  startLat: string | null;
-  startGeometry: string | null;
-  endMode: FlowPointMode;
-  endLon: string | null;
-  endLat: string | null;
-  endGeometry: string | null;
-  magnitude: string | null;
-  defaultMagnitude: number;
-}
-
-function validateFlowLayerForm(
-  form: FlowLayerFormState,
-  table: InspectableTable | null,
-) {
-  const messages: string[] = [];
-  const columnByName = new Map(
-    (table?.columns ?? []).map((column) => [column.name, column]),
-  );
-  const numericFields: Array<[string, string | null]> = [];
-
-  if (!table) {
-    messages.push('Select a table with numeric coordinate columns first.');
-    return messages;
-  }
-
-  if (!form.name.trim()) {
-    messages.push('Layer name is required.');
-  }
-
-  if (!form.magnitude && form.defaultMagnitude <= 0) {
-    messages.push('Default density must be greater than zero.');
-  }
-
-  if (form.startMode === 'geometry') {
-    if (!form.startGeometry) {
-      messages.push('Departure geometry column is required.');
-    }
-  } else {
-    numericFields.push(
-      ['Departure longitude', form.startLon],
-      ['Departure latitude', form.startLat],
-    );
-  }
-
-  if (form.endMode === 'geometry') {
-    if (!form.endGeometry) {
-      messages.push('Destination geometry column is required.');
-    }
-  } else {
-    numericFields.push(
-      ['Destination longitude', form.endLon],
-      ['Destination latitude', form.endLat],
-    );
-  }
-
-  for (const [label, columnName] of numericFields) {
-    if (!columnName) {
-      messages.push(`${label} column is required.`);
-      continue;
-    }
-
-    const column = columnByName.get(columnName);
-    if (!column || !isNumericColumnType(column.type)) {
-      messages.push(`${label} must use a numeric column.`);
-    }
-  }
-
-  return messages;
-}
-
-function PanelFrame({
-  title,
-  hint,
-  children,
-}: {
-  title?: string;
-  hint?: string;
-  children?: ReactNode;
-}) {
-  return (
-    <Paper
-      h="100%"
-      p="md"
-      radius={0}
-      shadow="xs"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        minWidth: 0,
-        minHeight: 0,
-        overflow: 'hidden',
-      }}
-    >
-      {title || hint ? (
-        <Flex align="center" justify="space-between" mb="md">
-          {title ? (
-            <Title c="text" order={5} tt="uppercase">
-              {title}
-            </Title>
-          ) : null}
-          {hint ? (
-            <Text c="dimmed" fw={500} size="xs">
-              {hint}
-            </Text>
-          ) : null}
-        </Flex>
-      ) : null}
-
-      <Box
-        style={{
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          overflow: 'hidden',
-        }}
-      >
-        {children}
-      </Box>
-    </Paper>
-  );
-}
-
-function EmptyState({ label, detail }: { label: string; detail: string }) {
-  return (
-    <Center
-      h="100%"
-      style={{
-        background: 'var(--mantine-color-default)',
-        border: '1px dashed var(--mantine-color-default-border)',
-        borderRadius: 'var(--mantine-radius-md)',
-      }}
-    >
-      <Stack align="center" gap={6}>
-        <Text fw={700} size="lg">
-          {label}
-        </Text>
-        <Text c="dimmed" size="sm">
-          {detail}
-        </Text>
-      </Stack>
-    </Center>
-  );
-}
 
 interface ConnectionFormState {
   name: string;
@@ -2222,169 +1922,6 @@ function MapLayerEditor({
   );
 }
 
-function SavedViewModal({
-  opened,
-  selectedTable,
-  view,
-  onClose,
-  onSave,
-}: {
-  opened: boolean;
-  selectedTable: InspectableTable | null;
-  view: SavedTableView | null;
-  onClose: () => void;
-  onSave: (payload: {
-    viewId: string | null;
-    name: string;
-    filter: TableFilterDefinition;
-  }) => void;
-}) {
-  const [draftViewName, setDraftViewName] = useState('');
-  const [draftViewCondition, setDraftViewCondition] =
-    useState<TableFilterCondition>(() =>
-      createDefaultTableFilterCondition(selectedTable),
-    );
-  const filterableColumnOptions = useMemo(
-    () =>
-      (selectedTable?.columns ?? [])
-        .filter((column) => isEditableColumnType(column.type))
-        .map((column) => ({
-          label: `${column.name} (${column.type})`,
-          value: column.name,
-        })),
-    [selectedTable],
-  );
-
-  useEffect(() => {
-    if (!opened) {
-      return;
-    }
-
-    const firstCondition = view?.filter.conditions[0];
-    setDraftViewName(view?.name ?? '');
-    setDraftViewCondition({
-      column:
-        firstCondition?.column ??
-        createDefaultTableFilterCondition(selectedTable).column,
-      operator: firstCondition?.operator ?? 'eq',
-      value: firstCondition?.value ?? '',
-      values: firstCondition?.values ?? [],
-    });
-  }, [opened, selectedTable, view]);
-
-  const nextName = draftViewName.trim();
-  const nextColumn = draftViewCondition.column.trim();
-  const nextOperator = draftViewCondition.operator;
-  const nextRawValue = (draftViewCondition.value ?? '').trim();
-  const nextValues =
-    nextOperator === 'in'
-      ? (draftViewCondition.values ?? []).filter(Boolean)
-      : [];
-  const canSave =
-    Boolean(nextName && nextColumn) &&
-    (nextOperator === 'eq' ? Boolean(nextRawValue) : nextValues.length > 0);
-
-  function handleSave() {
-    if (!canSave) {
-      return;
-    }
-
-    onSave({
-      viewId: view?.id ?? null,
-      name: nextName,
-      filter: buildTableFilterDefinition({
-        column: nextColumn,
-        operator: nextOperator,
-        value: nextRawValue,
-        values: nextValues,
-      }),
-    });
-  }
-
-  return (
-    <Modal
-      centered
-      onClose={onClose}
-      opened={opened}
-      title={view ? 'Edit saved view' : 'Save table view'}
-    >
-      <Stack gap="sm">
-        <TextInput
-          label="View name"
-          onChange={(event) => setDraftViewName(event.currentTarget.value)}
-          placeholder="Cities"
-          value={draftViewName}
-        />
-        <Select
-          data={filterableColumnOptions}
-          label="Column"
-          onChange={(value) =>
-            setDraftViewCondition((current) => ({
-              ...current,
-              column: value ?? '',
-            }))
-          }
-          searchable
-          value={draftViewCondition.column}
-        />
-        <Select
-          allowDeselect={false}
-          data={[
-            { label: 'Equals', value: 'eq' },
-            { label: 'In list', value: 'in' },
-          ]}
-          label="Operator"
-          onChange={(value) =>
-            setDraftViewCondition((current) => ({
-              ...current,
-              operator: (value ?? 'eq') as TableFilterOperator,
-              value: value === 'in' ? '' : current.value,
-              values: value === 'in' ? current.values : [],
-            }))
-          }
-          value={draftViewCondition.operator}
-        />
-        <TextInput
-          description={
-            draftViewCondition.operator === 'in'
-              ? 'Comma-separated values. Example: 7, 8'
-              : 'Single value. Example: 8'
-          }
-          label={draftViewCondition.operator === 'in' ? 'Values' : 'Value'}
-          onChange={(event) => {
-            const nextRawInput = event.currentTarget.value;
-            setDraftViewCondition((current) => ({
-              ...current,
-              value: current.operator === 'eq' ? nextRawInput : current.value,
-              values:
-                current.operator === 'in'
-                  ? nextRawInput
-                      .split(',')
-                      .map((value) => value.trim())
-                      .filter(Boolean)
-                  : current.values,
-            }));
-          }}
-          placeholder={draftViewCondition.operator === 'in' ? '7, 8' : '8'}
-          value={
-            draftViewCondition.operator === 'in'
-              ? (draftViewCondition.values ?? []).join(', ')
-              : (draftViewCondition.value ?? '')
-          }
-        />
-        <Group justify="space-between" pt="xs">
-          <Text c="dimmed" size="xs">
-            Local virtual view over current table.
-          </Text>
-          <Button disabled={!canSave} onClick={handleSave}>
-            {view ? 'Update View' : 'Save View'}
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
-  );
-}
-
 function DataInspector({
   connection,
   featureCreateRefreshToken,
@@ -4052,248 +3589,6 @@ function AnalysisWorkspacePanel({
       />
     </Stack>
   );
-}
-
-function formatCellValue(value: unknown) {
-  if (value === null || value === undefined) {
-    return emptyCellLabel;
-  }
-
-  if (typeof value === 'object') {
-    return JSON.stringify(value);
-  }
-
-  return String(value);
-}
-
-function renderEditableCell({
-  column,
-  disabled,
-  onChange,
-  value,
-}: {
-  column: InspectorColumn;
-  disabled?: boolean;
-  onChange: (value: unknown) => void;
-  value: unknown;
-}) {
-  if (isBooleanColumnType(column.type)) {
-    return (
-      <Checkbox
-        checked={Boolean(value)}
-        disabled={disabled}
-        onChange={(event) => onChange(event.currentTarget.checked)}
-      />
-    );
-  }
-
-  return (
-    <TextInput
-      disabled={disabled}
-      onChange={(event) => onChange(event.currentTarget.value)}
-      size="xs"
-      styles={{
-        input: {
-          textAlign: getCellTextAlign(column.type),
-        },
-      }}
-      value={formatEditorValue(value)}
-    />
-  );
-}
-
-function formatEditorValue(value: unknown) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-
-  return String(value);
-}
-
-function normalizeEditorValue(columnType: string, value: unknown) {
-  if (isBooleanColumnType(columnType)) {
-    return Boolean(value);
-  }
-
-  if (typeof value !== 'string') {
-    return value;
-  }
-
-  if (isNumericColumnType(columnType)) {
-    if (value.trim() === '') {
-      return value;
-    }
-
-    const numericValue = Number(value);
-    return Number.isNaN(numericValue) ? value : numericValue;
-  }
-
-  return value;
-}
-
-function areEditorValuesEqual(left: unknown, right: unknown) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function getCellTextAlign(columnType: string) {
-  return isNumericColumnType(columnType) ? 'right' : 'left';
-}
-
-function getCellFontFamily(columnName: string, columnType: string) {
-  if (
-    isNumericColumnType(columnType) ||
-    /(^id$|_id$|uuid|geom|geo)/i.test(`${columnName} ${columnType}`)
-  ) {
-    return 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
-  }
-
-  return 'var(--mantine-font-family)';
-}
-
-function LayerGlyph({
-  color,
-  icon,
-  visible,
-}: {
-  color: string;
-  icon: LayerGlyphIcon;
-  visible: boolean;
-}) {
-  const sharedStyle = {
-    flexShrink: 0,
-    opacity: visible ? 1 : 0.5,
-  } as const;
-
-  if (icon === 'flow') {
-    return (
-      <Group gap={2} wrap="nowrap">
-        <Box
-          style={{
-            ...sharedStyle,
-            width: 6,
-            height: 6,
-            borderRadius: 999,
-            background: color,
-          }}
-        />
-        <Box
-          style={{
-            ...sharedStyle,
-            width: 12,
-            height: 2,
-            borderRadius: 999,
-            background: color,
-          }}
-        />
-        <Box
-          style={{
-            ...sharedStyle,
-            width: 6,
-            height: 6,
-            borderRadius: 999,
-            background: color,
-          }}
-        />
-      </Group>
-    );
-  }
-
-  if (icon === 'line') {
-    return (
-      <Box
-        style={{
-          ...sharedStyle,
-          width: 14,
-          height: 4,
-          borderRadius: 999,
-          background: color,
-        }}
-      />
-    );
-  }
-
-  if (icon === 'diamond') {
-    return (
-      <Box
-        style={{
-          ...sharedStyle,
-          width: 10,
-          height: 10,
-          background: color,
-          transform: 'rotate(45deg)',
-        }}
-      />
-    );
-  }
-
-  return (
-    <Box
-      style={{
-        ...sharedStyle,
-        width: 10,
-        height: 10,
-        borderRadius: icon === 'circle' ? 999 : 2,
-        background: color,
-      }}
-    />
-  );
-}
-
-function isNumericColumnType(columnType: string) {
-  return /int|numeric|double|real|decimal|serial/i.test(columnType);
-}
-
-function isBooleanColumnType(columnType: string) {
-  return /bool/i.test(columnType);
-}
-
-function isEditableColumnType(columnType: string) {
-  return (
-    isNumericColumnType(columnType) ||
-    isBooleanColumnType(columnType) ||
-    /text|character|uuid|date|timestamp/i.test(columnType)
-  );
-}
-
-function createDefaultTableFilterCondition(
-  table: InspectableTable | null,
-): TableFilterCondition {
-  const firstFilterableColumn =
-    table?.columns.find((column) => isEditableColumnType(column.type))?.name ??
-    '';
-
-  return {
-    column: firstFilterableColumn,
-    operator: 'eq',
-    value: '',
-    values: [],
-  };
-}
-
-function buildTableFilterDefinition(
-  condition: TableFilterCondition,
-): TableFilterDefinition {
-  if (condition.operator === 'in') {
-    return {
-      conditions: [
-        {
-          column: condition.column,
-          operator: condition.operator,
-          values: condition.values ?? [],
-        },
-      ],
-    };
-  }
-
-  return {
-    conditions: [
-      {
-        column: condition.column,
-        operator: condition.operator,
-        value: condition.value ?? '',
-      },
-    ],
-  };
 }
 
 export function App() {
