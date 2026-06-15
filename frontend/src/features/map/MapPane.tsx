@@ -91,10 +91,25 @@ type DrawTarget = {
   source: GeoJsonTableSource;
   table: InspectableTable;
 };
+type FeaturePickCandidate = {
+  id: string;
+  selection: MapSelection;
+  layer: GeoJsonMapLayer;
+  source: GeoJsonTableSource;
+  label: string;
+  detail: string;
+};
+type FeaturePickState = {
+  x: number;
+  y: number;
+  candidates: FeaturePickCandidate[];
+};
 
 const vectorTileSourcePrefix = 'geopanel-source';
 const vectorTileLayerPrefix = 'geopanel-layer';
 const vectorTileHighlightLayerPrefix = 'geopanel-selection';
+const vectorTileHoverLayerPrefix = 'geopanel-hover';
+const maxFeaturePickCandidates = 50;
 
 function getSourceSignature(source: MapSource) {
   return JSON.stringify(source);
@@ -224,6 +239,12 @@ function getVectorHighlightLayerIds(layer: GeoJsonMapLayer) {
   return [`${baseId}-fill`, `${baseId}-line`, `${baseId}-circle`];
 }
 
+function getVectorHoverLayerIds(layer: GeoJsonMapLayer) {
+  const baseId = `${vectorTileHoverLayerPrefix}-${layer.id}`;
+
+  return [`${baseId}-fill`, `${baseId}-line`, `${baseId}-circle`];
+}
+
 function getQueryableVectorLayerIds(map: maplibregl.Map, layers: MapLayer[]) {
   return layers
     .filter(isGeoJsonMapLayer)
@@ -241,6 +262,73 @@ function parseJSONProperty(value: unknown) {
   } catch {
     return null;
   }
+}
+
+function formatFeatureProperty(value: unknown) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  if (typeof value === 'object') {
+    return null;
+  }
+
+  return String(value);
+}
+
+function formatFeatureRowKey(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const parts = Object.entries(value)
+    .slice(0, 3)
+    .map(([key, item]) => `${key}=${formatFeatureProperty(item) ?? '?'}`);
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  return `row: ${parts.join(', ')}`;
+}
+
+function getFeatureDisplayDetail(feature: MapGeoJSONFeature) {
+  const properties = feature.properties ?? {};
+  const labelColumns = [
+    'name',
+    'title',
+    'label',
+    'display_name',
+    'official_name',
+    'name_en',
+  ];
+  const nameLabel =
+    labelColumns
+      .map((column) => formatFeatureProperty(properties[column]))
+      .find(Boolean) ?? null;
+  const rowKey = formatFeatureRowKey(
+    parseJSONProperty(properties._geopanel_row_key),
+  );
+  const geometryType = feature.geometry?.type ?? 'Feature';
+
+  return [nameLabel, rowKey, geometryType].filter(Boolean).join(' • ');
+}
+
+function getFeatureIdentity(feature: MapGeoJSONFeature) {
+  const rowKey =
+    typeof feature.properties?._geopanel_row_key === 'string'
+      ? feature.properties._geopanel_row_key
+      : null;
+
+  if (rowKey) {
+    return rowKey;
+  }
+
+  if (feature.id !== undefined && feature.id !== null) {
+    return String(feature.id);
+  }
+
+  return JSON.stringify(feature.properties ?? {});
 }
 
 function buildVectorMapSelection(
@@ -285,6 +373,67 @@ function buildVectorMapSelection(
     featureKey,
     title: layer.name,
   };
+}
+
+function buildFeaturePickCandidates(params: {
+  activeLayerId: string | null;
+  features: MapGeoJSONFeature[];
+  layers: GeoJsonMapLayer[];
+  sources: MapSource[];
+}) {
+  const { activeLayerId, features, layers, sources } = params;
+  const candidates: FeaturePickCandidate[] = [];
+  const seenCandidateIds = new Set<string>();
+
+  for (const feature of features) {
+    if (!feature.layer.id) {
+      continue;
+    }
+
+    const layer = layers.find((candidate) =>
+      getVectorStyleLayerIds(candidate).includes(feature.layer.id),
+    );
+    if (!layer) {
+      continue;
+    }
+
+    const source = sources.find(
+      (candidate): candidate is GeoJsonTableSource =>
+        candidate.id === layer.sourceId && isGeoJsonTableSource(candidate),
+    );
+    if (!source) {
+      continue;
+    }
+
+    const id = `${layer.id}:${source.id}:${getFeatureIdentity(feature)}`;
+    if (seenCandidateIds.has(id)) {
+      continue;
+    }
+
+    seenCandidateIds.add(id);
+    candidates.push({
+      id,
+      layer,
+      source,
+      selection: buildVectorMapSelection(feature, layer, source),
+      label: layer.name,
+      detail: getFeatureDisplayDetail(feature),
+    });
+  }
+
+  candidates.sort((left, right) => {
+    if (left.layer.id === activeLayerId && right.layer.id !== activeLayerId) {
+      return -1;
+    }
+
+    if (right.layer.id === activeLayerId && left.layer.id !== activeLayerId) {
+      return 1;
+    }
+
+    return 0;
+  });
+
+  return candidates.slice(0, maxFeaturePickCandidates);
 }
 
 function buildMapSelection(
@@ -514,16 +663,28 @@ function addVectorStyleLayers(params: {
   }
 }
 
-function addVectorHighlightLayers(params: {
+function addVectorFeatureHighlightLayers(params: {
   map: maplibregl.Map;
   layer: GeoJsonMapLayer;
   source: GeoJsonTableSource;
   sourceLayer: string;
   featureKey: string;
+  layerIds: string[];
+  color: string;
+  fillOpacity: number;
+  lineWidth: number;
 }) {
-  const { featureKey, layer, map, source, sourceLayer } = params;
-  const [fillLayerId, lineLayerId, circleLayerId] =
-    getVectorHighlightLayerIds(layer);
+  const {
+    color,
+    featureKey,
+    fillOpacity,
+    layerIds,
+    lineWidth,
+    map,
+    source,
+    sourceLayer,
+  } = params;
+  const [fillLayerId, lineLayerId, circleLayerId] = layerIds;
   const sourceId = mapLibreSourceId(source.id);
   const filter: maplibregl.FilterSpecification = [
     '==',
@@ -539,8 +700,8 @@ function addVectorHighlightLayers(params: {
       'source-layer': sourceLayer,
       filter,
       paint: {
-        'fill-color': '#ffd43b',
-        'fill-opacity': 0.3,
+        'fill-color': color,
+        'fill-opacity': fillOpacity,
       },
     });
   }
@@ -556,9 +717,11 @@ function addVectorHighlightLayers(params: {
       'source-layer': sourceLayer,
       filter,
       paint: {
-        'line-color': '#ffd43b',
+        'line-color': color,
         'line-opacity': 1,
-        'line-width': /line/i.test(source.geometryType) ? 6 : 4,
+        'line-width': /line/i.test(source.geometryType)
+          ? lineWidth + 2
+          : lineWidth,
       },
     });
   }
@@ -574,7 +737,7 @@ function addVectorHighlightLayers(params: {
       'source-layer': sourceLayer,
       filter,
       paint: {
-        'circle-color': '#ffd43b',
+        'circle-color': color,
         'circle-opacity': 0.95,
         'circle-radius': 9,
         'circle-stroke-color': '#212529',
@@ -622,6 +785,7 @@ export function MapPane({
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const drawRef = useRef<TerraDraw | null>(null);
   const activeBasemapIdRef = useRef<BasemapId>(basemapId);
+  const activeLayerIdRef = useRef<string | null>(activeLayerId);
   const sourceCacheRef = useRef<SourceDataCache>({});
   const sourceExtentCacheRef = useRef<SourceExtentCache>({});
   const vectorTileSourceCacheRef = useRef<VectorTileSourceCache>({});
@@ -634,6 +798,10 @@ export function MapPane({
   const [isMapReady, setIsMapReady] = useState(false);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
   const [isLoadingVectorTiles, setIsLoadingVectorTiles] = useState(false);
+  const [featurePickState, setFeaturePickState] =
+    useState<FeaturePickState | null>(null);
+  const [hoveredFeaturePick, setHoveredFeaturePick] =
+    useState<FeaturePickCandidate | null>(null);
   const [layerError, setLayerError] = useState('');
   const [cacheVersion, setCacheVersion] = useState(0);
   const [extentVersion, setExtentVersion] = useState(0);
@@ -653,6 +821,7 @@ export function MapPane({
   visibleLayersRef.current = visibleLayers;
   sourcesRef.current = sources;
   onSelectMapObjectRef.current = onSelectMapObject;
+  activeLayerIdRef.current = activeLayerId;
 
   const visibleSourceIds = useMemo(
     () => Array.from(new Set(visibleLayers.map((layer) => layer.sourceId))),
@@ -767,38 +936,47 @@ export function MapPane({
       );
 
       if (queryableLayerIds.length === 0) {
+        setFeaturePickState(null);
+        setHoveredFeaturePick(null);
         onSelectMapObjectRef.current(null);
         return;
       }
 
-      const [feature] = map.queryRenderedFeatures(event.point, {
+      const features = map.queryRenderedFeatures(event.point, {
         layers: queryableLayerIds,
       });
-      if (!feature?.layer.id) {
+      const candidates = buildFeaturePickCandidates({
+        activeLayerId: activeLayerIdRef.current,
+        features,
+        layers: geoJsonLayers,
+        sources: currentSources,
+      });
+
+      if (candidates.length === 0) {
+        setFeaturePickState(null);
+        setHoveredFeaturePick(null);
         onSelectMapObjectRef.current(null);
         return;
       }
 
-      const layer = geoJsonLayers.find((candidate) =>
-        getVectorStyleLayerIds(candidate).includes(feature.layer.id),
-      );
-      if (!layer) {
-        onSelectMapObjectRef.current(null);
+      if (candidates.length === 1) {
+        setFeaturePickState(null);
+        setHoveredFeaturePick(null);
+        onSelectMapObjectRef.current(candidates[0].selection);
         return;
       }
 
-      const source = currentSources.find(
-        (candidate): candidate is GeoJsonTableSource =>
-          candidate.id === layer.sourceId && isGeoJsonTableSource(candidate),
-      );
-      if (!source) {
-        onSelectMapObjectRef.current(null);
-        return;
-      }
+      setFeaturePickState({
+        x: event.point.x,
+        y: event.point.y,
+        candidates,
+      });
+      setHoveredFeaturePick(candidates[0]);
+    }
 
-      onSelectMapObjectRef.current(
-        buildVectorMapSelection(feature, layer, source),
-      );
+    function closeFeaturePicker() {
+      setFeaturePickState(null);
+      setHoveredFeaturePick(null);
     }
 
     function handleMapMouseMove(event: MapMouseEvent) {
@@ -885,6 +1063,7 @@ export function MapPane({
       map.resize();
     });
     map.on('click', handleMapClick);
+    map.on('movestart', closeFeaturePicker);
     map.on('mousemove', handleMapMouseMove);
     map.on('sourcedataloading', handleSourceDataLoading);
     map.on('sourcedata', handleSourceData);
@@ -899,6 +1078,7 @@ export function MapPane({
       drawRef.current?.stop();
       drawRef.current = null;
       map.off('click', handleMapClick);
+      map.off('movestart', closeFeaturePicker);
       map.off('mousemove', handleMapMouseMove);
       map.off('sourcedataloading', handleSourceDataLoading);
       map.off('sourcedata', handleSourceData);
@@ -1060,7 +1240,8 @@ export function MapPane({
       for (const styleLayer of activeMap.getStyle().layers ?? []) {
         if (
           styleLayer.id.startsWith(vectorTileLayerPrefix) ||
-          styleLayer.id.startsWith(vectorTileHighlightLayerPrefix)
+          styleLayer.id.startsWith(vectorTileHighlightLayerPrefix) ||
+          styleLayer.id.startsWith(vectorTileHoverLayerPrefix)
         ) {
           activeMap.removeLayer(styleLayer.id);
         }
@@ -1156,12 +1337,40 @@ export function MapPane({
           cacheEntry &&
           activeMap.getSource(mapLibreSourceId(selectedSource.id))
         ) {
-          addVectorHighlightLayers({
+          addVectorFeatureHighlightLayers({
+            color: '#ffd43b',
+            fillOpacity: 0.3,
+            layerIds: getVectorHighlightLayerIds(selectedLayer),
+            lineWidth: 4,
             map: activeMap,
             layer: selectedLayer,
             source: selectedSource,
             sourceLayer: cacheEntry.source.sourceLayer,
             featureKey: mapSelection.featureKey,
+          });
+        }
+      }
+
+      if (
+        hoveredFeaturePick?.selection.objectType === 'feature' &&
+        hoveredFeaturePick.selection.featureKey
+      ) {
+        const cacheEntry =
+          vectorTileSourceCacheRef.current[hoveredFeaturePick.source.id];
+        if (
+          cacheEntry &&
+          activeMap.getSource(mapLibreSourceId(hoveredFeaturePick.source.id))
+        ) {
+          addVectorFeatureHighlightLayers({
+            color: '#51cf66',
+            fillOpacity: 0.18,
+            layerIds: getVectorHoverLayerIds(hoveredFeaturePick.layer),
+            lineWidth: 2,
+            map: activeMap,
+            layer: hoveredFeaturePick.layer,
+            source: hoveredFeaturePick.source,
+            sourceLayer: cacheEntry.source.sourceLayer,
+            featureKey: hoveredFeaturePick.selection.featureKey,
           });
         }
       }
@@ -1257,6 +1466,7 @@ export function MapPane({
   }, [
     connection,
     geoJsonVisibleSources,
+    hoveredFeaturePick,
     isMapReady,
     mapSelection,
     sources,
@@ -1508,7 +1718,8 @@ export function MapPane({
       for (const styleLayer of map.getStyle().layers ?? []) {
         if (
           styleLayer.id.startsWith(vectorTileLayerPrefix) ||
-          styleLayer.id.startsWith(vectorTileHighlightLayerPrefix)
+          styleLayer.id.startsWith(vectorTileHighlightLayerPrefix) ||
+          styleLayer.id.startsWith(vectorTileHoverLayerPrefix)
         ) {
           map.removeLayer(styleLayer.id);
         }
@@ -1592,6 +1803,34 @@ export function MapPane({
     }
   }
 
+  function handleSelectFeatureCandidate(candidate: FeaturePickCandidate) {
+    onSelectMapObjectRef.current(candidate.selection);
+    setFeaturePickState(null);
+    setHoveredFeaturePick(null);
+  }
+
+  function handleCloseFeaturePicker() {
+    setFeaturePickState(null);
+    setHoveredFeaturePick(null);
+  }
+
+  const featurePickerMaxWidth = 360;
+  const featurePickerMaxHeight = 320;
+  const mapWidth = containerRef.current?.clientWidth ?? 0;
+  const mapHeight = containerRef.current?.clientHeight ?? 0;
+  const featurePickerLeft = featurePickState
+    ? Math.min(
+        Math.max(12, featurePickState.x + 12),
+        Math.max(12, mapWidth - featurePickerMaxWidth - 12),
+      )
+    : 12;
+  const featurePickerTop = featurePickState
+    ? Math.min(
+        Math.max(12, featurePickState.y + 12),
+        Math.max(12, mapHeight - featurePickerMaxHeight - 12),
+      )
+    : 12;
+
   return (
     <Box
       style={{
@@ -1611,6 +1850,86 @@ export function MapPane({
           width: '100%',
         }}
       />
+
+      {featurePickState ? (
+        <Box
+          style={{
+            background: 'var(--mantine-color-body)',
+            border: '1px solid var(--mantine-color-default-border)',
+            borderRadius: 'var(--mantine-radius-md)',
+            boxShadow: 'var(--mantine-shadow-md)',
+            left: featurePickerLeft,
+            maxWidth: featurePickerMaxWidth,
+            minWidth: 260,
+            overflow: 'hidden',
+            position: 'absolute',
+            top: featurePickerTop,
+            zIndex: 4,
+          }}
+        >
+          <Group justify="space-between" p="xs" wrap="nowrap">
+            <Text fw={600} size="sm">
+              Pick feature
+            </Text>
+            <ActionIcon
+              aria-label="Close feature picker"
+              onClick={handleCloseFeaturePicker}
+              size="sm"
+              variant="subtle"
+            >
+              <IconX size={14} />
+            </ActionIcon>
+          </Group>
+          <ScrollArea.Autosize mah={260}>
+            <Stack gap={2} p={6} pt={0}>
+              {featurePickState.candidates.map((candidate) => (
+                <Box
+                  component="button"
+                  key={candidate.id}
+                  onClick={() => handleSelectFeatureCandidate(candidate)}
+                  onMouseEnter={() => setHoveredFeaturePick(candidate)}
+                  onMouseLeave={() => setHoveredFeaturePick(null)}
+                  style={{
+                    background:
+                      hoveredFeaturePick?.id === candidate.id
+                        ? 'var(--mantine-color-blue-light)'
+                        : 'transparent',
+                    border: 0,
+                    borderRadius: 'var(--mantine-radius-sm)',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                    display: 'block',
+                    minHeight: 48,
+                    padding: '6px 8px',
+                    textAlign: 'left',
+                    width: '100%',
+                  }}
+                >
+                  <Group gap="xs" wrap="nowrap" w="100%">
+                    <Box
+                      style={{
+                        background: candidate.layer.color,
+                        borderRadius: 2,
+                        flex: '0 0 auto',
+                        height: 12,
+                        width: 12,
+                      }}
+                    />
+                    <Box style={{ flex: 1, minWidth: 0 }}>
+                      <Text fw={600} size="sm" truncate>
+                        {candidate.label}
+                      </Text>
+                      <Text c="dimmed" size="xs" truncate>
+                        {candidate.detail || 'Feature'}
+                      </Text>
+                    </Box>
+                  </Group>
+                </Box>
+              ))}
+            </Stack>
+          </ScrollArea.Autosize>
+        </Box>
+      ) : null}
 
       {isMapReady ? (
         <Box
