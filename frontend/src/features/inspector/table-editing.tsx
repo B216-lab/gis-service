@@ -140,6 +140,7 @@ export function buildTableFilterDefinition(
 ): TableFilterDefinition {
   if (condition.operator === 'in') {
     return {
+      mode: 'builder',
       conditions: [
         {
           column: condition.column,
@@ -151,6 +152,7 @@ export function buildTableFilterDefinition(
   }
 
   return {
+    mode: 'builder',
     conditions: [
       {
         column: condition.column,

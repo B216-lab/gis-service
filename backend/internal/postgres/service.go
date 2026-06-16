@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,6 +28,10 @@ var ErrWriteConflict = errors.New("database write conflict")
 const LayerVectorTileName = "features"
 
 const tilePoolTTL = 12 * time.Hour
+
+var forbiddenSQLWherePattern = regexp.MustCompile(
+	`(?i)\b(select|insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|execute|call|do|merge|vacuum|analyze|refresh|attach|detach)\b`,
+)
 
 type Service struct {
 	timeout      time.Duration
@@ -104,6 +109,8 @@ type ListRowsRequest struct {
 }
 
 type QueryFilter struct {
+	Mode       string            `json:"mode"`
+	Where      string            `json:"where"`
 	Conditions []FilterCondition `json:"conditions"`
 }
 
@@ -453,6 +460,9 @@ func trimQueryFilter(filter *QueryFilter) {
 		return
 	}
 
+	filter.Mode = strings.TrimSpace(filter.Mode)
+	filter.Where = strings.TrimSpace(filter.Where)
+
 	for index := range filter.Conditions {
 		filter.Conditions[index].Column = strings.TrimSpace(
 			filter.Conditions[index].Column,
@@ -474,6 +484,14 @@ func trimQueryFilter(filter *QueryFilter) {
 func validateQueryFilter(filter *QueryFilter) error {
 	if filter == nil {
 		return nil
+	}
+
+	switch queryFilterMode(filter) {
+	case "sql":
+		return validateSQLWhereFragment(filter.Where)
+	case "builder":
+	default:
+		return fmt.Errorf("Unsupported filter mode %q.", filter.Mode)
 	}
 
 	if len(filter.Conditions) == 0 {
@@ -505,6 +523,42 @@ func validateQueryFilter(filter *QueryFilter) error {
 				condition.Operator,
 			)
 		}
+	}
+
+	return nil
+}
+
+func queryFilterMode(filter *QueryFilter) string {
+	if filter == nil {
+		return "builder"
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(filter.Mode))
+	if mode == "" {
+		return "builder"
+	}
+
+	return mode
+}
+
+func validateSQLWhereFragment(where string) error {
+	where = strings.TrimSpace(where)
+	if where == "" {
+		return errors.New("WHERE filter must not be empty.")
+	}
+	if len(where) > 5000 {
+		return errors.New("WHERE filter must be 5000 characters or fewer.")
+	}
+	if strings.ContainsRune(where, 0) {
+		return errors.New("WHERE filter must not contain NUL bytes.")
+	}
+	for _, forbidden := range []string{";", "--", "/*", "*/", "$", "?"} {
+		if strings.Contains(where, forbidden) {
+			return fmt.Errorf("WHERE filter must not contain %q.", forbidden)
+		}
+	}
+	if forbiddenSQLWherePattern.MatchString(where) {
+		return errors.New("WHERE filter must not contain SQL statements or subqueries.")
 	}
 
 	return nil
@@ -1273,7 +1327,7 @@ func (service *Service) ListRows(
 
 	var totalRows int64
 	countQuery := fmt.Sprintf(
-		`select count(*) from %s.%s%s`,
+		`select count(*) from %s.%s as source_row%s`,
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
 		whereClause,
@@ -1296,7 +1350,7 @@ func (service *Service) ListRows(
 	offsetPlaceholder := fmt.Sprintf("$%d", len(parameters))
 
 	query := fmt.Sprintf(
-		`select %s from %s.%s%s%s limit %s offset %s`,
+		`select %s from %s.%s as source_row%s%s limit %s offset %s`,
 		strings.Join(selectExpressions, ", "),
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
@@ -3409,7 +3463,23 @@ func buildQueryFilterClause(
 	filter *QueryFilter,
 	startParameterIndex int,
 ) (string, []interface{}, error) {
-	if filter == nil || len(filter.Conditions) == 0 {
+	if filter == nil {
+		return "", nil, nil
+	}
+
+	switch queryFilterMode(filter) {
+	case "sql":
+		if err := validateSQLWhereFragment(filter.Where); err != nil {
+			return "", nil, fmt.Errorf("%w: %v", ErrInvalidWriteRequest, err)
+		}
+
+		return fmt.Sprintf("(%s)", strings.TrimSpace(filter.Where)), nil, nil
+	case "builder":
+	default:
+		return "", nil, fmt.Errorf("%w: unsupported filter mode %q", ErrInvalidWriteRequest, filter.Mode)
+	}
+
+	if len(filter.Conditions) == 0 {
 		return "", nil, nil
 	}
 

@@ -2,9 +2,11 @@ import {
   Button,
   Group,
   Modal,
+  SegmentedControl,
   Select,
   Stack,
   Text,
+  Textarea,
   TextInput,
 } from '@mantine/core';
 import { useEffect, useMemo, useState } from 'react';
@@ -21,6 +23,8 @@ import type {
   TableFilterDefinition,
   TableFilterOperator,
 } from './types';
+
+type DraftFilterMode = 'builder' | 'sql';
 
 export function SavedViewModal({
   opened,
@@ -40,6 +44,9 @@ export function SavedViewModal({
   }) => void;
 }) {
   const [draftViewName, setDraftViewName] = useState('');
+  const [draftFilterMode, setDraftFilterMode] =
+    useState<DraftFilterMode>('builder');
+  const [draftWhereClause, setDraftWhereClause] = useState('');
   const [draftViewCondition, setDraftViewCondition] =
     useState<TableFilterCondition>(() =>
       createDefaultTableFilterCondition(selectedTable),
@@ -60,8 +67,13 @@ export function SavedViewModal({
       return;
     }
 
-    const firstCondition = view?.filter.conditions[0];
+    const filter = view?.filter;
+    const isSqlFilter = filter?.mode === 'sql';
+    const firstCondition =
+      filter && filter.mode !== 'sql' ? filter.conditions[0] : undefined;
     setDraftViewName(view?.name ?? '');
+    setDraftFilterMode(isSqlFilter ? 'sql' : 'builder');
+    setDraftWhereClause(isSqlFilter ? filter.where : '');
     setDraftViewCondition({
       column:
         firstCondition?.column ??
@@ -80,9 +92,12 @@ export function SavedViewModal({
     nextOperator === 'in'
       ? (draftViewCondition.values ?? []).filter(Boolean)
       : [];
+  const nextWhereClause = draftWhereClause.trim();
   const canSave =
-    Boolean(nextName && nextColumn) &&
-    (nextOperator === 'eq' ? Boolean(nextRawValue) : nextValues.length > 0);
+    draftFilterMode === 'sql'
+      ? Boolean(nextName && nextWhereClause)
+      : Boolean(nextName && nextColumn) &&
+        (nextOperator === 'eq' ? Boolean(nextRawValue) : nextValues.length > 0);
 
   function handleSave() {
     if (!canSave) {
@@ -92,12 +107,15 @@ export function SavedViewModal({
     onSave({
       viewId: view?.id ?? null,
       name: nextName,
-      filter: buildTableFilterDefinition({
-        column: nextColumn,
-        operator: nextOperator,
-        value: nextRawValue,
-        values: nextValues,
-      }),
+      filter:
+        draftFilterMode === 'sql'
+          ? { mode: 'sql', where: nextWhereClause }
+          : buildTableFilterDefinition({
+              column: nextColumn,
+              operator: nextOperator,
+              value: nextRawValue,
+              values: nextValues,
+            }),
     });
   }
 
@@ -115,63 +133,92 @@ export function SavedViewModal({
           placeholder="Cities"
           value={draftViewName}
         />
-        <Select
-          data={filterableColumnOptions}
-          label="Column"
-          onChange={(value) =>
-            setDraftViewCondition((current) => ({
-              ...current,
-              column: value ?? '',
-            }))
-          }
-          searchable
-          value={draftViewCondition.column}
-        />
-        <Select
-          allowDeselect={false}
+        <SegmentedControl
           data={[
-            { label: 'Equals', value: 'eq' },
-            { label: 'In list', value: 'in' },
+            { label: 'Builder', value: 'builder' },
+            { label: 'WHERE', value: 'sql' },
           ]}
-          label="Operator"
-          onChange={(value) =>
-            setDraftViewCondition((current) => ({
-              ...current,
-              operator: (value ?? 'eq') as TableFilterOperator,
-              value: value === 'in' ? '' : current.value,
-              values: value === 'in' ? current.values : [],
-            }))
-          }
-          value={draftViewCondition.operator}
+          onChange={(value) => setDraftFilterMode(value as DraftFilterMode)}
+          value={draftFilterMode}
         />
-        <TextInput
-          description={
-            draftViewCondition.operator === 'in'
-              ? 'Comma-separated values. Example: 7, 8'
-              : 'Single value. Example: 8'
-          }
-          label={draftViewCondition.operator === 'in' ? 'Values' : 'Value'}
-          onChange={(event) => {
-            const nextRawInput = event.currentTarget.value;
-            setDraftViewCondition((current) => ({
-              ...current,
-              value: current.operator === 'eq' ? nextRawInput : current.value,
-              values:
-                current.operator === 'in'
-                  ? nextRawInput
-                      .split(',')
-                      .map((value) => value.trim())
-                      .filter(Boolean)
-                  : current.values,
-            }));
-          }}
-          placeholder={draftViewCondition.operator === 'in' ? '7, 8' : '8'}
-          value={
-            draftViewCondition.operator === 'in'
-              ? (draftViewCondition.values ?? []).join(', ')
-              : (draftViewCondition.value ?? '')
-          }
-        />
+        {draftFilterMode === 'builder' ? (
+          <>
+            <Select
+              data={filterableColumnOptions}
+              label="Column"
+              onChange={(value) =>
+                setDraftViewCondition((current) => ({
+                  ...current,
+                  column: value ?? '',
+                }))
+              }
+              searchable
+              value={draftViewCondition.column}
+            />
+            <Select
+              allowDeselect={false}
+              data={[
+                { label: 'Equals', value: 'eq' },
+                { label: 'In list', value: 'in' },
+              ]}
+              label="Operator"
+              onChange={(value) =>
+                setDraftViewCondition((current) => ({
+                  ...current,
+                  operator: (value ?? 'eq') as TableFilterOperator,
+                  value: value === 'in' ? '' : current.value,
+                  values: value === 'in' ? current.values : [],
+                }))
+              }
+              value={draftViewCondition.operator}
+            />
+            <TextInput
+              description={
+                draftViewCondition.operator === 'in'
+                  ? 'Comma-separated values. Example: 7, 8'
+                  : 'Single value. Example: 8'
+              }
+              label={draftViewCondition.operator === 'in' ? 'Values' : 'Value'}
+              onChange={(event) => {
+                const nextRawInput = event.currentTarget.value;
+                setDraftViewCondition((current) => ({
+                  ...current,
+                  value:
+                    current.operator === 'eq' ? nextRawInput : current.value,
+                  values:
+                    current.operator === 'in'
+                      ? nextRawInput
+                          .split(',')
+                          .map((value) => value.trim())
+                          .filter(Boolean)
+                      : current.values,
+                }));
+              }}
+              placeholder={draftViewCondition.operator === 'in' ? '7, 8' : '8'}
+              value={
+                draftViewCondition.operator === 'in'
+                  ? (draftViewCondition.values ?? []).join(', ')
+                  : (draftViewCondition.value ?? '')
+              }
+            />
+          </>
+        ) : (
+          <Textarea
+            autosize
+            description="Condition only. Do not include WHERE."
+            label="WHERE clause"
+            minRows={6}
+            onChange={(event) => setDraftWhereClause(event.currentTarget.value)}
+            placeholder={`osm_level in (7, 8)\nboundary = 'administrative' and name is not null`}
+            value={draftWhereClause}
+          />
+        )}
+        {draftFilterMode === 'sql' ? (
+          <Text c="dimmed" size="xs">
+            SQL WHERE supports table columns and PostgreSQL operators. DDL, DML,
+            subqueries, comments, semicolons, and placeholders are blocked.
+          </Text>
+        ) : null}
         <Group justify="space-between" pt="xs">
           <Text c="dimmed" size="xs">
             Local virtual view over current table.

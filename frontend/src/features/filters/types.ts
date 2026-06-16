@@ -7,9 +7,19 @@ export interface TableFilterCondition {
   values?: string[];
 }
 
-export interface TableFilterDefinition {
+export interface BuilderTableFilterDefinition {
+  mode?: 'builder';
   conditions: TableFilterCondition[];
 }
+
+export interface SqlTableFilterDefinition {
+  mode: 'sql';
+  where: string;
+}
+
+export type TableFilterDefinition =
+  | BuilderTableFilterDefinition
+  | SqlTableFilterDefinition;
 
 export interface SavedTableFilter {
   id: string;

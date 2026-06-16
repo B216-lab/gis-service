@@ -249,7 +249,11 @@ function normalizeFeatureValue(column: InspectorColumn, rawValue: string) {
 
 function defaultFeatureValues(source: GeoJsonTableSource) {
   const values: Record<string, string> = {};
-  for (const condition of source.filter?.conditions ?? []) {
+  const conditions =
+    source.filter && source.filter.mode !== 'sql'
+      ? source.filter.conditions
+      : [];
+  for (const condition of conditions) {
     if (condition.operator === 'eq' && condition.value !== undefined) {
       values[condition.column] = condition.value;
     }
