@@ -55,6 +55,7 @@ import {
 } from '@tabler/icons-react';
 import {
   type ChangeEvent,
+  type ReactNode,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -3209,6 +3210,7 @@ function DataWorkspacePanel({
     useState<InspectorLookupRowsResponse | null>(null);
   const [isLoadingLookup, setIsLoadingLookup] = useState(false);
   const [lookupError, setLookupError] = useState('');
+  const [isGeometryExpanded, geometryDisclosure] = useDisclosure(false);
 
   useEffect(() => {
     if (!connection || !mapSelection || mapSelection.rowRefs.length === 0) {
@@ -3276,6 +3278,17 @@ function DataWorkspacePanel({
   const singleLookupRow =
     lookupState?.rows.length === 1 ? lookupState.rows[0] : null;
   const fallbackEntries = Object.entries(mapSelection.inlineProperties ?? {});
+  const lookupColumns = lookupState?.columns ?? [];
+  const visibleLookupColumns = lookupColumns.filter(
+    (column) => !isGeometryInspectorColumn(column),
+  );
+  const geometryLookupColumns = lookupColumns.filter(isGeometryInspectorColumn);
+  const visibleFallbackEntries = fallbackEntries.filter(
+    ([key, value]) => !isGeometryDetailEntry(key, value),
+  );
+  const geometryFallbackEntries = fallbackEntries.filter(([key, value]) =>
+    isGeometryDetailEntry(key, value),
+  );
 
   return (
     <Stack h="100%" gap="md">
@@ -3378,7 +3391,18 @@ function DataWorkspacePanel({
                 Source table has no stable primary key metadata for exact row
                 lookup. Showing attributes carried by rendered object.
               </Alert>
-              {fallbackEntries.map(([key, value]) => (
+              {geometryFallbackEntries.length > 0 ? (
+                <GeometryFoldout
+                  count={geometryFallbackEntries.length}
+                  opened={isGeometryExpanded}
+                  onToggle={geometryDisclosure.toggle}
+                >
+                  {geometryFallbackEntries.map(([key, value]) => (
+                    <GeometryValue key={key} label={key} value={value} />
+                  ))}
+                </GeometryFoldout>
+              ) : null}
+              {visibleFallbackEntries.map(([key, value]) => (
                 <Group align="flex-start" justify="space-between" key={key}>
                   <Text c="dimmed" size="xs">
                     {key}
@@ -3422,7 +3446,22 @@ function DataWorkspacePanel({
         >
           <Paper p="md" radius="md" withBorder>
             <Stack gap="xs">
-              {(lookupState?.columns ?? []).map((column) => (
+              {geometryLookupColumns.length > 0 ? (
+                <GeometryFoldout
+                  count={geometryLookupColumns.length}
+                  opened={isGeometryExpanded}
+                  onToggle={geometryDisclosure.toggle}
+                >
+                  {geometryLookupColumns.map((column) => (
+                    <GeometryValue
+                      key={column.name}
+                      label={column.name}
+                      value={singleLookupRow.values[column.name]}
+                    />
+                  ))}
+                </GeometryFoldout>
+              ) : null}
+              {visibleLookupColumns.map((column) => (
                 <Group
                   align="flex-start"
                   justify="space-between"
@@ -3484,7 +3523,22 @@ function DataWorkspacePanel({
                       )
                       .join(' • ')}
                   </Badge>
-                  {lookupState.columns.slice(0, 4).map((column) => (
+                  {geometryLookupColumns.length > 0 ? (
+                    <GeometryFoldout
+                      count={geometryLookupColumns.length}
+                      opened={isGeometryExpanded}
+                      onToggle={geometryDisclosure.toggle}
+                    >
+                      {geometryLookupColumns.map((column) => (
+                        <GeometryValue
+                          key={`${JSON.stringify(row.rowKey)}-${column.name}`}
+                          label={column.name}
+                          value={row.values[column.name]}
+                        />
+                      ))}
+                    </GeometryFoldout>
+                  ) : null}
+                  {visibleLookupColumns.slice(0, 4).map((column) => (
                     <Group
                       align="flex-start"
                       justify="space-between"
@@ -3513,6 +3567,88 @@ function DataWorkspacePanel({
         </ScrollArea>
       ) : null}
     </Stack>
+  );
+}
+
+function GeometryFoldout({
+  children,
+  count,
+  onToggle,
+  opened,
+}: {
+  children: ReactNode;
+  count: number;
+  onToggle: () => void;
+  opened: boolean;
+}) {
+  return (
+    <Stack gap={4}>
+      <Group gap="xs" wrap="nowrap">
+        <ActionIcon
+          aria-label={opened ? 'Collapse geometry' : 'Expand geometry'}
+          onClick={onToggle}
+          size="sm"
+          variant="subtle"
+        >
+          {opened ? (
+            <IconChevronDown size={14} />
+          ) : (
+            <IconChevronRight size={14} />
+          )}
+        </ActionIcon>
+        <Badge color="gray" variant="outline">
+          {count} geometry {count === 1 ? 'column' : 'columns'}
+        </Badge>
+      </Group>
+      <Collapse expanded={opened}>
+        <Stack gap="xs">{children}</Stack>
+      </Collapse>
+    </Stack>
+  );
+}
+
+function GeometryValue({ label, value }: { label: string; value: unknown }) {
+  return (
+    <Stack gap={2}>
+      <Text c="dimmed" size="xs">
+        {label}
+      </Text>
+      <Text
+        size="xs"
+        style={{
+          fontFamily:
+            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+          maxHeight: 160,
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {formatCellValue(value)}
+      </Text>
+    </Stack>
+  );
+}
+
+function isGeometryInspectorColumn(column: InspectorColumn) {
+  return /^(geometry|geography)$/i.test(column.type);
+}
+
+function isGeometryDetailEntry(key: string, value: unknown) {
+  if (!/geom|geometry|geography/i.test(key)) {
+    return false;
+  }
+
+  if (typeof value === 'string') {
+    return /^(srid=\d+;)?(point|linestring|polygon|multipoint|multilinestring|multipolygon|geometrycollection)\s*\(/i.test(
+      value,
+    );
+  }
+
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    ('coordinates' in value || 'geometries' in value)
   );
 }
 
