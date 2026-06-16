@@ -12,10 +12,11 @@ import { getVectorStyleLayerIds } from './vector-layers';
 export type FeaturePickCandidate = {
   id: string;
   selection: MapSelection;
-  layer: GeoJsonMapLayer;
-  source: GeoJsonTableSource;
+  layer?: GeoJsonMapLayer;
+  source?: GeoJsonTableSource;
   label: string;
   detail: string;
+  color: string;
 };
 
 export type FeaturePickState = {
@@ -203,15 +204,22 @@ export function buildFeaturePickCandidates(params: {
       selection: buildVectorMapSelection(feature, layer, source),
       label: layer.name,
       detail: getFeatureDisplayDetail(feature),
+      color: layer.color,
     });
   }
 
   candidates.sort((left, right) => {
-    if (left.layer.id === activeLayerId && right.layer.id !== activeLayerId) {
+    if (
+      left.selection.layerId === activeLayerId &&
+      right.selection.layerId !== activeLayerId
+    ) {
       return -1;
     }
 
-    if (right.layer.id === activeLayerId && left.layer.id !== activeLayerId) {
+    if (
+      right.selection.layerId === activeLayerId &&
+      left.selection.layerId !== activeLayerId
+    ) {
       return 1;
     }
 
@@ -219,6 +227,26 @@ export function buildFeaturePickCandidates(params: {
   });
 
   return candidates.slice(0, maxFeaturePickCandidates);
+}
+
+export function buildSelectionPickCandidate(
+  selection: MapSelection,
+  layer: MapLayer,
+): FeaturePickCandidate {
+  const rowKey = selection.rowRefs[0]
+    ? formatFeatureRowKey(selection.rowRefs[0].rowKey)
+    : null;
+  const detail =
+    [selection.objectType, rowKey].filter(Boolean).join(' • ') ||
+    selection.sourceFullName;
+
+  return {
+    id: `${selection.layerId}:${selection.objectType}:${selection.title}:${JSON.stringify(selection.rowRefs)}`,
+    selection,
+    label: selection.layerName,
+    detail,
+    color: layer.type === 'geojson' ? layer.color : '#4dabf7',
+  };
 }
 
 export function buildMapSelection(

@@ -57,6 +57,7 @@ import { type BasemapId, getBasemapStyle } from './basemaps';
 import {
   buildFeaturePickCandidates,
   buildMapSelection,
+  buildSelectionPickCandidate,
   type FeaturePickCandidate,
   type FeaturePickState,
   resolvePickedMapLayer,
@@ -172,7 +173,9 @@ function computeVisibleBounds(params: {
 
 function createFlowmapDeckLayer(
   layer: FlowmapMapLayer,
+  source: FlowmapTableSource,
   sourceData: FlowmapDataResponse,
+  onPick: (candidate: FeaturePickCandidate) => void,
 ) {
   return new FlowmapLayer({
     id: layer.id,
@@ -204,6 +207,14 @@ function createFlowmapDeckLayer(
     colorScheme: layer.style.colorScheme,
     darkMode: layer.style.darkMode,
     pickable: true,
+    onClick: (pickInfo: { object?: unknown }) => {
+      const selection = buildMapSelection(pickInfo.object, layer, source);
+      if (!selection) {
+        return;
+      }
+
+      onPick(buildSelectionPickCandidate(selection, layer));
+    },
   });
 }
 
@@ -334,6 +345,8 @@ export function MapPane({
   const visibleLayersRef = useRef<MapLayer[]>(visibleLayers);
   const sourcesRef = useRef<MapSource[]>(sources);
   const onSelectMapObjectRef = useRef(onSelectMapObject);
+  const pendingDeckPickRef = useRef<FeaturePickCandidate | null>(null);
+  const deckPickFallbackTimerRef = useRef<number | null>(null);
   const loadingVectorSourceIdsRef = useRef<Set<string>>(new Set());
   const [isMapReady, setIsMapReady] = useState(false);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
@@ -462,36 +475,21 @@ export function MapPane({
     map.addControl(navigation, 'top-left');
     map.addControl(overlay);
 
-    function handleMapClick(event: MapMouseEvent) {
-      if (drawRef.current) {
-        return;
+    function consumeDeckPickCandidate() {
+      if (deckPickFallbackTimerRef.current !== null) {
+        window.clearTimeout(deckPickFallbackTimerRef.current);
+        deckPickFallbackTimerRef.current = null;
       }
 
-      const currentVisibleLayers = visibleLayersRef.current;
-      const currentSources = sourcesRef.current;
-      const geoJsonLayers = currentVisibleLayers.filter(isGeoJsonMapLayer);
-      const queryableLayerIds = getQueryableVectorLayerIds(
-        map,
-        currentVisibleLayers,
-      );
+      const candidate = pendingDeckPickRef.current;
+      pendingDeckPickRef.current = null;
+      return candidate;
+    }
 
-      if (queryableLayerIds.length === 0) {
-        setFeaturePickState(null);
-        setHoveredFeaturePick(null);
-        onSelectMapObjectRef.current(null);
-        return;
-      }
-
-      const features = map.queryRenderedFeatures(event.point, {
-        layers: queryableLayerIds,
-      });
-      const candidates = buildFeaturePickCandidates({
-        activeLayerId: activeLayerIdRef.current,
-        features,
-        layers: geoJsonLayers,
-        sources: currentSources,
-      });
-
+    function showPickCandidates(
+      point: { x: number; y: number },
+      candidates: FeaturePickCandidate[],
+    ) {
       if (candidates.length === 0) {
         setFeaturePickState(null);
         setHoveredFeaturePick(null);
@@ -507,11 +505,67 @@ export function MapPane({
       }
 
       setFeaturePickState({
-        x: event.point.x,
-        y: event.point.y,
+        x: point.x,
+        y: point.y,
         candidates,
       });
       setHoveredFeaturePick(candidates[0]);
+    }
+
+    function handleMapClick(event: MapMouseEvent) {
+      if (drawRef.current) {
+        return;
+      }
+
+      const clickPoint = event.point.clone();
+      const hasVisibleFlowLayer = visibleLayersRef.current.some(
+        (layer) => layer.type === 'flowmap',
+      );
+      window.setTimeout(
+        () => {
+          if (drawRef.current) {
+            return;
+          }
+
+          const deckPickCandidate = consumeDeckPickCandidate();
+          const currentVisibleLayers = visibleLayersRef.current;
+          const currentSources = sourcesRef.current;
+          const geoJsonLayers = currentVisibleLayers.filter(isGeoJsonMapLayer);
+          const queryableLayerIds = getQueryableVectorLayerIds(
+            map,
+            currentVisibleLayers,
+          );
+
+          if (queryableLayerIds.length === 0) {
+            showPickCandidates(
+              clickPoint,
+              deckPickCandidate ? [deckPickCandidate] : [],
+            );
+            return;
+          }
+
+          const features = map.queryRenderedFeatures(clickPoint, {
+            layers: queryableLayerIds,
+          });
+          const vectorCandidates = buildFeaturePickCandidates({
+            activeLayerId: activeLayerIdRef.current,
+            features,
+            layers: geoJsonLayers,
+            sources: currentSources,
+          });
+          const candidates = deckPickCandidate
+            ? [
+                deckPickCandidate,
+                ...vectorCandidates.filter(
+                  (candidate) => candidate.id !== deckPickCandidate.id,
+                ),
+              ]
+            : vectorCandidates;
+
+          showPickCandidates(clickPoint, candidates);
+        },
+        hasVisibleFlowLayer ? 120 : 0,
+      );
     }
 
     function closeFeaturePicker() {
@@ -629,6 +683,11 @@ export function MapPane({
         map.removeControl(overlayRef.current);
         overlayRef.current.finalize();
       }
+      if (deckPickFallbackTimerRef.current !== null) {
+        window.clearTimeout(deckPickFallbackTimerRef.current);
+        deckPickFallbackTimerRef.current = null;
+      }
+      pendingDeckPickRef.current = null;
       overlayRef.current = null;
       mapRef.current?.remove();
       mapRef.current = null;
@@ -892,7 +951,9 @@ export function MapPane({
 
       if (
         hoveredFeaturePick?.selection.objectType === 'feature' &&
-        hoveredFeaturePick.selection.featureKey
+        hoveredFeaturePick.selection.featureKey &&
+        hoveredFeaturePick.source &&
+        hoveredFeaturePick.layer
       ) {
         const cacheEntry =
           vectorTileSourceCacheRef.current[hoveredFeaturePick.source.id];
@@ -1103,6 +1164,25 @@ export function MapPane({
       return;
     }
 
+    function queueDeckPickCandidate(candidate: FeaturePickCandidate) {
+      pendingDeckPickRef.current = candidate;
+      if (deckPickFallbackTimerRef.current !== null) {
+        window.clearTimeout(deckPickFallbackTimerRef.current);
+      }
+      deckPickFallbackTimerRef.current = window.setTimeout(() => {
+        const pendingCandidate = pendingDeckPickRef.current;
+        pendingDeckPickRef.current = null;
+        deckPickFallbackTimerRef.current = null;
+        if (!pendingCandidate) {
+          return;
+        }
+
+        setFeaturePickState(null);
+        setHoveredFeaturePick(null);
+        onSelectMapObjectRef.current(pendingCandidate.selection);
+      }, 240);
+    }
+
     const deckLayers = visibleLayers.reduce<unknown[]>((layersList, layer) => {
       const source = sources.find(
         (candidate) => candidate.id === layer.sourceId,
@@ -1121,7 +1201,14 @@ export function MapPane({
         source.type === 'flowmap-table' &&
         sourceData.payload.sourceType === 'flowmap-table'
       ) {
-        layersList.push(createFlowmapDeckLayer(layer, sourceData.payload.data));
+        layersList.push(
+          createFlowmapDeckLayer(
+            layer,
+            source,
+            sourceData.payload.data,
+            queueDeckPickCandidate,
+          ),
+        );
         return layersList;
       }
 
@@ -1136,13 +1223,11 @@ export function MapPane({
       }) => {
         const pickedLayerId = pickInfo.layer?.id;
         if (!pickedLayerId) {
-          onSelectMapObjectRef.current(null);
           return;
         }
 
         const layer = resolvePickedMapLayer(pickedLayerId, visibleLayers);
         if (!layer) {
-          onSelectMapObjectRef.current(null);
           return;
         }
 
@@ -1150,13 +1235,15 @@ export function MapPane({
           (candidate) => candidate.id === layer.sourceId,
         );
         if (!source) {
-          onSelectMapObjectRef.current(null);
           return;
         }
 
-        onSelectMapObjectRef.current(
-          buildMapSelection(pickInfo.object, layer, source),
-        );
+        const selection = buildMapSelection(pickInfo.object, layer, source);
+        if (!selection) {
+          return;
+        }
+
+        queueDeckPickCandidate(buildSelectionPickCandidate(selection, layer));
       },
     });
 
@@ -1407,7 +1494,7 @@ export function MapPane({
         >
           <Group justify="space-between" p="xs" wrap="nowrap">
             <Text fw={600} size="sm">
-              Pick feature
+              Pick object
             </Text>
             <ActionIcon
               aria-label="Close feature picker"
@@ -1446,7 +1533,7 @@ export function MapPane({
                   <Group gap="xs" wrap="nowrap" w="100%">
                     <Box
                       style={{
-                        background: candidate.layer.color,
+                        background: candidate.color,
                         borderRadius: 2,
                         flex: '0 0 auto',
                         height: 12,
