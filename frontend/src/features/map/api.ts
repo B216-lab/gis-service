@@ -153,6 +153,7 @@ export async function fetchGeoJsonSourceData(
       table: source.table,
       geometryColumn: source.geometryColumn,
       filter: source.filter ?? null,
+      spatialFilter: source.spatialFilter ?? null,
       limit: 5000,
       zoom,
       west: bounds.west,
@@ -190,6 +191,7 @@ export async function fetchGeoJsonSourceExtent(
       table: source.table,
       geometryColumn: source.geometryColumn,
       filter: source.filter ?? null,
+      spatialFilter: source.spatialFilter ?? null,
     }),
   });
 
@@ -223,6 +225,7 @@ export async function registerVectorTileSource(
         table: source.table,
         geometryColumn: source.geometryColumn,
         filter: source.filter ?? null,
+        spatialFilter: source.spatialFilter ?? null,
       }),
     },
   );
@@ -301,6 +304,7 @@ export async function fetchFlowmapSourceData(
       endGeometryColumn: source.columns.endGeometry,
       magnitudeColumn: source.columns.magnitude,
       defaultMagnitude: source.columns.defaultMagnitude,
+      spatialFilter: source.spatialFilter ?? null,
       limit: 5000,
     }),
   });

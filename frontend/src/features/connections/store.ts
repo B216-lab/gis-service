@@ -7,6 +7,7 @@ import type {
   TableFilterDefinition,
 } from '../filters/types';
 import { type BasemapId, defaultBasemapId } from '../map/basemaps';
+import type { RowReference } from '../map/selection';
 
 export interface DatabaseConnection {
   id: string;
@@ -25,6 +26,17 @@ export interface DatabaseConnection {
 }
 
 export type LayerGlyphIcon = 'circle' | 'square' | 'diamond' | 'line' | 'flow';
+export type SpatialFilterPredicate = 'intersects' | 'within';
+
+export interface LayerSpatialFilter {
+  sourceLayerId: string;
+  sourceLayerName: string;
+  sourceSchema: string;
+  sourceTable: string;
+  sourceGeometryColumn: string;
+  rowRefs: RowReference[];
+  predicate: SpatialFilterPredicate;
+}
 
 export interface GeoJsonTableSource {
   id: string;
@@ -37,6 +49,7 @@ export interface GeoJsonTableSource {
   geometryColumn: string;
   geometryType: string;
   filter?: TableFilterDefinition | null;
+  spatialFilter?: LayerSpatialFilter | null;
   sourceViewId?: string | null;
   refreshKey?: string;
 }
@@ -61,6 +74,7 @@ export interface FlowmapTableSource {
     magnitude: string;
     defaultMagnitude: number;
   };
+  spatialFilter?: LayerSpatialFilter | null;
 }
 
 export type MapSource = GeoJsonTableSource | FlowmapTableSource;
@@ -181,11 +195,20 @@ interface ConnectionStoreState {
   ) => void;
   updateGeoJsonSource: (
     sourceId: string,
-    patch: Partial<Pick<GeoJsonTableSource, 'geometryColumn' | 'geometryType'>>,
+    patch: Partial<
+      Pick<
+        GeoJsonTableSource,
+        'geometryColumn' | 'geometryType' | 'spatialFilter'
+      >
+    >,
   ) => void;
   updateFlowmapSource: (
     sourceId: string,
     patch: Partial<FlowmapTableSource['columns']>,
+  ) => void;
+  updateFlowmapSpatialFilter: (
+    sourceId: string,
+    spatialFilter: LayerSpatialFilter | null,
   ) => void;
   updateFlowmapLayer: (
     layerId: string,
@@ -331,6 +354,7 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
       geometryColumn: source.geometryColumn ?? 'geom',
       geometryType: source.geometryType ?? '',
       filter: source.filter ?? null,
+      spatialFilter: source.spatialFilter ?? null,
       sourceViewId: source.sourceViewId ?? null,
       refreshKey: source.refreshKey ?? '',
     };
@@ -371,6 +395,7 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
         magnitude: columns.magnitude ?? '',
         defaultMagnitude: columns.defaultMagnitude ?? 1,
       },
+      spatialFilter: source.spatialFilter ?? null,
     };
   }
 
@@ -699,6 +724,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               geometryColumn: payload.geometryColumn,
               geometryType: payload.geometryType,
               filter: payload.filter ?? null,
+              spatialFilter: null,
               sourceViewId: payload.sourceViewId ?? null,
               refreshKey: '',
             };
@@ -767,6 +793,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               fullName: payload.fullName,
               kind: payload.kind,
               columns: payload.columns,
+              spatialFilter: null,
             };
             nextSources.push(source);
           }
@@ -851,7 +878,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         set((state) => ({
           mapSources: state.mapSources.map((source) =>
             source.id === sourceId && source.type === 'geojson-table'
-              ? { ...source, ...patch }
+              ? touchGeoJsonSource({ ...source, ...patch })
               : source,
           ),
         })),
@@ -865,6 +892,17 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                     ...source.columns,
                     ...patch,
                   },
+                }
+              : source,
+          ),
+        })),
+      updateFlowmapSpatialFilter: (sourceId, spatialFilter) =>
+        set((state) => ({
+          mapSources: state.mapSources.map((source) =>
+            source.id === sourceId && source.type === 'flowmap-table'
+              ? {
+                  ...source,
+                  spatialFilter,
                 }
               : source,
           ),

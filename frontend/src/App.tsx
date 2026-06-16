@@ -95,6 +95,7 @@ import {
   type LayerGlyphIcon,
   type MapLayer,
   type MapSource,
+  type SpatialFilterPredicate,
   useConnectionStore,
 } from './features/connections/store';
 import { SavedViewModal } from './features/filters/SavedViewModal';
@@ -152,6 +153,11 @@ interface CatalogState {
 }
 
 type RightPaneTab = 'layer' | 'data' | 'analysis';
+
+interface GeoJsonSpatialFilterTarget {
+  layer: GeoJsonMapLayer | FlowmapMapLayer;
+  source: GeoJsonTableSource | FlowmapTableSource;
+}
 
 interface ConnectionFormState {
   name: string;
@@ -3007,16 +3013,25 @@ function RightPaneTabs({
   activeLayer,
   activeSource,
   connection,
+  geoJsonSpatialFilterTargets,
   mapSelection,
+  onApplySpatialFilter,
   onChangeTab,
+  onClearSpatialFilter,
   onOpenTable,
   selectedTab,
 }: {
   activeLayer: MapLayer | null;
   activeSource: MapSource | null;
   connection: DatabaseConnection | null;
+  geoJsonSpatialFilterTargets: GeoJsonSpatialFilterTarget[];
   mapSelection: MapSelection | null;
+  onApplySpatialFilter: (
+    targetSourceId: string,
+    predicate: SpatialFilterPredicate,
+  ) => void;
   onChangeTab: (value: RightPaneTab) => void;
+  onClearSpatialFilter: (sourceId: string) => void;
   onOpenTable: (tableKey: string) => void | Promise<void>;
   selectedTab: RightPaneTab;
 }) {
@@ -3073,13 +3088,16 @@ function RightPaneTabs({
           activeLayer={activeLayer}
           activeSource={activeSource}
           mapSelection={mapSelection}
+          onClearSpatialFilter={onClearSpatialFilter}
         />
       </Tabs.Panel>
 
       <Tabs.Panel value="data">
         <DataWorkspacePanel
           connection={connection}
+          geoJsonSpatialFilterTargets={geoJsonSpatialFilterTargets}
           mapSelection={mapSelection}
+          onApplySpatialFilter={onApplySpatialFilter}
           onOpenTable={onOpenTable}
         />
       </Tabs.Panel>
@@ -3099,10 +3117,12 @@ function LayerWorkspacePanel({
   activeLayer,
   activeSource,
   mapSelection,
+  onClearSpatialFilter,
 }: {
   activeLayer: MapLayer | null;
   activeSource: MapSource | null;
   mapSelection: MapSelection | null;
+  onClearSpatialFilter: (sourceId: string) => void;
 }) {
   if (!activeLayer || !activeSource) {
     return (
@@ -3191,6 +3211,26 @@ function LayerWorkspacePanel({
               Flow columns: {formatFlowmapSourceColumns(activeSource.columns)}
             </Text>
           )}
+          {activeSource.spatialFilter ? (
+            <Alert color="grape" title="Spatial filter active" variant="light">
+              <Stack gap="xs">
+                <Text size="sm">
+                  {formatSpatialFilterPredicate(
+                    activeSource.spatialFilter.predicate,
+                    activeSource.type,
+                  )}{' '}
+                  {activeSource.spatialFilter.sourceLayerName}
+                </Text>
+                <Button
+                  onClick={() => onClearSpatialFilter(activeSource.id)}
+                  size="compact-sm"
+                  variant="light"
+                >
+                  Clear Spatial Filter
+                </Button>
+              </Stack>
+            </Alert>
+          ) : null}
         </Stack>
       </Paper>
     </Stack>
@@ -3199,11 +3239,18 @@ function LayerWorkspacePanel({
 
 function DataWorkspacePanel({
   connection,
+  geoJsonSpatialFilterTargets,
   mapSelection,
+  onApplySpatialFilter,
   onOpenTable,
 }: {
   connection: DatabaseConnection | null;
+  geoJsonSpatialFilterTargets: GeoJsonSpatialFilterTarget[];
   mapSelection: MapSelection | null;
+  onApplySpatialFilter: (
+    targetSourceId: string,
+    predicate: SpatialFilterPredicate,
+  ) => void;
   onOpenTable: (tableKey: string) => void | Promise<void>;
 }) {
   const [lookupState, setLookupState] =
@@ -3211,6 +3258,48 @@ function DataWorkspacePanel({
   const [isLoadingLookup, setIsLoadingLookup] = useState(false);
   const [lookupError, setLookupError] = useState('');
   const [isGeometryExpanded, geometryDisclosure] = useDisclosure(false);
+  const [spatialFilterTargetSourceId, setSpatialFilterTargetSourceId] =
+    useState<string | null>(null);
+  const [spatialFilterPredicate, setSpatialFilterPredicate] =
+    useState<SpatialFilterPredicate>('intersects');
+
+  const spatialFilterTargets = useMemo(
+    () =>
+      mapSelection?.sourceType === 'geojson-table' &&
+      mapSelection.rowRefs.length > 0
+        ? geoJsonSpatialFilterTargets.filter(
+            (target) => target.source.id !== mapSelection.sourceId,
+          )
+        : [],
+    [geoJsonSpatialFilterTargets, mapSelection],
+  );
+  const selectedSpatialFilterTarget =
+    spatialFilterTargets.find(
+      (target) => target.source.id === spatialFilterTargetSourceId,
+    ) ?? null;
+  const spatialFilterPredicateOptions =
+    selectedSpatialFilterTarget?.source.type === 'flowmap-table'
+      ? [
+          { label: 'One endpoint inside selection', value: 'intersects' },
+          { label: 'Entire flow inside selection', value: 'within' },
+        ]
+      : [
+          { label: 'Partially intersects selection', value: 'intersects' },
+          { label: 'Fully inside selection', value: 'within' },
+        ];
+
+  useEffect(() => {
+    if (
+      spatialFilterTargetSourceId &&
+      spatialFilterTargets.some(
+        (target) => target.source.id === spatialFilterTargetSourceId,
+      )
+    ) {
+      return;
+    }
+
+    setSpatialFilterTargetSourceId(spatialFilterTargets[0]?.source.id ?? null);
+  }, [spatialFilterTargetSourceId, spatialFilterTargets]);
 
   useEffect(() => {
     if (!connection || !mapSelection || mapSelection.rowRefs.length === 0) {
@@ -3348,6 +3437,53 @@ function DataWorkspacePanel({
           Open Table
         </Button>
       </Group>
+
+      {spatialFilterTargets.length > 0 ? (
+        <Paper p="sm" radius="md" withBorder>
+          <Stack gap="xs">
+            <Text fw={600} size="sm">
+              Use selection as spatial filter
+            </Text>
+            <Select
+              data={spatialFilterTargets.map((target) => ({
+                label: target.layer.name,
+                value: target.source.id,
+              }))}
+              label="Target layer"
+              onChange={setSpatialFilterTargetSourceId}
+              value={spatialFilterTargetSourceId}
+            />
+            <Select
+              allowDeselect={false}
+              data={spatialFilterPredicateOptions}
+              label="Predicate"
+              onChange={(value) =>
+                setSpatialFilterPredicate(
+                  (value ?? 'intersects') as SpatialFilterPredicate,
+                )
+              }
+              value={spatialFilterPredicate}
+            />
+            <Button
+              disabled={!spatialFilterTargetSourceId}
+              onClick={() => {
+                if (!spatialFilterTargetSourceId) {
+                  return;
+                }
+
+                onApplySpatialFilter(
+                  spatialFilterTargetSourceId,
+                  spatialFilterPredicate,
+                );
+              }}
+              size="compact-sm"
+              variant="light"
+            >
+              Apply Spatial Filter
+            </Button>
+          </Stack>
+        </Paper>
+      ) : null}
 
       {mapSelection.rowRefs.length > 25 ? (
         <Alert color="yellow" title="Selection truncated" variant="light">
@@ -3652,6 +3788,30 @@ function isGeometryDetailEntry(key: string, value: unknown) {
   );
 }
 
+function formatSpatialFilterPredicate(
+  predicate: SpatialFilterPredicate,
+  sourceType?: MapSource['type'],
+) {
+  if (sourceType === 'flowmap-table') {
+    return predicate === 'within' ? 'Entire flow inside' : 'Endpoint inside';
+  }
+
+  switch (predicate) {
+    case 'within':
+      return 'Fully inside';
+    case 'intersects':
+      return 'Intersects';
+  }
+}
+
+function isGeoJsonLayer(layer: MapLayer): layer is GeoJsonMapLayer {
+  return layer.type === 'geojson';
+}
+
+function isFlowmapLayer(layer: MapLayer): layer is FlowmapMapLayer {
+  return layer.type === 'flowmap';
+}
+
 function AnalysisWorkspacePanel({
   activeLayer,
   activeSource,
@@ -3746,6 +3906,12 @@ export function App() {
   );
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
+  const updateGeoJsonSource = useConnectionStore(
+    (state) => state.updateGeoJsonSource,
+  );
+  const updateFlowmapSpatialFilter = useConnectionStore(
+    (state) => state.updateFlowmapSpatialFilter,
+  );
   const refreshGeoJsonSourcesForTable = useConnectionStore(
     (state) => state.refreshGeoJsonSourcesForTable,
   );
@@ -4020,6 +4186,76 @@ export function App() {
   const activeLayerSource = activeLayer
     ? (findLayerSource(mapSources, activeLayer) ?? null)
     : null;
+  const geoJsonSpatialFilterTargets = useMemo(
+    () =>
+      selectedConnectionMapLayers.flatMap((layer) => {
+        if (!isGeoJsonLayer(layer) && !isFlowmapLayer(layer)) {
+          return [];
+        }
+
+        const source = mapSources.find(
+          (candidate): candidate is GeoJsonTableSource | FlowmapTableSource =>
+            candidate.id === layer.sourceId &&
+            (candidate.type === 'geojson-table' ||
+              candidate.type === 'flowmap-table'),
+        );
+
+        return source ? [{ layer, source }] : [];
+      }),
+    [mapSources, selectedConnectionMapLayers],
+  );
+
+  function handleApplySpatialFilter(
+    targetSourceId: string,
+    predicate: SpatialFilterPredicate,
+  ) {
+    if (
+      !mapSelection ||
+      mapSelection.sourceType !== 'geojson-table' ||
+      mapSelection.rowRefs.length === 0
+    ) {
+      return;
+    }
+
+    const source = mapSources.find(
+      (candidate): candidate is GeoJsonTableSource =>
+        candidate.id === mapSelection.sourceId &&
+        candidate.type === 'geojson-table',
+    );
+    if (!source) {
+      return;
+    }
+
+    const spatialFilter = {
+      sourceLayerId: mapSelection.layerId,
+      sourceLayerName: mapSelection.layerName,
+      sourceSchema: source.schema,
+      sourceTable: source.table,
+      sourceGeometryColumn: source.geometryColumn,
+      rowRefs: mapSelection.rowRefs,
+      predicate,
+    };
+    const targetSource = mapSources.find(
+      (candidate) => candidate.id === targetSourceId,
+    );
+
+    if (targetSource?.type === 'flowmap-table') {
+      updateFlowmapSpatialFilter(targetSourceId, spatialFilter);
+      return;
+    }
+
+    updateGeoJsonSource(targetSourceId, { spatialFilter });
+  }
+
+  function handleClearSpatialFilter(sourceId: string) {
+    const source = mapSources.find((candidate) => candidate.id === sourceId);
+    if (source?.type === 'flowmap-table') {
+      updateFlowmapSpatialFilter(sourceId, null);
+      return;
+    }
+
+    updateGeoJsonSource(sourceId, { spatialFilter: null });
+  }
 
   useEffect(() => {
     void selectedConnectionId;
@@ -4320,8 +4556,11 @@ export function App() {
                 activeLayer={activeLayer}
                 activeSource={activeLayerSource}
                 connection={selectedConnection}
+                geoJsonSpatialFilterTargets={geoJsonSpatialFilterTargets}
                 mapSelection={mapSelection}
+                onApplySpatialFilter={handleApplySpatialFilter}
                 onChangeTab={setRightPaneTab}
+                onClearSpatialFilter={handleClearSpatialFilter}
                 onOpenTable={handleOpenTable}
                 selectedTab={rightPaneTab}
               />

@@ -144,24 +144,26 @@ type TableOperation struct {
 
 type ListLayerFeaturesRequest struct {
 	ConnectionTestRequest
-	Schema         string       `json:"schema"`
-	Table          string       `json:"table"`
-	GeometryColumn string       `json:"geometryColumn"`
-	Filter         *QueryFilter `json:"filter"`
-	Limit          int          `json:"limit"`
-	Zoom           *float64     `json:"zoom"`
-	West           *float64     `json:"west"`
-	South          *float64     `json:"south"`
-	East           *float64     `json:"east"`
-	North          *float64     `json:"north"`
+	Schema         string         `json:"schema"`
+	Table          string         `json:"table"`
+	GeometryColumn string         `json:"geometryColumn"`
+	Filter         *QueryFilter   `json:"filter"`
+	SpatialFilter  *SpatialFilter `json:"spatialFilter"`
+	Limit          int            `json:"limit"`
+	Zoom           *float64       `json:"zoom"`
+	West           *float64       `json:"west"`
+	South          *float64       `json:"south"`
+	East           *float64       `json:"east"`
+	North          *float64       `json:"north"`
 }
 
 type LayerTileSourceRequest struct {
 	ConnectionTestRequest
-	Schema         string       `json:"schema"`
-	Table          string       `json:"table"`
-	GeometryColumn string       `json:"geometryColumn"`
-	Filter         *QueryFilter `json:"filter"`
+	Schema         string         `json:"schema"`
+	Table          string         `json:"table"`
+	GeometryColumn string         `json:"geometryColumn"`
+	Filter         *QueryFilter   `json:"filter"`
+	SpatialFilter  *SpatialFilter `json:"spatialFilter"`
 }
 
 type LayerVectorTileRequest struct {
@@ -173,27 +175,37 @@ type LayerVectorTileRequest struct {
 
 type LayerExtentRequest struct {
 	ConnectionTestRequest
-	Schema         string       `json:"schema"`
-	Table          string       `json:"table"`
-	GeometryColumn string       `json:"geometryColumn"`
-	Filter         *QueryFilter `json:"filter"`
+	Schema         string         `json:"schema"`
+	Table          string         `json:"table"`
+	GeometryColumn string         `json:"geometryColumn"`
+	Filter         *QueryFilter   `json:"filter"`
+	SpatialFilter  *SpatialFilter `json:"spatialFilter"`
+}
+
+type SpatialFilter struct {
+	SourceSchema         string         `json:"sourceSchema"`
+	SourceTable          string         `json:"sourceTable"`
+	SourceGeometryColumn string         `json:"sourceGeometryColumn"`
+	Predicate            string         `json:"predicate"`
+	RowRefs              []RowReference `json:"rowRefs"`
 }
 
 type ListFlowmapDataRequest struct {
 	ConnectionTestRequest
-	Schema              string  `json:"schema"`
-	Table               string  `json:"table"`
-	StartMode           string  `json:"startMode"`
-	StartLonColumn      string  `json:"startLonColumn"`
-	StartLatColumn      string  `json:"startLatColumn"`
-	StartGeometryColumn string  `json:"startGeometryColumn"`
-	EndMode             string  `json:"endMode"`
-	EndLonColumn        string  `json:"endLonColumn"`
-	EndLatColumn        string  `json:"endLatColumn"`
-	EndGeometryColumn   string  `json:"endGeometryColumn"`
-	MagnitudeColumn     string  `json:"magnitudeColumn"`
-	DefaultMagnitude    float64 `json:"defaultMagnitude"`
-	Limit               int     `json:"limit"`
+	Schema              string         `json:"schema"`
+	Table               string         `json:"table"`
+	StartMode           string         `json:"startMode"`
+	StartLonColumn      string         `json:"startLonColumn"`
+	StartLatColumn      string         `json:"startLatColumn"`
+	StartGeometryColumn string         `json:"startGeometryColumn"`
+	EndMode             string         `json:"endMode"`
+	EndLonColumn        string         `json:"endLonColumn"`
+	EndLatColumn        string         `json:"endLatColumn"`
+	EndGeometryColumn   string         `json:"endGeometryColumn"`
+	MagnitudeColumn     string         `json:"magnitudeColumn"`
+	DefaultMagnitude    float64        `json:"defaultMagnitude"`
+	SpatialFilter       *SpatialFilter `json:"spatialFilter"`
+	Limit               int            `json:"limit"`
 }
 
 type ColumnMeta struct {
@@ -333,6 +345,12 @@ type geometryColumnDefinition struct {
 	SRID         int
 }
 
+type spatialFilterClause struct {
+	CTE        string
+	Clause     string
+	Parameters []interface{}
+}
+
 type tableAccess struct {
 	Kind      string
 	CanRead   bool
@@ -411,6 +429,7 @@ func (request *LayerExtentRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
 	trimQueryFilter(request.Filter)
+	trimSpatialFilter(request.SpatialFilter)
 }
 
 func (request *SchemaTablesRequest) TrimSpaces() {
@@ -430,6 +449,7 @@ func (request *ListLayerFeaturesRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
 	trimQueryFilter(request.Filter)
+	trimSpatialFilter(request.SpatialFilter)
 }
 
 func (request *LayerTileSourceRequest) TrimSpaces() {
@@ -438,6 +458,7 @@ func (request *LayerTileSourceRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 	request.GeometryColumn = strings.TrimSpace(request.GeometryColumn)
 	trimQueryFilter(request.Filter)
+	trimSpatialFilter(request.SpatialFilter)
 }
 
 func (request *ListFlowmapDataRequest) TrimSpaces() {
@@ -453,6 +474,7 @@ func (request *ListFlowmapDataRequest) TrimSpaces() {
 	request.EndLatColumn = strings.TrimSpace(request.EndLatColumn)
 	request.EndGeometryColumn = strings.TrimSpace(request.EndGeometryColumn)
 	request.MagnitudeColumn = strings.TrimSpace(request.MagnitudeColumn)
+	trimSpatialFilter(request.SpatialFilter)
 }
 
 func trimQueryFilter(filter *QueryFilter) {
@@ -476,6 +498,24 @@ func trimQueryFilter(filter *QueryFilter) {
 		for valueIndex := range filter.Conditions[index].Values {
 			filter.Conditions[index].Values[valueIndex] = strings.TrimSpace(
 				filter.Conditions[index].Values[valueIndex],
+			)
+		}
+	}
+}
+
+func trimSpatialFilter(filter *SpatialFilter) {
+	if filter == nil {
+		return
+	}
+
+	filter.SourceSchema = strings.TrimSpace(filter.SourceSchema)
+	filter.SourceTable = strings.TrimSpace(filter.SourceTable)
+	filter.SourceGeometryColumn = strings.TrimSpace(filter.SourceGeometryColumn)
+	filter.Predicate = strings.TrimSpace(filter.Predicate)
+	for index := range filter.RowRefs {
+		for valueIndex := range filter.RowRefs[index].PrimaryKey {
+			filter.RowRefs[index].PrimaryKey[valueIndex] = strings.TrimSpace(
+				filter.RowRefs[index].PrimaryKey[valueIndex],
 			)
 		}
 	}
@@ -526,6 +566,35 @@ func validateQueryFilter(filter *QueryFilter) error {
 	}
 
 	return nil
+}
+
+func validateSpatialFilter(filter *SpatialFilter) error {
+	if filter == nil {
+		return nil
+	}
+
+	if filter.SourceSchema == "" {
+		return errors.New("Spatial filter source schema is required.")
+	}
+	if filter.SourceTable == "" {
+		return errors.New("Spatial filter source table is required.")
+	}
+	if filter.SourceGeometryColumn == "" {
+		return errors.New("Spatial filter source geometry column is required.")
+	}
+	if len(filter.RowRefs) == 0 {
+		return errors.New("Spatial filter requires at least one source row.")
+	}
+	if len(filter.RowRefs) > 25 {
+		return errors.New("Spatial filter supports 25 source rows or fewer.")
+	}
+
+	switch filter.Predicate {
+	case "intersects", "within":
+		return nil
+	default:
+		return fmt.Errorf("Unsupported spatial filter predicate %q.", filter.Predicate)
+	}
 }
 
 func queryFilterMode(filter *QueryFilter) string {
@@ -681,7 +750,7 @@ func (request LayerExtentRequest) Validate() error {
 		return err
 	}
 
-	return nil
+	return validateSpatialFilter(request.SpatialFilter)
 }
 
 func (request SchemaTablesRequest) Validate() error {
@@ -823,6 +892,7 @@ func (request ListLayerFeaturesRequest) layerSourceFields() LayerTileSourceReque
 		Table:                 request.Table,
 		GeometryColumn:        request.GeometryColumn,
 		Filter:                request.Filter,
+		SpatialFilter:         request.SpatialFilter,
 	}
 }
 
@@ -843,7 +913,11 @@ func (request LayerTileSourceRequest) Validate() error {
 		return errors.New("Geometry column is required.")
 	}
 
-	return validateQueryFilter(request.Filter)
+	if err := validateQueryFilter(request.Filter); err != nil {
+		return err
+	}
+
+	return validateSpatialFilter(request.SpatialFilter)
 }
 
 func (request LayerVectorTileRequest) Validate() error {
@@ -913,7 +987,7 @@ func (request ListFlowmapDataRequest) Validate() error {
 		return errors.New("Limit must be between 1 and 5000.")
 	}
 
-	return nil
+	return validateSpatialFilter(request.SpatialFilter)
 }
 
 func (operation TableOperation) Validate() error {
@@ -1887,12 +1961,28 @@ func (service *Service) ListLayerFeatures(
 	if filterClause != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", filterClause))
 	}
+	spatialClause, err := service.buildSpatialFilterClause(
+		timeoutCtx,
+		conn,
+		request.SpatialFilter,
+		geometryExpression,
+		len(parameters),
+	)
+	if err != nil {
+		return nil, err
+	}
+	withClauses := make([]string, 0, 2)
+	if spatialClause != nil {
+		withClauses = append(withClauses, spatialClause.CTE)
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", spatialClause.Clause))
+		parameters = append(parameters, spatialClause.Parameters...)
+	}
 	parameters = append(parameters, request.Limit)
 	limitPlaceholder := fmt.Sprintf("$%d", len(parameters))
-
-	query := fmt.Sprintf(
-		`
-		with source_features as (
+	withClauses = append(
+		withClauses,
+		fmt.Sprintf(
+			`source_features as (
 		  select json_build_object(
 		    'type', 'Feature',
 		    'geometry', ST_AsGeoJSON(%s)::json,
@@ -1901,17 +1991,24 @@ func (service *Service) ListLayerFeatures(
 		  from %s.%s as source_row
 		  where %s
 		  limit %s
-		)
+		)`,
+			renderGeometryExpression,
+			propertyExpression,
+			rowRefExpression,
+			quoteIdentifier(request.Schema),
+			quoteIdentifier(request.Table),
+			strings.Join(whereClauses, " and "),
+			limitPlaceholder,
+		),
+	)
+
+	query := fmt.Sprintf(
+		`
+		with %s
 		select coalesce(json_agg(feature), '[]'::json)
 		from source_features
 		`,
-		renderGeometryExpression,
-		propertyExpression,
-		rowRefExpression,
-		quoteIdentifier(request.Schema),
-		quoteIdentifier(request.Table),
-		strings.Join(whereClauses, " and "),
-		limitPlaceholder,
+		strings.Join(withClauses, ",\n\t\t"),
 	)
 
 	var rawFeatures []byte
@@ -2011,6 +2108,11 @@ func (service *Service) GetLayerVectorTile(
 		request.GeometryColumn,
 		selectedGeometryColumn.SRID,
 	)
+	spatialTargetGeometryExpression := geometryColumnWGS84Expression(
+		request.GeometryColumn,
+		selectedGeometryColumn.StorageType,
+		selectedGeometryColumn.SRID,
+	)
 	predicateTileBoundsExpression := tileBoundsForGeometryColumn(
 		selectedGeometryColumn.StorageType,
 		selectedGeometryColumn.SRID,
@@ -2047,12 +2149,30 @@ func (service *Service) GetLayerVectorTile(
 
 	parameters := []interface{}{request.Z, request.X, request.Y}
 	parameters = append(parameters, filterParameters...)
+	spatialClause, err := service.buildSpatialFilterClause(
+		timeoutCtx,
+		runner,
+		request.SpatialFilter,
+		spatialTargetGeometryExpression,
+		len(parameters),
+	)
+	if err != nil {
+		return nil, err
+	}
+	withClauses := []string{
+		`tile_bounds as (
+		  select ST_TileEnvelope($1, $2, $3) as geom
+		)`,
+	}
+	if spatialClause != nil {
+		withClauses = append(withClauses, spatialClause.CTE)
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", spatialClause.Clause))
+		parameters = append(parameters, spatialClause.Parameters...)
+	}
 
 	query := fmt.Sprintf(
 		`
-		with tile_bounds as (
-		  select ST_TileEnvelope($1, $2, $3) as geom
-		),
+		with %s,
 		source_features as (
 		  select
 		    ST_AsMVTGeom(%s, tile_bounds.geom, 4096, 256, true) as geom,
@@ -2068,6 +2188,7 @@ func (service *Service) GetLayerVectorTile(
 		  where geom is not null
 		) as tile_rows
 		`,
+		strings.Join(withClauses, ",\n\t\t"),
 		tileGeometryExpression,
 		strings.Join(propertyExpressions, ",\n\t\t    "),
 		quoteIdentifier(request.Schema),
@@ -2088,6 +2209,10 @@ func (service *Service) GetLayerExtent(
 	ctx context.Context,
 	request LayerExtentRequest,
 ) (*LayerExtentResult, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
 	defer cancel()
 
@@ -2150,14 +2275,40 @@ func (service *Service) GetLayerExtent(
 	if filterClause != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", filterClause))
 	}
-
-	query := fmt.Sprintf(
-		`
-		with extent as (
+	spatialClause, err := service.buildSpatialFilterClause(
+		timeoutCtx,
+		conn,
+		request.SpatialFilter,
+		geometryExpression,
+		len(parameters),
+	)
+	if err != nil {
+		return nil, err
+	}
+	withClauses := make([]string, 0, 2)
+	if spatialClause != nil {
+		withClauses = append(withClauses, spatialClause.CTE)
+		whereClauses = append(whereClauses, fmt.Sprintf("(%s)", spatialClause.Clause))
+		parameters = append(parameters, spatialClause.Parameters...)
+	}
+	withClauses = append(
+		withClauses,
+		fmt.Sprintf(
+			`extent as (
 		  select ST_Extent(%s) as bbox
 		  from %s.%s as source_row
 		  where %s
-		)
+		)`,
+			geometryExpression,
+			quoteIdentifier(request.Schema),
+			quoteIdentifier(request.Table),
+			strings.Join(whereClauses, " and "),
+		),
+	)
+
+	query := fmt.Sprintf(
+		`
+		with %s
 		select
 		  ST_XMin(bbox::box2d),
 		  ST_YMin(bbox::box2d),
@@ -2165,10 +2316,7 @@ func (service *Service) GetLayerExtent(
 		  ST_YMax(bbox::box2d)
 		from extent
 		`,
-		geometryExpression,
-		quoteIdentifier(request.Schema),
-		quoteIdentifier(request.Table),
-		strings.Join(whereClauses, " and "),
+		strings.Join(withClauses, ",\n\t\t"),
 	)
 
 	var west sql.NullFloat64
@@ -2208,6 +2356,10 @@ func (service *Service) ListFlowmapData(
 	ctx context.Context,
 	request ListFlowmapDataRequest,
 ) (*ListFlowmapDataResult, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
 	defer cancel()
 
@@ -2274,14 +2426,14 @@ func (service *Service) ListFlowmapData(
 	for _, columnName := range notNullColumns {
 		notNullPredicates = append(
 			notNullPredicates,
-			fmt.Sprintf("%s is not null", quoteIdentifier(columnName)),
+			fmt.Sprintf("source_row.%s is not null", quoteIdentifier(columnName)),
 		)
 	}
 
 	magnitudeExpression := fmt.Sprintf("%f::double precision", request.DefaultMagnitude)
 	if request.MagnitudeColumn != "" {
 		magnitudeExpression = fmt.Sprintf(
-			"%s::double precision",
+			"source_row.%s::double precision",
 			quoteIdentifier(request.MagnitudeColumn),
 		)
 	}
@@ -2296,25 +2448,62 @@ func (service *Service) ListFlowmapData(
 	for _, columnName := range primaryKey {
 		selectExpressions = append(
 			selectExpressions,
-			fmt.Sprintf("%s as %s", quoteIdentifier(columnName), quoteIdentifier(columnName)),
+			fmt.Sprintf("source_row.%s as %s", quoteIdentifier(columnName), quoteIdentifier(columnName)),
 		)
+	}
+	startPointExpression := fmt.Sprintf(
+		"ST_SetSRID(ST_MakePoint(%s, %s), 4326)",
+		startLonExpression,
+		startLatExpression,
+	)
+	endPointExpression := fmt.Sprintf(
+		"ST_SetSRID(ST_MakePoint(%s, %s), 4326)",
+		endLonExpression,
+		endLatExpression,
+	)
+	spatialClause, err := service.buildFlowmapSpatialFilterClause(
+		timeoutCtx,
+		conn,
+		request.SpatialFilter,
+		startPointExpression,
+		endPointExpression,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	parameters := []interface{}{}
+	withClauses := make([]string, 0, 1)
+	if spatialClause != nil {
+		withClauses = append(withClauses, spatialClause.CTE)
+		notNullPredicates = append(notNullPredicates, fmt.Sprintf("(%s)", spatialClause.Clause))
+		parameters = append(parameters, spatialClause.Parameters...)
+	}
+	parameters = append(parameters, request.Limit)
+	limitPlaceholder := fmt.Sprintf("$%d", len(parameters))
+	withPrefix := ""
+	if len(withClauses) > 0 {
+		withPrefix = fmt.Sprintf("with %s\n", strings.Join(withClauses, ",\n"))
 	}
 
 	query := fmt.Sprintf(
 		`
+		%s
 		select
 		  %s
-		from %s.%s
+		from %s.%s as source_row
 		where %s
-		limit $1
+		limit %s
 		`,
+		withPrefix,
 		strings.Join(selectExpressions, ",\n          "),
 		quoteIdentifier(request.Schema),
 		quoteIdentifier(request.Table),
 		strings.Join(notNullPredicates, " and "),
+		limitPlaceholder,
 	)
 
-	rows, err := conn.Query(timeoutCtx, query, request.Limit)
+	rows, err := conn.Query(timeoutCtx, query, parameters...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
@@ -2471,13 +2660,13 @@ func flowmapPointExpressions(
 	geometryColumn string,
 ) (string, string) {
 	if mode == "geometry" {
-		geometryExpression := fmt.Sprintf("%s::geometry", quoteIdentifier(geometryColumn))
+		geometryExpression := fmt.Sprintf("source_row.%s::geometry", quoteIdentifier(geometryColumn))
 		return fmt.Sprintf("ST_X(%s)::double precision", geometryExpression),
 			fmt.Sprintf("ST_Y(%s)::double precision", geometryExpression)
 	}
 
-	return fmt.Sprintf("%s::double precision", quoteIdentifier(lonColumn)),
-		fmt.Sprintf("%s::double precision", quoteIdentifier(latColumn))
+	return fmt.Sprintf("source_row.%s::double precision", quoteIdentifier(lonColumn)),
+		fmt.Sprintf("source_row.%s::double precision", quoteIdentifier(latColumn))
 }
 
 func (service *Service) applyTableOperation(
@@ -3303,7 +3492,7 @@ func geometryColumnWGS84Expression(
 	storageType string,
 	srid int,
 ) string {
-	geometryExpression := fmt.Sprintf("%s::geometry", quoteIdentifier(columnName))
+	geometryExpression := fmt.Sprintf("source_row.%s::geometry", quoteIdentifier(columnName))
 	if storageType == "geography" || srid == 4326 || srid == 0 {
 		return geometryExpression
 	}
@@ -3550,6 +3739,248 @@ func buildQueryFilterClause(
 	}
 
 	return strings.Join(clauses, " and "), parameters, nil
+}
+
+func (service *Service) buildSpatialFilterClause(
+	ctx context.Context,
+	runner queryRunner,
+	filter *SpatialFilter,
+	targetGeometryExpression string,
+	startParameterIndex int,
+) (*spatialFilterClause, error) {
+	if filter == nil {
+		return nil, nil
+	}
+
+	sourceGeometryColumns, err := service.listGeometryColumns(
+		ctx,
+		runner,
+		filter.SourceSchema,
+		filter.SourceTable,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var sourceGeometryColumn *geometryColumnDefinition
+	for index := range sourceGeometryColumns {
+		if sourceGeometryColumns[index].Name == filter.SourceGeometryColumn {
+			sourceGeometryColumn = &sourceGeometryColumns[index]
+			break
+		}
+	}
+	if sourceGeometryColumn == nil {
+		return nil, fmt.Errorf("%w: spatial filter source geometry column not found", ErrConnectionFailed)
+	}
+
+	sourceColumnDefinitions, err := service.listColumnDefinitions(
+		ctx,
+		runner,
+		filter.SourceSchema,
+		filter.SourceTable,
+	)
+	if err != nil {
+		return nil, err
+	}
+	sourcePrimaryKey, err := service.listPrimaryKeyColumns(
+		ctx,
+		runner,
+		filter.SourceSchema,
+		filter.SourceTable,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sourceColumnByName := make(map[string]columnDefinition, len(sourceColumnDefinitions))
+	for _, definition := range sourceColumnDefinitions {
+		sourceColumnByName[definition.Name] = definition
+	}
+
+	parameters := make([]interface{}, 0, len(filter.RowRefs)*max(1, len(sourcePrimaryKey)))
+	rowClauses := make([]string, 0, len(filter.RowRefs))
+	for _, rowRef := range filter.RowRefs {
+		if err := validateRowKey(rowRef.RowKey, sourcePrimaryKey); err != nil {
+			return nil, err
+		}
+
+		rowClause, rowParameters, err := buildPrimaryKeyFilter(
+			sourceColumnByName,
+			sourcePrimaryKey,
+			rowRef.RowKey,
+			startParameterIndex+len(parameters),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		rowClauses = append(rowClauses, fmt.Sprintf("(%s)", rowClause))
+		parameters = append(parameters, rowParameters...)
+	}
+
+	sourceGeometryExpression := geometryColumnWGS84Expression(
+		filter.SourceGeometryColumn,
+		sourceGeometryColumn.StorageType,
+		sourceGeometryColumn.SRID,
+	)
+	areaExpression := "(select geom from spatial_filter_area)"
+	predicate := fmt.Sprintf(
+		"ST_Intersects(%s, %s)",
+		targetGeometryExpression,
+		areaExpression,
+	)
+	if filter.Predicate == "within" {
+		predicate = fmt.Sprintf(
+			"ST_Within(%s, %s)",
+			targetGeometryExpression,
+			areaExpression,
+		)
+	}
+
+	return &spatialFilterClause{
+		CTE: fmt.Sprintf(
+			`spatial_filter_area as (
+		  select ST_UnaryUnion(ST_Collect(%s)) as geom
+		  from %s.%s as source_row
+		  where %s
+		)`,
+			sourceGeometryExpression,
+			quoteIdentifier(filter.SourceSchema),
+			quoteIdentifier(filter.SourceTable),
+			strings.Join(rowClauses, " or "),
+		),
+		Clause: fmt.Sprintf(
+			"%s is not null and %s && %s and %s",
+			areaExpression,
+			targetGeometryExpression,
+			areaExpression,
+			predicate,
+		),
+		Parameters: parameters,
+	}, nil
+}
+
+func (service *Service) buildFlowmapSpatialFilterClause(
+	ctx context.Context,
+	runner queryRunner,
+	filter *SpatialFilter,
+	startPointExpression string,
+	endPointExpression string,
+	startParameterIndex int,
+) (*spatialFilterClause, error) {
+	if filter == nil {
+		return nil, nil
+	}
+
+	sourceGeometryColumns, err := service.listGeometryColumns(
+		ctx,
+		runner,
+		filter.SourceSchema,
+		filter.SourceTable,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var sourceGeometryColumn *geometryColumnDefinition
+	for index := range sourceGeometryColumns {
+		if sourceGeometryColumns[index].Name == filter.SourceGeometryColumn {
+			sourceGeometryColumn = &sourceGeometryColumns[index]
+			break
+		}
+	}
+	if sourceGeometryColumn == nil {
+		return nil, fmt.Errorf("%w: spatial filter source geometry column not found", ErrConnectionFailed)
+	}
+
+	sourceColumnDefinitions, err := service.listColumnDefinitions(
+		ctx,
+		runner,
+		filter.SourceSchema,
+		filter.SourceTable,
+	)
+	if err != nil {
+		return nil, err
+	}
+	sourcePrimaryKey, err := service.listPrimaryKeyColumns(
+		ctx,
+		runner,
+		filter.SourceSchema,
+		filter.SourceTable,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sourceColumnByName := make(map[string]columnDefinition, len(sourceColumnDefinitions))
+	for _, definition := range sourceColumnDefinitions {
+		sourceColumnByName[definition.Name] = definition
+	}
+
+	parameters := make([]interface{}, 0, len(filter.RowRefs)*max(1, len(sourcePrimaryKey)))
+	rowClauses := make([]string, 0, len(filter.RowRefs))
+	for _, rowRef := range filter.RowRefs {
+		if err := validateRowKey(rowRef.RowKey, sourcePrimaryKey); err != nil {
+			return nil, err
+		}
+
+		rowClause, rowParameters, err := buildPrimaryKeyFilter(
+			sourceColumnByName,
+			sourcePrimaryKey,
+			rowRef.RowKey,
+			startParameterIndex+len(parameters),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		rowClauses = append(rowClauses, fmt.Sprintf("(%s)", rowClause))
+		parameters = append(parameters, rowParameters...)
+	}
+
+	sourceGeometryExpression := geometryColumnWGS84Expression(
+		filter.SourceGeometryColumn,
+		sourceGeometryColumn.StorageType,
+		sourceGeometryColumn.SRID,
+	)
+	areaExpression := "(select geom from spatial_filter_area)"
+	lineExpression := fmt.Sprintf("ST_MakeLine(%s, %s)", startPointExpression, endPointExpression)
+	predicate := fmt.Sprintf(
+		"(ST_Intersects(%s, %s) or ST_Intersects(%s, %s))",
+		startPointExpression,
+		areaExpression,
+		endPointExpression,
+		areaExpression,
+	)
+	if filter.Predicate == "within" {
+		predicate = fmt.Sprintf(
+			"ST_Within(%s, %s)",
+			lineExpression,
+			areaExpression,
+		)
+	}
+
+	return &spatialFilterClause{
+		CTE: fmt.Sprintf(
+			`spatial_filter_area as (
+		  select ST_UnaryUnion(ST_Collect(%s)) as geom
+		  from %s.%s as source_row
+		  where %s
+		)`,
+			sourceGeometryExpression,
+			quoteIdentifier(filter.SourceSchema),
+			quoteIdentifier(filter.SourceTable),
+			strings.Join(rowClauses, " or "),
+		),
+		Clause: fmt.Sprintf(
+			"%s is not null and %s && %s and %s",
+			areaExpression,
+			lineExpression,
+			areaExpression,
+			predicate,
+		),
+		Parameters: parameters,
+	}, nil
 }
 
 func valueToFloat64(value interface{}) (float64, bool) {
