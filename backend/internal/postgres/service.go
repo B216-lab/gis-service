@@ -1189,7 +1189,7 @@ func (service *Service) getTableMetadata(
 	for _, column := range columnDefinitions {
 		columns = append(columns, ColumnMeta{
 			Name: column.Name,
-			Type: column.Type,
+			Type: displayColumnType(column),
 		})
 	}
 
@@ -1280,7 +1280,7 @@ func (service *Service) ListRows(
 		selectExpressions = append(selectExpressions, columnSelectExpression(column))
 		columns = append(columns, ColumnMeta{
 			Name: column.Name,
-			Type: column.Type,
+			Type: displayColumnType(column),
 		})
 		if isColumnSearchable(column) {
 			searchExpressions = append(searchExpressions, columnSearchExpression(column))
@@ -1455,7 +1455,7 @@ func (service *Service) LookupRows(
 		selectExpressions = append(selectExpressions, columnSelectExpression(column))
 		columns = append(columns, ColumnMeta{
 			Name: column.Name,
-			Type: column.Type,
+			Type: displayColumnType(column),
 		})
 	}
 
@@ -3120,6 +3120,14 @@ func isColumnEditable(definition columnDefinition) bool {
 	default:
 		return false
 	}
+}
+
+func displayColumnType(definition columnDefinition) string {
+	if definition.Type == "USER-DEFINED" && definition.UdtName != "" {
+		return definition.UdtName
+	}
+
+	return definition.Type
 }
 
 func isColumnSearchable(definition columnDefinition) bool {
