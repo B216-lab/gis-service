@@ -110,6 +110,10 @@ type DrawTarget = {
   source: GeoJsonTableSource;
   table: InspectableTable;
 };
+type LocateFeatureBoundsRequest = {
+  token: number;
+  bounds: GeoBounds;
+};
 
 function getSourceSignature(source: MapSource) {
   return JSON.stringify(source);
@@ -314,6 +318,7 @@ export function MapPane({
   activeLayerId,
   basemapId,
   connection,
+  locateFeatureBounds,
   mapSelection,
   tables,
   visibleLayers,
@@ -324,6 +329,7 @@ export function MapPane({
   activeLayerId: string | null;
   basemapId: BasemapId;
   connection: DatabaseConnection | null;
+  locateFeatureBounds: LocateFeatureBoundsRequest | null;
   mapSelection: MapSelection | null;
   tables: InspectableTable[];
   visibleLayers: MapLayer[];
@@ -1072,6 +1078,21 @@ export function MapPane({
     styleVersion,
     visibleLayers,
   ]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!isMapReady || !map || !locateFeatureBounds) {
+      return;
+    }
+
+    const bounds = new LngLatBounds();
+    extendBoundsWithGeoBounds(bounds, locateFeatureBounds.bounds);
+    map.fitBounds(bounds, {
+      padding: 80,
+      duration: 700,
+      maxZoom: 15,
+    });
+  }, [isMapReady, locateFeatureBounds]);
 
   useEffect(() => {
     if (!isMapReady || !connection || connection.testStatus !== 'success') {

@@ -86,6 +86,18 @@ export interface FlowmapDataResponse {
   flows: FlowmapFlow[];
 }
 
+export interface LocateFeatureResponse {
+  schema: string;
+  table: string;
+  geometryColumn: string;
+  geometryType: string;
+  srid: number;
+  feature: GeoJsonFeature;
+  bounds: GeoBounds | null;
+  rowRef: RowReference;
+  featureKey: string;
+}
+
 interface ErrorResponse {
   error: {
     code: string;
@@ -271,6 +283,37 @@ export async function createPolygonFeature(
   return await decodePayload<CreateFeatureResponse>(
     response,
     'Failed to create feature.',
+  );
+}
+
+export async function locateGeoJsonFeature(
+  connection: DatabaseConnection,
+  payload: {
+    schema: string;
+    table: string;
+    geometryColumn: string;
+    rowKey: Record<string, unknown>;
+  },
+  signal?: AbortSignal,
+) {
+  const response = await fetch('/api/v1/database-connections/features/locate', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...connectionPayload(connection),
+      schema: payload.schema,
+      table: payload.table,
+      geometryColumn: payload.geometryColumn,
+      rowKey: payload.rowKey,
+    }),
+  });
+
+  return decodePayload<LocateFeatureResponse>(
+    response,
+    'Failed to locate feature.',
   );
 }
 

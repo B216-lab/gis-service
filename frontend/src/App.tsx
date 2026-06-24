@@ -40,6 +40,7 @@ import {
   IconFolder,
   IconInfoCircle,
   IconLayersIntersect,
+  IconMapPin,
   IconPencil,
   IconPlug,
   IconPlugConnected,
@@ -130,6 +131,11 @@ import {
   renderEditableCell,
 } from './features/inspector/table-editing';
 import {
+  type GeoBounds,
+  type LocateFeatureResponse,
+  locateGeoJsonFeature,
+} from './features/map/api';
+import {
   type BasemapId,
   basemapOptions,
   defaultBasemapId,
@@ -157,6 +163,16 @@ type RightPaneTab = 'layer' | 'data' | 'analysis';
 interface GeoJsonSpatialFilterTarget {
   layer: GeoJsonMapLayer | FlowmapMapLayer;
   source: GeoJsonTableSource | FlowmapTableSource;
+}
+
+interface GeoJsonLocateTarget {
+  layer: GeoJsonMapLayer;
+  source: GeoJsonTableSource;
+}
+
+interface LocateFeatureBoundsState {
+  token: number;
+  bounds: GeoBounds;
 }
 
 interface ConnectionFormState {
@@ -1934,6 +1950,9 @@ function DataInspector({
   featureCreateRefreshToken,
   isLoadingTables,
   isLoadingTableMetadata,
+  mapLayers = [],
+  mapSources = [],
+  onLocateFeature,
   selectedView,
   selectedTable,
   tablesError,
@@ -1942,6 +1961,12 @@ function DataInspector({
   featureCreateRefreshToken: number;
   isLoadingTables: boolean;
   isLoadingTableMetadata: boolean;
+  mapLayers: MapLayer[];
+  mapSources: MapSource[];
+  onLocateFeature: (
+    target: GeoJsonLocateTarget,
+    rowKey: Record<string, unknown>,
+  ) => Promise<void>;
   selectedView: SavedTableView | null;
   selectedTable: InspectableTable | null;
   tablesError: string;
@@ -1961,6 +1986,8 @@ function DataInspector({
   const [isSavingChanges, setIsSavingChanges] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveMessage, setSaveMessage] = useState('');
+  const [locatingRowToken, setLocatingRowToken] = useState<string | null>(null);
+  const [locateError, setLocateError] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(
@@ -2004,6 +2031,39 @@ function DataInspector({
     selectedViewFromList ??
     matchingSavedViews.find((view) => view.id === activeSavedViewId) ??
     null;
+  const locateTargets = useMemo(() => {
+    if (!selectedTable) {
+      return [];
+    }
+
+    const targets = mapLayers.flatMap((layer) => {
+      if (layer.type !== 'geojson' || !layer.visible) {
+        return [];
+      }
+
+      const source = mapSources.find(
+        (candidate): candidate is GeoJsonTableSource =>
+          candidate.id === layer.sourceId &&
+          candidate.type === 'geojson-table' &&
+          (candidate.sourceViewId === activeSavedView?.id ||
+            (candidate.schema === selectedTable.schema &&
+              candidate.table === selectedTable.name)),
+      );
+
+      return source ? [{ layer, source }] : [];
+    });
+
+    return targets.sort((left, right) => {
+      const leftMatchesView = left.source.sourceViewId === activeSavedView?.id;
+      const rightMatchesView =
+        right.source.sourceViewId === activeSavedView?.id;
+      if (leftMatchesView === rightMatchesView) {
+        return 0;
+      }
+
+      return leftMatchesView ? -1 : 1;
+    });
+  }, [activeSavedView?.id, mapLayers, mapSources, selectedTable]);
   const activeTableFilter = activeSavedView?.filter ?? null;
   const canCreateSavedView = Boolean(
     selectedTable?.columns.some((column) => isEditableColumnType(column.type)),
@@ -2377,6 +2437,26 @@ function DataInspector({
     setSaveMessage('');
   }
 
+  async function handleLocateRow(row: InspectorRow) {
+    if (!row.rowKey || locateTargets.length === 0) {
+      return;
+    }
+
+    const rowToken = serializeRowKey(row.rowKey, activePrimaryKey);
+    setLocatingRowToken(rowToken);
+    setLocateError('');
+
+    try {
+      await onLocateFeature(locateTargets[0], row.rowKey);
+    } catch (error) {
+      setLocateError(
+        error instanceof Error ? error.message : 'Failed to locate row.',
+      );
+    } finally {
+      setLocatingRowToken(null);
+    }
+  }
+
   function handleOpenSavedViewModal() {
     setEditingSavedView(null);
     savedViewModal.open();
@@ -2626,6 +2706,12 @@ function DataInspector({
           </Alert>
         ) : null}
 
+        {locateError ? (
+          <Alert color="orange" title="Locate failed" variant="light">
+            {locateError}
+          </Alert>
+        ) : null}
+
         {!selectedTable && (isLoadingTables || isLoadingTableMetadata) ? (
           <Center
             style={{
@@ -2840,6 +2926,8 @@ function DataInspector({
                       const isDeleted = rowToken
                         ? Boolean(draftDeletes[rowToken])
                         : false;
+                      const canLocateRow =
+                        Boolean(row.rowKey) && locateTargets.length > 0;
                       const rowRenderKey =
                         rowToken ??
                         JSON.stringify([
@@ -2893,6 +2981,27 @@ function DataInspector({
                                   ) : (
                                     <IconTrash size={14} />
                                   )}
+                                </ActionIcon>
+                              ) : null}
+                              {row.rowKey ? (
+                                <ActionIcon
+                                  aria-label="Locate row on map"
+                                  color="blue"
+                                  disabled={!canLocateRow}
+                                  loading={
+                                    Boolean(rowToken) &&
+                                    locatingRowToken === rowToken
+                                  }
+                                  onClick={() => void handleLocateRow(row)}
+                                  size="sm"
+                                  title={
+                                    canLocateRow
+                                      ? `Locate in ${locateTargets[0].layer.name}`
+                                      : 'No visible geometry layer for this row'
+                                  }
+                                  variant="subtle"
+                                >
+                                  <IconMapPin size={14} />
                                 </ActionIcon>
                               ) : null}
                             </Group>
@@ -3812,6 +3921,26 @@ function isFlowmapLayer(layer: MapLayer): layer is FlowmapMapLayer {
   return layer.type === 'flowmap';
 }
 
+function buildLocatedFeatureSelection(
+  result: LocateFeatureResponse,
+  target: GeoJsonLocateTarget,
+): MapSelection {
+  return {
+    layerId: target.layer.id,
+    layerName: target.layer.name,
+    sourceId: target.source.id,
+    sourceType: target.source.type,
+    sourceFullName: target.source.fullName,
+    schema: target.source.schema,
+    table: target.source.table,
+    objectType: 'feature',
+    rowRefs: [result.rowRef],
+    inlineProperties: result.feature.properties,
+    featureKey: result.featureKey,
+    title: target.layer.name,
+  };
+}
+
 function AnalysisWorkspacePanel({
   activeLayer,
   activeSource,
@@ -3933,6 +4062,8 @@ export function App() {
   const [catalogError, setCatalogError] = useState('');
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
   const [mapSelection, setMapSelection] = useState<MapSelection | null>(null);
+  const [locateFeatureBounds, setLocateFeatureBounds] =
+    useState<LocateFeatureBoundsState | null>(null);
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('layer');
   const [featureCreateRefreshToken, setFeatureCreateRefreshToken] = useState(0);
 
@@ -4402,6 +4533,33 @@ export function App() {
     setRightPaneTab('data');
   }
 
+  async function handleLocateFeature(
+    target: GeoJsonLocateTarget,
+    rowKey: Record<string, unknown>,
+  ) {
+    if (!selectedConnection) {
+      return;
+    }
+
+    const result = await locateGeoJsonFeature(selectedConnection, {
+      schema: target.source.schema,
+      table: target.source.table,
+      geometryColumn: target.source.geometryColumn,
+      rowKey,
+    });
+
+    setMapSelection(buildLocatedFeatureSelection(result, target));
+    setActiveLayerId(target.layer.id);
+    setRightPaneTab('data');
+
+    if (result.bounds) {
+      setLocateFeatureBounds({
+        token: Date.now(),
+        bounds: result.bounds,
+      });
+    }
+  }
+
   function handleFeatureCreated(source: GeoJsonTableSource) {
     refreshGeoJsonSourcesForTable({
       connectionId: source.connectionId,
@@ -4516,6 +4674,7 @@ export function App() {
                     activeLayerId={activeLayerId}
                     basemapId={selectedBasemapId ?? defaultBasemapId}
                     connection={selectedConnection}
+                    locateFeatureBounds={locateFeatureBounds}
                     mapSelection={mapSelection}
                     onFeatureCreated={handleFeatureCreated}
                     onSelectMapObject={handleSelectMapObject}
@@ -4539,6 +4698,9 @@ export function App() {
                       Object.values(loadingSchemaTablesByName).some(Boolean)
                     }
                     key={`${selectedConnectionId ?? 'none'}:${selectedTableKey ?? 'none'}`}
+                    mapLayers={selectedVisibleMapLayers}
+                    mapSources={mapSources}
+                    onLocateFeature={handleLocateFeature}
                     selectedView={selectedSavedView}
                     selectedTable={selectedInspectableTable}
                     tablesError={catalogError}
