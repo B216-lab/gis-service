@@ -1,0 +1,71 @@
+services:
+  postgis-test:
+    image: postgis/postgis:16-3.5-alpine
+    environment:
+      POSTGRES_DB: geopanel_test
+      POSTGRES_USER: geopanel
+      POSTGRES_PASSWORD: geopanel
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    ports:
+      - '${GEOPANEL_DEV_DB_PORT:-55432}:5432'
+    volumes:
+      - postgis_test_data:/var/lib/postgresql/data
+      - ./docker/postgis/init:/docker-entrypoint-initdb.d:ro
+
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    command: sh ./docker/dev-watch.sh
+    environment:
+      API_ADDR: :18080
+      API_DB_TIMEOUT: ${API_DB_TIMEOUT:-45s}
+      GEOPANEL_DATABASE_URL: ${GEOPANEL_DATABASE_URL:-postgres://geopanel:geopanel@postgis-test:5432/geopanel_test?sslmode=disable}
+      GEOPANEL_DATABASE_ID: ${GEOPANEL_DATABASE_ID:-local-test}
+      GEOPANEL_DATABASE_NAME: ${GEOPANEL_DATABASE_NAME:-Local PostGIS Test}
+    depends_on:
+      postgis-test:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:18080/api/v1/health']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    ports:
+      - '${GEOPANEL_DEV_API_PORT:-18081}:18080'
+    volumes:
+      - ./backend:/src
+      - backend_go_mod:/go/pkg/mod
+      - backend_go_build:/root/.cache/go-build
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    command: bun run dev
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:18080
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - '${GEOPANEL_DEV_HTTP_PORT:-5173}:5173'
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+
+volumes:
+  backend_go_mod:
+  backend_go_build:
+  frontend_node_modules:
+  postgis_test_data:

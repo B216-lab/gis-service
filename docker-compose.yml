@@ -1,0 +1,23 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      API_ADDR: :18080
+      API_DB_TIMEOUT: ${API_DB_TIMEOUT:-45s}
+      GEOPANEL_DATABASE_URL: ${GEOPANEL_DATABASE_URL:?set GEOPANEL_DATABASE_URL in server env}
+      GEOPANEL_DATABASE_ID: ${GEOPANEL_DATABASE_ID:-primary}
+      GEOPANEL_DATABASE_NAME: ${GEOPANEL_DATABASE_NAME:-Production database}
+    expose:
+      - '18080'
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - '${GEOPANEL_HTTP_PORT:-8080}:80'

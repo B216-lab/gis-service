@@ -184,6 +184,10 @@ interface ConnectionFormState {
   password: string;
 }
 
+interface ServerConnectionResponse {
+  connections: Array<Pick<DatabaseConnection, 'id' | 'name'>>;
+}
+
 const initialConnectionForm: ConnectionFormState = {
   name: '',
   host: '127.0.0.1',
@@ -192,6 +196,24 @@ const initialConnectionForm: ConnectionFormState = {
   user: '',
   password: '',
 };
+
+function connectionRequestPayload(connection: DatabaseConnection) {
+  if (connection.isServerManaged) {
+    return {
+      id: connection.id,
+    };
+  }
+
+  return {
+    id: connection.id,
+    name: connection.name,
+    host: connection.host,
+    port: connection.port,
+    database: connection.database,
+    user: connection.user,
+    password: connection.password,
+  };
+}
 
 function ConnectionManager({
   activeLayerId,
@@ -430,14 +452,7 @@ function ConnectionManager({
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          name: connection.name,
-          host: connection.host,
-          port: connection.port,
-          database: connection.database,
-          user: connection.user,
-          password: connection.password,
-        }),
+        body: JSON.stringify(connectionRequestPayload(connection)),
       });
 
       const payload = (await response.json()) as
@@ -531,7 +546,8 @@ function ConnectionManager({
           />
           <Group justify="space-between" pt="xs">
             <Text c="dimmed" size="xs">
-              Saved locally. Real test runs through backend API.
+              Browser connections are local. Server connections keep password on
+              backend.
             </Text>
             <Button onClick={handleSubmit}>Save connection</Button>
           </Group>
@@ -821,11 +837,20 @@ function ConnectionManager({
                       <ActionIcon
                         aria-label={`Delete ${connection.name}`}
                         color="red"
+                        disabled={connection.isServerManaged}
                         onClick={(event) => {
                           event.stopPropagation();
+                          if (connection.isServerManaged) {
+                            return;
+                          }
                           removeConnection(connection.id);
                         }}
                         size="sm"
+                        title={
+                          connection.isServerManaged
+                            ? 'Configured on server'
+                            : 'Delete connection'
+                        }
                         variant="subtle"
                       >
                         <IconTrash size={16} />
@@ -833,8 +858,9 @@ function ConnectionManager({
                     </Group>
 
                     <Text c="dimmed" size="xs">
-                      {connection.host}:{connection.port} /{' '}
-                      {connection.database}
+                      {connection.isServerManaged
+                        ? 'Configured on backend'
+                        : `${connection.host}:${connection.port} / ${connection.database}`}
                     </Text>
 
                     <Text c="dimmed" size="xs">
@@ -877,6 +903,11 @@ function ConnectionManager({
                         {isSelected ? (
                           <Badge color="blue" radius="sm" variant="light">
                             Selected
+                          </Badge>
+                        ) : null}
+                        {connection.isServerManaged ? (
+                          <Badge color="grape" radius="sm" variant="light">
+                            Server
                           </Badge>
                         ) : null}
                       </Group>
@@ -4047,6 +4078,9 @@ export function App() {
   const removeSavedTableView = useConnectionStore(
     (state) => state.removeSavedTableView,
   );
+  const upsertServerConnections = useConnectionStore(
+    (state) => state.upsertServerConnections,
+  );
   const [schemas, setSchemas] = useState<InspectableSchema[]>([]);
   const [schemaTablesByName, setSchemaTablesByName] =
     useState<SchemaTablesByName>({});
@@ -4066,6 +4100,32 @@ export function App() {
     useState<LocateFeatureBoundsState | null>(null);
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('layer');
   const [featureCreateRefreshToken, setFeatureCreateRefreshToken] = useState(0);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadServerConnections() {
+      try {
+        const response = await fetch('/api/v1/database-connections');
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = (await response.json()) as ServerConnectionResponse;
+        if (isActive) {
+          upsertServerConnections(payload.connections);
+        }
+      } catch {
+        // Local dev can run without server-managed connections.
+      }
+    }
+
+    void loadServerConnections();
+
+    return () => {
+      isActive = false;
+    };
+  }, [upsertServerConnections]);
 
   const selectedConnection =
     connections.find((connection) => connection.id === selectedConnectionId) ??

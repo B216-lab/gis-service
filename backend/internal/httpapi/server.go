@@ -58,6 +58,10 @@ func NewServer(service *postgres.Service) *http.ServeMux {
 func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/v1/health", server.handleHealth)
 	server.mux.HandleFunc(
+		"GET /api/v1/database-connections",
+		server.handleListRegisteredConnections,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/test",
 		server.handleConnectionTest,
 	)
@@ -117,6 +121,13 @@ func (server *Server) routes() {
 		"POST /api/v1/database-connections/flowmap-data",
 		server.handleFlowmapData,
 	)
+}
+
+func (server *Server) handleListRegisteredConnections(
+	writer http.ResponseWriter,
+	_ *http.Request,
+) {
+	writeJSON(writer, http.StatusOK, server.service.ListRegisteredConnections())
 }
 
 func (server *Server) handleHealth(

@@ -106,7 +106,14 @@ interface ErrorResponse {
 }
 
 function connectionPayload(connection: DatabaseConnection) {
+  if (connection.isServerManaged) {
+    return {
+      id: connection.id,
+    };
+  }
+
   return {
+    id: connection.id,
     name: connection.name,
     host: connection.host,
     port: connection.port,
@@ -155,12 +162,7 @@ export async function fetchGeoJsonSourceData(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      name: connection.name,
-      host: connection.host,
-      port: connection.port,
-      database: connection.database,
-      user: connection.user,
-      password: connection.password,
+      ...connectionPayload(connection),
       schema: source.schema,
       table: source.table,
       geometryColumn: source.geometryColumn,
@@ -193,12 +195,7 @@ export async function fetchGeoJsonSourceExtent(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      name: connection.name,
-      host: connection.host,
-      port: connection.port,
-      database: connection.database,
-      user: connection.user,
-      password: connection.password,
+      ...connectionPayload(connection),
       schema: source.schema,
       table: source.table,
       geometryColumn: source.geometryColumn,
@@ -227,12 +224,7 @@ export async function registerVectorTileSource(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        name: connection.name,
-        host: connection.host,
-        port: connection.port,
-        database: connection.database,
-        user: connection.user,
-        password: connection.password,
+        ...connectionPayload(connection),
         schema: source.schema,
         table: source.table,
         geometryColumn: source.geometryColumn,
@@ -329,12 +321,7 @@ export async function fetchFlowmapSourceData(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      name: connection.name,
-      host: connection.host,
-      port: connection.port,
-      database: connection.database,
-      user: connection.user,
-      password: connection.password,
+      ...connectionPayload(connection),
       schema: source.schema,
       table: source.table,
       startMode: source.columns.startMode,

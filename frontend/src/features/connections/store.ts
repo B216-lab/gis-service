@@ -17,6 +17,7 @@ export interface DatabaseConnection {
   database: string;
   user: string;
   password: string;
+  isServerManaged: boolean;
   isActive: boolean;
   createdAt: string;
   testStatus: 'idle' | 'testing' | 'success' | 'error';
@@ -145,7 +146,11 @@ interface ConnectionStoreState {
       | 'testMessage'
       | 'postgresVersion'
       | 'postgisVersion'
+      | 'isServerManaged'
     >,
+  ) => void;
+  upsertServerConnections: (
+    connections: Pick<DatabaseConnection, 'id' | 'name'>[],
   ) => void;
   removeConnection: (connectionId: string) => void;
   addSavedTableView: (
@@ -334,10 +339,22 @@ function normalizeConnection(
     return {
       ...connection,
       password: 'geopanel',
+      isServerManaged: connection.isServerManaged ?? false,
     };
   }
 
-  return connection;
+  return {
+    ...connection,
+    password: '',
+    isServerManaged: connection.isServerManaged ?? false,
+  };
+}
+
+function stripConnectionSecret(connection: DatabaseConnection) {
+  return {
+    ...connection,
+    password: '',
+  };
 }
 
 function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
@@ -557,6 +574,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           database: 'geopanel_test',
           user: 'geopanel',
           password: 'geopanel',
+          isServerManaged: false,
           isActive: true,
           createdAt: new Date().toISOString(),
           testStatus: 'idle',
@@ -575,6 +593,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         set((state) => {
           const nextConnection: DatabaseConnection = {
             ...connection,
+            isServerManaged: false,
             id: createConnectionId(),
             createdAt: new Date().toISOString(),
             testStatus: 'idle',
@@ -589,6 +608,67 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             selectedTableByConnectionId: {
               ...state.selectedTableByConnectionId,
               [nextConnection.id]: null,
+            },
+          };
+        }),
+      upsertServerConnections: (connections) =>
+        set((state) => {
+          const serverIds = new Set(
+            connections.map((connection) => connection.id),
+          );
+          const existingById = new Map(
+            state.connections.map((connection) => [connection.id, connection]),
+          );
+          const nextServerConnections = connections.map((connection) => {
+            const existing = existingById.get(connection.id);
+
+            return {
+              ...connection,
+              host: existing?.host ?? '',
+              port: existing?.port ?? '',
+              database: existing?.database ?? '',
+              user: existing?.user ?? '',
+              password: '',
+              isServerManaged: true,
+              isActive: existing?.isActive ?? true,
+              createdAt: existing?.createdAt ?? new Date().toISOString(),
+              testStatus: existing?.testStatus ?? 'idle',
+              testMessage:
+                existing?.testMessage ?? 'Server-managed connection.',
+              postgresVersion: existing?.postgresVersion ?? '',
+              postgisVersion: existing?.postgisVersion ?? '',
+            } satisfies DatabaseConnection;
+          });
+          const localConnections = state.connections.filter(
+            (connection) =>
+              !connection.isServerManaged || serverIds.has(connection.id),
+          );
+          const localOnlyConnections = localConnections.filter(
+            (connection) => !serverIds.has(connection.id),
+          );
+          const nextConnections = [
+            ...nextServerConnections,
+            ...localOnlyConnections,
+          ];
+          const selectedConnectionId =
+            state.selectedConnectionId &&
+            nextConnections.some(
+              (connection) => connection.id === state.selectedConnectionId,
+            )
+              ? state.selectedConnectionId
+              : (nextConnections[0]?.id ?? null);
+
+          return {
+            connections: nextConnections,
+            selectedConnectionId,
+            selectedTableByConnectionId: {
+              ...Object.fromEntries(
+                nextServerConnections.map((connection) => [
+                  connection.id,
+                  null,
+                ]),
+              ),
+              ...state.selectedTableByConnectionId,
             },
           };
         }),
@@ -1016,7 +1096,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         };
       },
       partialize: (state) => ({
-        connections: state.connections,
+        connections: state.connections.map(stripConnectionSecret),
         mapSources: state.mapSources,
         mapLayers: state.mapLayers,
         savedTableViews: state.savedTableViews,

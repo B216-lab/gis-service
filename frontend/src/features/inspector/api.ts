@@ -80,7 +80,14 @@ export interface TableChangeOperation {
 }
 
 function connectionPayload(connection: DatabaseConnection) {
+  if (connection.isServerManaged) {
+    return {
+      id: connection.id,
+    };
+  }
+
   return {
+    id: connection.id,
     name: connection.name,
     host: connection.host,
     port: connection.port,

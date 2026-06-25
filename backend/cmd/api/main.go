@@ -2,8 +2,11 @@ package main
 
 import (
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"geopanel/backend/internal/httpapi"
@@ -13,8 +16,9 @@ import (
 func main() {
 	addr := envOrDefault("API_ADDR", ":18080")
 	databaseTimeout := durationEnvOrDefault("API_DB_TIMEOUT", 45*time.Second)
+	registeredConnections := registeredConnectionsFromEnv()
 
-	service := postgres.NewService(databaseTimeout)
+	service := postgres.NewService(databaseTimeout, registeredConnections...)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           httpapi.NewServer(service),
@@ -50,4 +54,52 @@ func durationEnvOrDefault(name string, fallback time.Duration) time.Duration {
 	}
 
 	return duration
+}
+
+func registeredConnectionsFromEnv() []postgres.ConnectionTestRequest {
+	databaseURL := os.Getenv("GEOPANEL_DATABASE_URL")
+	if databaseURL == "" {
+		return nil
+	}
+
+	connection, err := connectionFromDatabaseURL(databaseURL)
+	if err != nil {
+		log.Printf("invalid GEOPANEL_DATABASE_URL: %v", err)
+		return nil
+	}
+
+	return []postgres.ConnectionTestRequest{connection}
+}
+
+func connectionFromDatabaseURL(value string) (postgres.ConnectionTestRequest, error) {
+	parsedURL, err := url.Parse(value)
+	if err != nil {
+		return postgres.ConnectionTestRequest{}, err
+	}
+
+	password, _ := parsedURL.User.Password()
+	host := parsedURL.Hostname()
+	port := parsedURL.Port()
+	if port == "" {
+		port = "5432"
+	}
+	if host == "" {
+		return postgres.ConnectionTestRequest{}, net.InvalidAddrError("missing host")
+	}
+
+	database := strings.TrimPrefix(parsedURL.Path, "/")
+	if database == "" {
+		return postgres.ConnectionTestRequest{}, net.InvalidAddrError("missing database")
+	}
+
+	return postgres.ConnectionTestRequest{
+		ID:       envOrDefault("GEOPANEL_DATABASE_ID", "primary"),
+		Name:     envOrDefault("GEOPANEL_DATABASE_NAME", "Production database"),
+		Host:     host,
+		Port:     port,
+		Database: database,
+		User:     parsedURL.User.Username(),
+		Password: password,
+		RawQuery: parsedURL.RawQuery,
+	}, nil
 }

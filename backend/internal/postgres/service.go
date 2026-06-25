@@ -34,9 +34,10 @@ var forbiddenSQLWherePattern = regexp.MustCompile(
 )
 
 type Service struct {
-	timeout      time.Duration
-	tilePools    map[string]tilePoolEntry
-	tilePoolsMux sync.Mutex
+	timeout               time.Duration
+	registeredConnections map[string]ConnectionTestRequest
+	tilePools             map[string]tilePoolEntry
+	tilePoolsMux          sync.Mutex
 }
 
 type tilePoolEntry struct {
@@ -45,20 +46,28 @@ type tilePoolEntry struct {
 }
 
 type ConnectionTestRequest struct {
+	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Host     string `json:"host"`
 	Port     string `json:"port"`
 	Database string `json:"database"`
 	User     string `json:"user"`
 	Password string `json:"password"`
+	RawQuery string `json:"-"`
+}
+
+type RegisteredConnectionSummary struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type ListRegisteredConnectionsResult struct {
+	Connections []RegisteredConnectionSummary `json:"connections"`
 }
 
 type ConnectionTestResult struct {
 	Success         bool   `json:"success"`
 	Message         string `json:"message"`
-	Database        string `json:"database"`
-	Host            string `json:"host"`
-	Port            string `json:"port"`
 	PostgresVersion string `json:"postgresVersion"`
 	PostgisVersion  string `json:"postgisVersion"`
 }
@@ -385,22 +394,41 @@ type queryRunner interface {
 	Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error)
 }
 
-func NewService(timeout time.Duration) *Service {
+func NewService(
+	timeout time.Duration,
+	registeredConnections ...ConnectionTestRequest,
+) *Service {
+	connectionByID := make(map[string]ConnectionTestRequest, len(registeredConnections))
+	for _, connection := range registeredConnections {
+		connection.TrimSpaces()
+		if connection.ID == "" {
+			continue
+		}
+		connectionByID[connection.ID] = connection
+	}
+
 	return &Service{
-		timeout:   timeout,
-		tilePools: make(map[string]tilePoolEntry),
+		timeout:               timeout,
+		registeredConnections: connectionByID,
+		tilePools:             make(map[string]tilePoolEntry),
 	}
 }
 
 func (request *ConnectionTestRequest) TrimSpaces() {
+	request.ID = strings.TrimSpace(request.ID)
 	request.Name = strings.TrimSpace(request.Name)
 	request.Host = strings.TrimSpace(request.Host)
 	request.Port = strings.TrimSpace(request.Port)
 	request.Database = strings.TrimSpace(request.Database)
 	request.User = strings.TrimSpace(request.User)
+	request.RawQuery = strings.TrimSpace(request.RawQuery)
 }
 
 func (request ConnectionTestRequest) Validate() error {
+	if request.ID != "" && !request.hasDirectCredentials() {
+		return nil
+	}
+
 	if request.Name == "" {
 		return errors.New("Connection name is required.")
 	}
@@ -427,6 +455,14 @@ func (request ConnectionTestRequest) Validate() error {
 	}
 
 	return nil
+}
+
+func (request ConnectionTestRequest) hasDirectCredentials() bool {
+	return request.Host != "" ||
+		request.Port != "" ||
+		request.Database != "" ||
+		request.User != "" ||
+		request.Password != ""
 }
 
 func (request *ListRowsRequest) TrimSpaces() {
@@ -1069,10 +1105,15 @@ func (service *Service) TestConnection(
 	ctx context.Context,
 	request ConnectionTestRequest,
 ) (*ConnectionTestResult, error) {
+	resolvedRequest, err := service.resolveConnectionRequest(request)
+	if err != nil {
+		return nil, err
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
 	defer cancel()
 
-	conn, err := service.connect(timeoutCtx, request)
+	conn, err := service.connect(timeoutCtx, resolvedRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -1091,12 +1132,27 @@ func (service *Service) TestConnection(
 	return &ConnectionTestResult{
 		Success:         true,
 		Message:         "Connection test passed.",
-		Database:        request.Database,
-		Host:            request.Host,
-		Port:            request.Port,
 		PostgresVersion: postgresVersion,
 		PostgisVersion:  postgisVersion,
 	}, nil
+}
+
+func (service *Service) ListRegisteredConnections() *ListRegisteredConnectionsResult {
+	connections := make([]RegisteredConnectionSummary, 0, len(service.registeredConnections))
+	for _, connection := range service.registeredConnections {
+		connections = append(connections, RegisteredConnectionSummary{
+			ID:   connection.ID,
+			Name: connection.Name,
+		})
+	}
+
+	slices.SortFunc(connections, func(left, right RegisteredConnectionSummary) int {
+		return strings.Compare(left.Name, right.Name)
+	})
+
+	return &ListRegisteredConnectionsResult{
+		Connections: connections,
+	}
 }
 
 func (service *Service) ListSchemas(
@@ -3309,7 +3365,12 @@ func (service *Service) connect(
 	ctx context.Context,
 	request ConnectionTestRequest,
 ) (*pgx.Conn, error) {
-	databaseURL := databaseURLForRequest(request)
+	resolvedRequest, err := service.resolveConnectionRequest(request)
+	if err != nil {
+		return nil, err
+	}
+
+	databaseURL := databaseURLForRequest(resolvedRequest)
 
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
@@ -3323,7 +3384,12 @@ func (service *Service) tilePool(
 	ctx context.Context,
 	request ConnectionTestRequest,
 ) (*pgxpool.Pool, error) {
-	databaseURL := databaseURLForRequest(request)
+	resolvedRequest, err := service.resolveConnectionRequest(request)
+	if err != nil {
+		return nil, err
+	}
+
+	databaseURL := databaseURLForRequest(resolvedRequest)
 	now := time.Now()
 
 	service.tilePoolsMux.Lock()
@@ -3363,12 +3429,33 @@ func (service *Service) tilePool(
 	return pool, nil
 }
 
+func (service *Service) resolveConnectionRequest(
+	request ConnectionTestRequest,
+) (ConnectionTestRequest, error) {
+	request.TrimSpaces()
+	if request.hasDirectCredentials() {
+		return request, nil
+	}
+
+	if request.ID == "" {
+		return ConnectionTestRequest{}, errors.New("Connection id is required.")
+	}
+
+	connection, ok := service.registeredConnections[request.ID]
+	if !ok {
+		return ConnectionTestRequest{}, fmt.Errorf("%w: registered connection not found", ErrConnectionFailed)
+	}
+
+	return connection, nil
+}
+
 func databaseURLForRequest(request ConnectionTestRequest) string {
 	databaseURL := url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(request.User, request.Password),
-		Host:   net.JoinHostPort(request.Host, request.Port),
-		Path:   "/" + request.Database,
+		Scheme:   "postgres",
+		User:     url.UserPassword(request.User, request.Password),
+		Host:     net.JoinHostPort(request.Host, request.Port),
+		Path:     "/" + request.Database,
+		RawQuery: request.RawQuery,
 	}
 
 	return databaseURL.String()
