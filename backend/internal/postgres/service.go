@@ -3785,7 +3785,16 @@ func columnSelectExpression(column columnDefinition) string {
 	quotedName := quoteIdentifier(column.Name)
 
 	if column.UdtName == "geometry" || column.UdtName == "geography" {
-		return fmt.Sprintf("ST_AsText(%s) as %s", quotedName, quotedName)
+		geometryExpression := fmt.Sprintf("%s::geometry", quotedName)
+		wgs84Expression := fmt.Sprintf(
+			"case when %s is null then null when ST_SRID(%s) in (0, 4326) then %s else ST_Transform(%s, 4326) end",
+			quotedName,
+			geometryExpression,
+			geometryExpression,
+			geometryExpression,
+		)
+
+		return fmt.Sprintf("ST_AsGeoJSON(%s)::json as %s", wgs84Expression, quotedName)
 	}
 
 	return quotedName

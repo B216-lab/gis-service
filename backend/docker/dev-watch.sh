@@ -26,7 +26,8 @@ while true; do
   if [ "$current_hash" != "$last_hash" ]; then
     stop_child
     echo "backend changed; restarting"
-    go run ./cmd/api &
+    go build -o /tmp/geopanel-api ./cmd/api
+    /tmp/geopanel-api &
     child_pid="$!"
     last_hash="$current_hash"
   fi

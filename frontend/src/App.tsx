@@ -54,14 +54,15 @@ import {
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
+import maplibregl, { LngLatBounds } from 'maplibre-gl';
 import {
   type ChangeEvent,
-  type ReactNode,
   startTransition,
   useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 
@@ -139,6 +140,7 @@ import {
   type BasemapId,
   basemapOptions,
   defaultBasemapId,
+  getBasemapStyle,
 } from './features/map/basemaps';
 import { MapPane } from './features/map/MapPane';
 import type { MapSelection } from './features/map/selection';
@@ -3397,11 +3399,13 @@ function DataWorkspacePanel({
     useState<InspectorLookupRowsResponse | null>(null);
   const [isLoadingLookup, setIsLoadingLookup] = useState(false);
   const [lookupError, setLookupError] = useState('');
-  const [isGeometryExpanded, geometryDisclosure] = useDisclosure(false);
   const [spatialFilterTargetSourceId, setSpatialFilterTargetSourceId] =
     useState<string | null>(null);
   const [spatialFilterPredicate, setSpatialFilterPredicate] =
     useState<SpatialFilterPredicate>('intersects');
+  const selectedBasemapId = useConnectionStore(
+    (state) => state.selectedBasemapId,
+  );
 
   const spatialFilterTargets = useMemo(
     () =>
@@ -3668,15 +3672,13 @@ function DataWorkspacePanel({
                 lookup. Showing attributes carried by rendered object.
               </Alert>
               {geometryFallbackEntries.length > 0 ? (
-                <GeometryFoldout
-                  count={geometryFallbackEntries.length}
-                  opened={isGeometryExpanded}
-                  onToggle={geometryDisclosure.toggle}
-                >
-                  {geometryFallbackEntries.map(([key, value]) => (
-                    <GeometryValue key={key} label={key} value={value} />
-                  ))}
-                </GeometryFoldout>
+                <GeometryMapPreviewList
+                  basemapId={selectedBasemapId}
+                  entries={geometryFallbackEntries.map(([key, value]) => ({
+                    label: key,
+                    value,
+                  }))}
+                />
               ) : null}
               {visibleFallbackEntries.map(([key, value]) => (
                 <Group align="flex-start" justify="space-between" key={key}>
@@ -3723,19 +3725,14 @@ function DataWorkspacePanel({
           <Paper p="md" radius="md" withBorder>
             <Stack gap="xs">
               {geometryLookupColumns.length > 0 ? (
-                <GeometryFoldout
-                  count={geometryLookupColumns.length}
-                  opened={isGeometryExpanded}
-                  onToggle={geometryDisclosure.toggle}
-                >
-                  {geometryLookupColumns.map((column) => (
-                    <GeometryValue
-                      key={column.name}
-                      label={column.name}
-                      value={singleLookupRow.values[column.name]}
-                    />
-                  ))}
-                </GeometryFoldout>
+                <GeometryMapPreviewList
+                  basemapId={selectedBasemapId}
+                  entries={geometryLookupColumns.map((column) => ({
+                    label: column.name,
+                    type: column.type,
+                    value: singleLookupRow.values[column.name],
+                  }))}
+                />
               ) : null}
               {visibleLookupColumns.map((column) => (
                 <Group
@@ -3800,19 +3797,14 @@ function DataWorkspacePanel({
                       .join(' • ')}
                   </Badge>
                   {geometryLookupColumns.length > 0 ? (
-                    <GeometryFoldout
-                      count={geometryLookupColumns.length}
-                      opened={isGeometryExpanded}
-                      onToggle={geometryDisclosure.toggle}
-                    >
-                      {geometryLookupColumns.map((column) => (
-                        <GeometryValue
-                          key={`${JSON.stringify(row.rowKey)}-${column.name}`}
-                          label={column.name}
-                          value={row.values[column.name]}
-                        />
-                      ))}
-                    </GeometryFoldout>
+                    <GeometryMapPreviewList
+                      basemapId={selectedBasemapId}
+                      entries={geometryLookupColumns.map((column) => ({
+                        label: column.name,
+                        type: column.type,
+                        value: row.values[column.name],
+                      }))}
+                    />
                   ) : null}
                   {visibleLookupColumns.slice(0, 4).map((column) => (
                     <Group
@@ -3846,64 +3838,231 @@ function DataWorkspacePanel({
   );
 }
 
-function GeometryFoldout({
-  children,
-  count,
-  onToggle,
-  opened,
+interface GeometryPreviewEntry {
+  label: string;
+  type?: string;
+  value: unknown;
+}
+
+type PreviewGeometry = {
+  type: string;
+  coordinates?: unknown;
+  geometries?: PreviewGeometry[];
+};
+
+function GeometryMapPreviewList({
+  basemapId,
+  entries,
 }: {
-  children: ReactNode;
-  count: number;
-  onToggle: () => void;
-  opened: boolean;
+  basemapId: BasemapId;
+  entries: GeometryPreviewEntry[];
 }) {
   return (
-    <Stack gap={4}>
-      <Group gap="xs" wrap="nowrap">
-        <ActionIcon
-          aria-label={opened ? 'Collapse geometry' : 'Expand geometry'}
-          onClick={onToggle}
-          size="sm"
-          variant="subtle"
-        >
-          {opened ? (
-            <IconChevronDown size={14} />
-          ) : (
-            <IconChevronRight size={14} />
-          )}
-        </ActionIcon>
-        <Badge color="gray" variant="outline">
-          {count} geometry {count === 1 ? 'column' : 'columns'}
-        </Badge>
-      </Group>
-      <Collapse expanded={opened}>
-        <Stack gap="xs">{children}</Stack>
-      </Collapse>
+    <Stack gap="xs">
+      {entries.map((entry) => (
+        <GeometryMapPreview
+          basemapId={basemapId}
+          entry={entry}
+          key={entry.label}
+        />
+      ))}
     </Stack>
   );
 }
 
-function GeometryValue({ label, value }: { label: string; value: unknown }) {
+function GeometryMapPreview({
+  basemapId,
+  entry,
+}: {
+  basemapId: BasemapId;
+  entry: GeometryPreviewEntry;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const geometry = parsePreviewGeometry(entry.value);
+
+  useEffect(() => {
+    if (!containerRef.current || !geometry) {
+      return;
+    }
+
+    const map = new maplibregl.Map({
+      attributionControl: false,
+      center: [0, 0],
+      container: containerRef.current,
+      cooperativeGestures: false,
+      interactive: false,
+      style: getBasemapStyle(basemapId),
+      zoom: 1,
+    });
+
+    map.on('load', () => {
+      const featureCollection = {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            geometry,
+            properties: {},
+          },
+        ],
+      } as GeoJSON.FeatureCollection;
+
+      map.addSource('preview-geometry', {
+        type: 'geojson',
+        data: featureCollection,
+      });
+      map.addLayer({
+        id: 'preview-fill',
+        type: 'fill',
+        source: 'preview-geometry',
+        paint: {
+          'fill-color': '#2f9e44',
+          'fill-opacity': 0.26,
+        },
+      });
+      map.addLayer({
+        id: 'preview-line',
+        type: 'line',
+        source: 'preview-geometry',
+        paint: {
+          'line-color': '#2b8a3e',
+          'line-width': 3,
+        },
+      });
+      map.addLayer({
+        id: 'preview-point',
+        type: 'circle',
+        source: 'preview-geometry',
+        paint: {
+          'circle-color': '#2f9e44',
+          'circle-radius': 5,
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2,
+        },
+      });
+
+      fitPreviewGeometry(map, geometry);
+      map.resize();
+    });
+
+    return () => {
+      map.remove();
+    };
+  }, [basemapId, geometry]);
+
   return (
-    <Stack gap={2}>
-      <Text c="dimmed" size="xs">
-        {label}
-      </Text>
-      <Text
-        size="xs"
-        style={{
-          fontFamily:
-            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-          maxHeight: 160,
-          overflow: 'auto',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}
-      >
-        {formatCellValue(value)}
-      </Text>
+    <Stack gap={4}>
+      <Group gap="xs" wrap="nowrap">
+        <Text fw={600} size="xs">
+          {entry.label}
+        </Text>
+        {entry.type ? (
+          <Badge color="gray" size="xs" variant="outline">
+            {entry.type}
+          </Badge>
+        ) : null}
+      </Group>
+      {geometry ? (
+        <Box
+          ref={containerRef}
+          style={{
+            border: '1px solid var(--mantine-color-default-border)',
+            borderRadius: 6,
+            height: 180,
+            overflow: 'hidden',
+          }}
+        />
+      ) : (
+        <Center
+          h={92}
+          style={{
+            border: '1px solid var(--mantine-color-default-border)',
+            borderRadius: 6,
+          }}
+        >
+          <Text c="dimmed" size="xs">
+            Geometry preview unavailable
+          </Text>
+        </Center>
+      )}
     </Stack>
   );
+}
+
+function parsePreviewGeometry(value: unknown): PreviewGeometry | null {
+  if (typeof value === 'string') {
+    try {
+      return parsePreviewGeometry(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    !('type' in value) ||
+    typeof value.type !== 'string'
+  ) {
+    return null;
+  }
+
+  if ('coordinates' in value || 'geometries' in value) {
+    return value as PreviewGeometry;
+  }
+
+  return null;
+}
+
+function fitPreviewGeometry(map: maplibregl.Map, geometry: PreviewGeometry) {
+  const positions = collectPreviewPositions(geometry);
+
+  if (positions.length === 0) {
+    return;
+  }
+
+  if (positions.length === 1) {
+    map.setCenter(positions[0]);
+    map.setZoom(14);
+    return;
+  }
+
+  const bounds = positions.reduce(
+    (nextBounds, position) => nextBounds.extend(position),
+    new LngLatBounds(positions[0], positions[0]),
+  );
+
+  map.fitBounds(bounds, {
+    duration: 0,
+    maxZoom: 15,
+    padding: 28,
+  });
+}
+
+function collectPreviewPositions(
+  geometry: PreviewGeometry,
+): [number, number][] {
+  if (geometry.type === 'GeometryCollection') {
+    return (geometry.geometries ?? []).flatMap(collectPreviewPositions);
+  }
+
+  return collectPositionsFromCoordinates(geometry.coordinates);
+}
+
+function collectPositionsFromCoordinates(value: unknown): [number, number][] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  if (
+    value.length >= 2 &&
+    typeof value[0] === 'number' &&
+    typeof value[1] === 'number'
+  ) {
+    return [[value[0], value[1]]];
+  }
+
+  return value.flatMap(collectPositionsFromCoordinates);
 }
 
 function isGeometryInspectorColumn(column: InspectorColumn) {
