@@ -50,6 +50,39 @@ function extractRowRefs(
   return rowRef ? [rowRef] : [];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toRowReference(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const primaryKey = value.primaryKey;
+  const rowKey = value.rowKey;
+  if (
+    !Array.isArray(primaryKey) ||
+    !primaryKey.every((item) => typeof item === 'string') ||
+    !isRecord(rowKey)
+  ) {
+    return null;
+  }
+
+  return {
+    primaryKey,
+    rowKey,
+  };
+}
+
+function toRowReferenceList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  return value.map(toRowReference).filter((rowRef) => rowRef !== null);
+}
+
 function formatFeatureProperty(value: unknown) {
   if (value === null || value === undefined || value === '') {
     return null;
@@ -287,13 +320,30 @@ export function buildMapSelection(
   }
 
   if (source.type === 'flowmap-table' && layer.type === 'flowmap') {
-    const flowObject = pickedObject as {
-      rowRef?: RowReference | null;
-      rowRefs?: RowReference[];
-      magnitude?: number;
-      name?: string;
-    };
-    const isLocationObject = Array.isArray(flowObject.rowRefs);
+    const pickObject = isRecord(pickedObject) ? pickedObject : {};
+    const flowObject = isRecord(pickObject.flow) ? pickObject.flow : pickObject;
+    const locationObject = isRecord(pickObject.location)
+      ? pickObject.location
+      : pickObject;
+    const origin = isRecord(pickObject.origin) ? pickObject.origin : null;
+    const dest = isRecord(pickObject.dest) ? pickObject.dest : null;
+    const isLocationObject =
+      pickObject.type === 'location' || Array.isArray(locationObject.rowRefs);
+    const rowRefs = isLocationObject
+      ? extractRowRefs(null, toRowReferenceList(locationObject.rowRefs))
+      : extractRowRefs(toRowReference(flowObject.rowRef), null);
+    const magnitude =
+      typeof pickObject.count === 'number'
+        ? pickObject.count
+        : typeof flowObject.magnitude === 'number'
+          ? flowObject.magnitude
+          : undefined;
+    const name =
+      typeof pickObject.name === 'string'
+        ? pickObject.name
+        : typeof locationObject.name === 'string'
+          ? locationObject.name
+          : undefined;
 
     return {
       layerId: layer.id,
@@ -304,15 +354,37 @@ export function buildMapSelection(
       schema: source.schema,
       table: source.table,
       objectType: isLocationObject ? 'location' : 'flow',
-      rowRefs: extractRowRefs(flowObject.rowRef, flowObject.rowRefs),
-      inlineProperties: null,
+      rowRefs,
+      inlineProperties: {
+        ...(magnitude === undefined ? {} : { magnitude }),
+        ...(origin
+          ? {
+              origin: formatFlowmapLocation(origin),
+            }
+          : {}),
+        ...(dest
+          ? {
+              destination: formatFlowmapLocation(dest),
+            }
+          : {}),
+      },
       title:
-        flowObject.name ||
+        name ||
         (isLocationObject ? `${layer.name} node` : `${layer.name} flow`),
     };
   }
 
   return null;
+}
+
+function formatFlowmapLocation(value: Record<string, unknown>) {
+  const lon = typeof value.lon === 'number' ? value.lon : null;
+  const lat = typeof value.lat === 'number' ? value.lat : null;
+  const name = typeof value.name === 'string' ? value.name : null;
+
+  return [name, lon !== null && lat !== null ? `${lat}, ${lon}` : null]
+    .filter(Boolean)
+    .join(' • ');
 }
 
 function isDeckSublayerIdOfParent(

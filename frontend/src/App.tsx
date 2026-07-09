@@ -11,6 +11,7 @@ import {
   Flex,
   Group,
   Loader,
+  Menu,
   Modal,
   NumberInput,
   Paper,
@@ -35,6 +36,7 @@ import {
   IconDatabasePlus,
   IconDatabaseSearch,
   IconDeviceFloppy,
+  IconDotsVertical,
   IconEye,
   IconEyeOff,
   IconFolder,
@@ -297,12 +299,6 @@ function ConnectionManager({
   );
   const setConnectionTestError = useConnectionStore(
     (state) => state.setConnectionTestError,
-  );
-  const selectedBasemapId = useConnectionStore(
-    (state) => state.selectedBasemapId,
-  );
-  const setSelectedBasemap = useConnectionStore(
-    (state) => state.setSelectedBasemap,
   );
   const toggleMapLayerVisibility = useConnectionStore(
     (state) => state.toggleMapLayerVisibility,
@@ -836,44 +832,62 @@ function ConnectionManager({
                         </Text>
                       </Group>
 
-                      <ActionIcon
-                        aria-label={`Delete ${connection.name}`}
-                        color="red"
-                        disabled={connection.isServerManaged}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (connection.isServerManaged) {
-                            return;
-                          }
-                          removeConnection(connection.id);
-                        }}
-                        size="sm"
-                        title={
-                          connection.isServerManaged
-                            ? 'Configured on server'
-                            : 'Delete connection'
-                        }
-                        variant="subtle"
-                      >
-                        <IconTrash size={16} />
-                      </ActionIcon>
+                      <Menu position="bottom-end" shadow="md" width={260}>
+                        <Menu.Target>
+                          <ActionIcon
+                            aria-label={`${connection.name} options`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                            }}
+                            size="sm"
+                            variant="subtle"
+                          >
+                            <IconDotsVertical size={16} />
+                          </ActionIcon>
+                        </Menu.Target>
+                        <Menu.Dropdown
+                          onClick={(event) => {
+                            event.stopPropagation();
+                          }}
+                        >
+                          <Menu.Label>Connection</Menu.Label>
+                          <Menu.Item
+                            leftSection={<IconInfoCircle size={14} />}
+                            closeMenuOnClick={false}
+                          >
+                            <Stack gap={2}>
+                              <Text size="xs">
+                                {connection.isServerManaged
+                                  ? 'Configured on backend'
+                                  : `${connection.host}:${connection.port} / ${connection.database}`}
+                              </Text>
+                              <Text c="dimmed" size="xs">
+                                {connection.testMessage || 'Not tested'}
+                              </Text>
+                              {connection.testStatus === 'success' ? (
+                                <Text c="dimmed" size="xs">
+                                  PostGIS {connection.postgisVersion}
+                                </Text>
+                              ) : null}
+                            </Stack>
+                          </Menu.Item>
+                          <Menu.Divider />
+                          <Menu.Item
+                            color="red"
+                            disabled={connection.isServerManaged}
+                            leftSection={<IconTrash size={14} />}
+                            onClick={() => {
+                              if (connection.isServerManaged) {
+                                return;
+                              }
+                              removeConnection(connection.id);
+                            }}
+                          >
+                            Delete
+                          </Menu.Item>
+                        </Menu.Dropdown>
+                      </Menu>
                     </Group>
-
-                    <Text c="dimmed" size="xs">
-                      {connection.isServerManaged
-                        ? 'Configured on backend'
-                        : `${connection.host}:${connection.port} / ${connection.database}`}
-                    </Text>
-
-                    <Text c="dimmed" size="xs">
-                      {connection.testMessage}
-                    </Text>
-
-                    {connection.testStatus === 'success' ? (
-                      <Text c="dimmed" size="xs">
-                        PostGIS {connection.postgisVersion}
-                      </Text>
-                    ) : null}
 
                     <Group gap="xs" justify="space-between" wrap="nowrap">
                       <Group gap={6}>
@@ -991,27 +1005,6 @@ function ConnectionManager({
         </ScrollArea>
 
         <Stack gap="xs">
-          <Paper p="xs" radius="md" withBorder>
-            <Stack gap={6}>
-              <Text fw={700} size="sm">
-                Basemap
-              </Text>
-              <Select
-                allowDeselect={false}
-                data={basemapOptions}
-                onChange={(value) => {
-                  if (!value) {
-                    return;
-                  }
-
-                  setSelectedBasemap(value as BasemapId);
-                }}
-                size="xs"
-                value={selectedBasemapId ?? defaultBasemapId}
-              />
-            </Stack>
-          </Paper>
-
           <Group justify="space-between" wrap="nowrap">
             <div>
               <Text fw={700} size="sm">
@@ -2990,11 +2983,7 @@ function DataInspector({
                                 <Badge color="orange" size="xs" variant="light">
                                   Edit
                                 </Badge>
-                              ) : (
-                                <Badge color="gray" size="xs" variant="light">
-                                  Live
-                                </Badge>
-                              )}
+                              ) : null}
                               {rowsState.isEditable && row.rowKey ? (
                                 <ActionIcon
                                   aria-label={
@@ -4214,6 +4203,9 @@ export function App() {
   const selectedBasemapId = useConnectionStore(
     (state) => state.selectedBasemapId,
   );
+  const setSelectedBasemap = useConnectionStore(
+    (state) => state.setSelectedBasemap,
+  );
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
   );
@@ -4834,7 +4826,22 @@ export function App() {
           <div>
             <Title order={3}>Geopanel</Title>
           </div>
-          <Group gap="sm">
+          <Group gap="sm" wrap="nowrap">
+            <Select
+              allowDeselect={false}
+              aria-label="Basemap"
+              data={basemapOptions}
+              onChange={(value) => {
+                if (!value) {
+                  return;
+                }
+
+                setSelectedBasemap(value as BasemapId);
+              }}
+              size="xs"
+              style={{ width: 132 }}
+              value={selectedBasemapId ?? defaultBasemapId}
+            />
             <ColorSchemeToggle />
           </Group>
         </Flex>
