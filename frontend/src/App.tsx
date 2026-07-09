@@ -170,9 +170,18 @@ interface GeoJsonSpatialFilterTarget {
 }
 
 interface GeoJsonLocateTarget {
+  kind: 'geojson';
   layer: GeoJsonMapLayer;
   source: GeoJsonTableSource;
 }
+
+interface FlowmapLocateTarget {
+  kind: 'flowmap';
+  layer: FlowmapMapLayer;
+  source: FlowmapTableSource;
+}
+
+type LocateTarget = GeoJsonLocateTarget | FlowmapLocateTarget;
 
 interface LocateFeatureBoundsState {
   token: number;
@@ -1990,8 +1999,9 @@ function DataInspector({
   mapLayers: MapLayer[];
   mapSources: MapSource[];
   onLocateFeature: (
-    target: GeoJsonLocateTarget,
-    rowKey: Record<string, unknown>,
+    target: LocateTarget,
+    row: InspectorRow,
+    primaryKey: string[],
   ) => Promise<void>;
   selectedView: SavedTableView | null;
   selectedTable: InspectableTable | null;
@@ -2062,24 +2072,44 @@ function DataInspector({
       return [];
     }
 
-    const targets = mapLayers.flatMap((layer) => {
-      if (layer.type !== 'geojson' || !layer.visible) {
+    const targets = mapLayers.flatMap<LocateTarget>((layer) => {
+      if (!layer.visible) {
         return [];
       }
 
-      const source = mapSources.find(
-        (candidate): candidate is GeoJsonTableSource =>
-          candidate.id === layer.sourceId &&
-          candidate.type === 'geojson-table' &&
-          (candidate.sourceViewId === activeSavedView?.id ||
-            (candidate.schema === selectedTable.schema &&
-              candidate.table === selectedTable.name)),
-      );
+      if (layer.type === 'geojson') {
+        const source = mapSources.find(
+          (candidate): candidate is GeoJsonTableSource =>
+            candidate.id === layer.sourceId &&
+            candidate.type === 'geojson-table' &&
+            (candidate.sourceViewId === activeSavedView?.id ||
+              (candidate.schema === selectedTable.schema &&
+                candidate.table === selectedTable.name)),
+        );
 
-      return source ? [{ layer, source }] : [];
+        return source ? [{ kind: 'geojson', layer, source }] : [];
+      }
+
+      if (layer.type === 'flowmap') {
+        const source = mapSources.find(
+          (candidate): candidate is FlowmapTableSource =>
+            candidate.id === layer.sourceId &&
+            candidate.type === 'flowmap-table' &&
+            candidate.schema === selectedTable.schema &&
+            candidate.table === selectedTable.name,
+        );
+
+        return source ? [{ kind: 'flowmap', layer, source }] : [];
+      }
+
+      return [];
     });
 
     return targets.sort((left, right) => {
+      if (left.kind !== 'geojson' || right.kind !== 'geojson') {
+        return left.kind === right.kind ? 0 : left.kind === 'flowmap' ? -1 : 1;
+      }
+
       const leftMatchesView = left.source.sourceViewId === activeSavedView?.id;
       const rightMatchesView =
         right.source.sourceViewId === activeSavedView?.id;
@@ -2473,7 +2503,7 @@ function DataInspector({
     setLocateError('');
 
     try {
-      await onLocateFeature(locateTargets[0], row.rowKey);
+      await onLocateFeature(locateTargets[0], row, activePrimaryKey);
     } catch (error) {
       setLocateError(
         error instanceof Error ? error.message : 'Failed to locate row.',
@@ -4120,6 +4150,109 @@ function buildLocatedFeatureSelection(
   };
 }
 
+function buildLocatedFlowmapSelection(
+  row: InspectorRow,
+  primaryKey: string[],
+  target: FlowmapLocateTarget,
+): MapSelection | null {
+  if (!row.rowKey) {
+    return null;
+  }
+
+  const start = getFlowmapRowPoint(
+    row.values,
+    target.source.columns.startMode,
+    target.source.columns.startLon,
+    target.source.columns.startLat,
+    target.source.columns.startGeometry,
+  );
+  const end = getFlowmapRowPoint(
+    row.values,
+    target.source.columns.endMode,
+    target.source.columns.endLon,
+    target.source.columns.endLat,
+    target.source.columns.endGeometry,
+  );
+  if (!start || !end) {
+    return null;
+  }
+
+  const magnitude = target.source.columns.magnitude
+    ? row.values[target.source.columns.magnitude]
+    : target.source.columns.defaultMagnitude;
+
+  return {
+    layerId: target.layer.id,
+    layerName: target.layer.name,
+    sourceId: target.source.id,
+    sourceType: target.source.type,
+    sourceFullName: target.source.fullName,
+    schema: target.source.schema,
+    table: target.source.table,
+    objectType: 'flow',
+    rowRefs: [
+      {
+        primaryKey,
+        rowKey: row.rowKey,
+      },
+    ],
+    inlineProperties: {
+      origin: formatFlowmapPoint(start),
+      destination: formatFlowmapPoint(end),
+      magnitude,
+    },
+    title: `${target.layer.name} flow`,
+  };
+}
+
+function getFlowmapRowPoint(
+  values: Record<string, unknown>,
+  mode: 'coordinates' | 'geometry',
+  lonColumn: string,
+  latColumn: string,
+  geometryColumn: string,
+): [number, number] | null {
+  if (mode === 'coordinates') {
+    const lon = toFiniteNumber(values[lonColumn]);
+    const lat = toFiniteNumber(values[latColumn]);
+
+    return lon === null || lat === null ? null : [lon, lat];
+  }
+
+  const geometry = parsePreviewGeometry(values[geometryColumn]);
+  if (!geometry) {
+    return null;
+  }
+
+  return collectPreviewPositions(geometry)[0] ?? null;
+}
+
+function toFiniteNumber(value: unknown) {
+  const numberValue = typeof value === 'number' ? value : Number(value);
+
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function formatFlowmapPoint(point: [number, number]) {
+  return `${point[1]}, ${point[0]}`;
+}
+
+function boundsFromPoints(points: [number, number][]): GeoBounds {
+  const west = Math.min(...points.map((point) => point[0]));
+  const east = Math.max(...points.map((point) => point[0]));
+  const south = Math.min(...points.map((point) => point[1]));
+  const north = Math.max(...points.map((point) => point[1]));
+  const lonPad = Math.max((east - west) * 0.12, 0.002);
+  const latPad = Math.max((north - south) * 0.12, 0.002);
+
+  return {
+    west: west - lonPad,
+    south: south - latPad,
+    east: east + lonPad,
+    north: north + latPad,
+  };
+}
+
 function AnalysisWorkspacePanel({
   activeLayer,
   activeSource,
@@ -4745,10 +4878,45 @@ export function App() {
   }
 
   async function handleLocateFeature(
-    target: GeoJsonLocateTarget,
-    rowKey: Record<string, unknown>,
+    target: LocateTarget,
+    row: InspectorRow,
+    primaryKey: string[],
   ) {
     if (!selectedConnection) {
+      return;
+    }
+
+    if (target.kind === 'flowmap') {
+      const selection = buildLocatedFlowmapSelection(row, primaryKey, target);
+      if (!selection) {
+        throw new Error('Selected row does not have usable flow coordinates.');
+      }
+
+      const start = getFlowmapRowPoint(
+        row.values,
+        target.source.columns.startMode,
+        target.source.columns.startLon,
+        target.source.columns.startLat,
+        target.source.columns.startGeometry,
+      );
+      const end = getFlowmapRowPoint(
+        row.values,
+        target.source.columns.endMode,
+        target.source.columns.endLon,
+        target.source.columns.endLat,
+        target.source.columns.endGeometry,
+      );
+      if (!start || !end) {
+        throw new Error('Selected row does not have usable flow coordinates.');
+      }
+
+      setMapSelection(selection);
+      setActiveLayerId(target.layer.id);
+      setRightPaneTab('data');
+      setLocateFeatureBounds({
+        token: Date.now(),
+        bounds: boundsFromPoints([start, end]),
+      });
       return;
     }
 
@@ -4756,7 +4924,7 @@ export function App() {
       schema: target.source.schema,
       table: target.source.table,
       geometryColumn: target.source.geometryColumn,
-      rowKey,
+      rowKey: row.rowKey ?? {},
     });
 
     setMapSelection(buildLocatedFeatureSelection(result, target));

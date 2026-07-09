@@ -1,3 +1,4 @@
+import { ArcLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { FlowmapLayer } from '@flowmap.gl/layers';
 import {
@@ -220,6 +221,90 @@ function createFlowmapDeckLayer(
       onPick(buildSelectionPickCandidate(selection, layer));
     },
   });
+}
+
+interface FlowmapSelectionHighlight {
+  sourcePosition: [number, number];
+  targetPosition: [number, number];
+}
+
+function findFlowmapSelectionHighlight(
+  selection: MapSelection | null,
+  layer: FlowmapMapLayer,
+  source: FlowmapTableSource,
+  sourceData: FlowmapDataResponse,
+): FlowmapSelectionHighlight | null {
+  if (
+    !selection ||
+    selection.layerId !== layer.id ||
+    selection.sourceId !== source.id ||
+    selection.objectType !== 'flow' ||
+    selection.rowRefs.length === 0
+  ) {
+    return null;
+  }
+
+  const selectedTokens = new Set(
+    selection.rowRefs.map((rowRef) => JSON.stringify(rowRef.rowKey)),
+  );
+  const flow = sourceData.flows.find(
+    (candidate) =>
+      candidate.rowRef &&
+      selectedTokens.has(JSON.stringify(candidate.rowRef.rowKey)),
+  );
+  if (!flow) {
+    return null;
+  }
+
+  const origin = sourceData.locations.find(
+    (location) => location.id === flow.originId,
+  );
+  const dest = sourceData.locations.find(
+    (location) => location.id === flow.destId,
+  );
+  if (!origin || !dest) {
+    return null;
+  }
+
+  return {
+    sourcePosition: [origin.lon, origin.lat],
+    targetPosition: [dest.lon, dest.lat],
+  };
+}
+
+function createFlowmapSelectionHighlightLayers(
+  highlight: FlowmapSelectionHighlight,
+) {
+  return [
+    new ArcLayer<FlowmapSelectionHighlight>({
+      id: 'flowmap-selection-highlight-arc',
+      data: [highlight],
+      getSourcePosition: (item) => item.sourcePosition,
+      getTargetPosition: (item) => item.targetPosition,
+      getSourceColor: [255, 212, 59, 255],
+      getTargetColor: [255, 212, 59, 255],
+      getWidth: 7,
+      greatCircle: false,
+      pickable: false,
+      widthUnits: 'pixels',
+    }),
+    new ScatterplotLayer<{ position: [number, number] }>({
+      id: 'flowmap-selection-highlight-points',
+      data: [
+        { position: highlight.sourcePosition },
+        { position: highlight.targetPosition },
+      ],
+      filled: false,
+      getLineColor: [255, 212, 59, 255],
+      getLineWidth: 3,
+      getPosition: (item) => item.position,
+      getRadius: 9,
+      lineWidthUnits: 'pixels',
+      pickable: false,
+      radiusUnits: 'pixels',
+      stroked: true,
+    }),
+  ];
 }
 
 function isGeoJsonMapLayer(layer: MapLayer): layer is GeoJsonMapLayer {
@@ -1230,6 +1315,17 @@ export function MapPane({
             queueDeckPickCandidate,
           ),
         );
+        const selectionHighlight = findFlowmapSelectionHighlight(
+          mapSelection,
+          layer,
+          source,
+          sourceData.payload.data,
+        );
+        if (selectionHighlight) {
+          layersList.push(
+            ...createFlowmapSelectionHighlightLayers(selectionHighlight),
+          );
+        }
         return layersList;
       }
 
@@ -1289,6 +1385,7 @@ export function MapPane({
     connection,
     extentVersion,
     isMapReady,
+    mapSelection,
     styleVersion,
     sources,
     visibleLayers,
