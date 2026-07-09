@@ -278,7 +278,10 @@ export function buildSelectionPickCandidate(
     selection,
     label: selection.layerName,
     detail,
-    color: layer.type === 'geojson' ? layer.color : '#4dabf7',
+    color:
+      layer.type === 'geojson' || layer.type === 'arc'
+        ? layer.color
+        : '#4dabf7',
   };
 }
 
@@ -319,7 +322,10 @@ export function buildMapSelection(
     };
   }
 
-  if (source.type === 'flowmap-table' && layer.type === 'flowmap') {
+  if (
+    source.type === 'flowmap-table' &&
+    (layer.type === 'flowmap' || layer.type === 'arc')
+  ) {
     const pickObject = isRecord(pickedObject) ? pickedObject : {};
     const flowObject = isRecord(pickObject.flow) ? pickObject.flow : pickObject;
     const locationObject = isRecord(pickObject.location)

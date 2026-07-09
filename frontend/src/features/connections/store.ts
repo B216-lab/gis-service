@@ -111,7 +111,13 @@ export interface FlowmapMapLayer extends BaseMapLayer {
   };
 }
 
-export type MapLayer = GeoJsonMapLayer | FlowmapMapLayer;
+export interface ArcMapLayer extends BaseMapLayer {
+  type: 'arc';
+  color: string;
+  width: number;
+}
+
+export type MapLayer = GeoJsonMapLayer | FlowmapMapLayer | ArcMapLayer;
 
 interface LegacyImportedLayer {
   id: string;
@@ -190,6 +196,15 @@ interface ConnectionStoreState {
     name: string;
     columns: FlowmapTableSource['columns'];
   }) => void;
+  addArcLayer: (payload: {
+    connectionId: string;
+    schema: string;
+    table: string;
+    fullName: string;
+    kind: string;
+    name: string;
+    columns: FlowmapTableSource['columns'];
+  }) => void;
   removeMapLayer: (layerId: string) => void;
   toggleMapLayerVisibility: (layerId: string) => void;
   updateGeoJsonLayer: (
@@ -222,6 +237,10 @@ interface ConnectionStoreState {
       icon?: LayerGlyphIcon;
       style?: Partial<FlowmapMapLayer['style']>;
     },
+  ) => void;
+  updateArcLayer: (
+    layerId: string,
+    patch: Partial<Pick<ArcMapLayer, 'name' | 'icon' | 'color' | 'width'>>,
   ) => void;
   toggleConnectionActive: (connectionId: string) => void;
   setConnectionTestPending: (connectionId: string) => void;
@@ -430,6 +449,22 @@ function normalizeMapLayer(layer: Partial<MapLayer>, index: number): MapLayer {
       visible: layer.visible ?? true,
       icon: layer.icon ?? 'flow',
       style: layer.style ?? createDefaultFlowmapStyle(),
+    };
+  }
+
+  if (layer.type === 'arc') {
+    const arcLayer = layer as Partial<ArcMapLayer>;
+
+    return {
+      id: arcLayer.id ?? createMapLayerId(),
+      type: 'arc',
+      connectionId: arcLayer.connectionId ?? '',
+      sourceId: arcLayer.sourceId ?? '',
+      name: arcLayer.name ?? 'Arc layer',
+      visible: arcLayer.visible ?? true,
+      icon: arcLayer.icon ?? 'flow',
+      color: arcLayer.color ?? getDefaultLayerColor(index),
+      width: arcLayer.width ?? 3,
     };
   }
 
@@ -913,6 +948,62 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             ],
           };
         }),
+      addArcLayer: (payload) =>
+        set((state) => {
+          let source = findFlowmapSource(state.mapSources, payload);
+          const nextSources = [...state.mapSources];
+
+          if (!source) {
+            source = {
+              id: createMapSourceId(),
+              type: 'flowmap-table',
+              connectionId: payload.connectionId,
+              schema: payload.schema,
+              table: payload.table,
+              fullName: payload.fullName,
+              kind: payload.kind,
+              columns: payload.columns,
+              spatialFilter: null,
+            };
+            nextSources.push(source);
+          }
+
+          const existingLayer = state.mapLayers.find(
+            (layer) => layer.type === 'arc' && layer.sourceId === source.id,
+          );
+
+          if (existingLayer) {
+            return {
+              mapSources: nextSources,
+              mapLayers: state.mapLayers.map((layer) =>
+                layer.id === existingLayer.id
+                  ? {
+                      ...layer,
+                      visible: true,
+                    }
+                  : layer,
+              ),
+            };
+          }
+
+          return {
+            mapSources: nextSources,
+            mapLayers: [
+              ...state.mapLayers,
+              {
+                id: createMapLayerId(),
+                type: 'arc',
+                connectionId: payload.connectionId,
+                sourceId: source.id,
+                name: payload.name,
+                visible: true,
+                icon: 'flow',
+                color: getDefaultLayerColor(state.mapLayers.length),
+                width: 3,
+              },
+            ],
+          };
+        }),
       removeMapLayer: (layerId) =>
         set((state) => {
           const removedLayer = state.mapLayers.find(
@@ -1001,6 +1092,14 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                       }
                     : layer.style,
                 }
+              : layer,
+          ),
+        })),
+      updateArcLayer: (layerId, patch) =>
+        set((state) => ({
+          mapLayers: state.mapLayers.map((layer) =>
+            layer.id === layerId && layer.type === 'arc'
+              ? { ...layer, ...patch }
               : layer,
           ),
         })),

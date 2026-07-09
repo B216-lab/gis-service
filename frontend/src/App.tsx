@@ -91,6 +91,7 @@ import {
   PanelFrame,
 } from './features/app/chrome';
 import {
+  type ArcMapLayer,
   type DatabaseConnection,
   type FlowmapMapLayer,
   type FlowmapTableSource,
@@ -163,9 +164,10 @@ interface CatalogState {
 }
 
 type RightPaneTab = 'layer' | 'data' | 'analysis';
+type MovementLayerKind = 'flowmap' | 'arc';
 
 interface GeoJsonSpatialFilterTarget {
-  layer: GeoJsonMapLayer | FlowmapMapLayer;
+  layer: GeoJsonMapLayer | FlowmapMapLayer | ArcMapLayer;
   source: GeoJsonTableSource | FlowmapTableSource;
 }
 
@@ -177,7 +179,7 @@ interface GeoJsonLocateTarget {
 
 interface FlowmapLocateTarget {
   kind: 'flowmap';
-  layer: FlowmapMapLayer;
+  layer: FlowmapMapLayer | ArcMapLayer;
   source: FlowmapTableSource;
 }
 
@@ -254,6 +256,7 @@ function ConnectionManager({
   onLoadSchemas: () => void;
   onImportSelectedTable: () => void;
   onCreateFlowLayer: (payload: {
+    layerKind: MovementLayerKind;
     name: string;
     startMode: 'coordinates' | 'geometry';
     startLon: string;
@@ -285,6 +288,8 @@ function ConnectionManager({
   const [flowLayerForm, setFlowLayerForm] = useState<FlowLayerFormState>(() =>
     createFlowLayerDefaults(selectedInspectableTable),
   );
+  const [movementLayerKind, setMovementLayerKind] =
+    useState<MovementLayerKind>('flowmap');
   const [flowLayerError, setFlowLayerError] = useState('');
   const connections = useConnectionStore((state) => state.connections);
   const selectedConnectionId = useConnectionStore(
@@ -324,6 +329,7 @@ function ConnectionManager({
   const updateFlowmapLayer = useConnectionStore(
     (state) => state.updateFlowmapLayer,
   );
+  const updateArcLayer = useConnectionStore((state) => state.updateArcLayer);
   const removeMapLayer = useConnectionStore((state) => state.removeMapLayer);
 
   const activeConnections = connections.filter(
@@ -379,7 +385,8 @@ function ConnectionManager({
     connectionModal.close();
   }
 
-  function handleOpenFlowLayerModal() {
+  function handleOpenMovementLayerModal(layerKind: MovementLayerKind) {
+    setMovementLayerKind(layerKind);
     setFlowLayerForm(createFlowLayerDefaults(selectedInspectableTable));
     setFlowLayerError('');
     flowLayerModal.open();
@@ -435,6 +442,7 @@ function ConnectionManager({
     }
 
     onCreateFlowLayer({
+      layerKind: movementLayerKind,
       name: flowLayerForm.name.trim(),
       startMode: flowLayerForm.startMode,
       startLon: flowLayerForm.startLon ?? '',
@@ -565,7 +573,7 @@ function ConnectionManager({
         centered
         onClose={handleCloseFlowLayerModal}
         opened={flowLayerOpened}
-        title="Create flow layer"
+        title={`Create ${movementLayerKind === 'arc' ? 'arc' : 'flowmap'} layer`}
       >
         <Stack gap="sm">
           <TextInput
@@ -1034,11 +1042,19 @@ function ConnectionManager({
               </Button>
               <Button
                 disabled={!canCreateFlowLayer}
-                onClick={handleOpenFlowLayerModal}
+                onClick={() => handleOpenMovementLayerModal('flowmap')}
                 size="compact-sm"
                 variant="light"
               >
-                Create Flow
+                Create Flowmap
+              </Button>
+              <Button
+                disabled={!canCreateFlowLayer}
+                onClick={() => handleOpenMovementLayerModal('arc')}
+                size="compact-sm"
+                variant="light"
+              >
+                Create Arc
               </Button>
             </Group>
           </Group>
@@ -1077,7 +1093,9 @@ function ConnectionManager({
                       <Group gap="xs" wrap="nowrap">
                         <LayerGlyph
                           color={
-                            layer.type === 'geojson' ? layer.color : '#0c8599'
+                            layer.type === 'geojson' || layer.type === 'arc'
+                              ? layer.color
+                              : '#0c8599'
                           }
                           icon={layer.icon}
                           visible={layer.visible}
@@ -1156,6 +1174,7 @@ function ConnectionManager({
                         sourceTable={sourceTable}
                         onUpdateFlowmapLayer={updateFlowmapLayer}
                         onUpdateFlowmapSource={updateFlowmapSource}
+                        onUpdateArcLayer={updateArcLayer}
                         onUpdateGeoJsonLayer={updateGeoJsonLayer}
                         onUpdateGeoJsonSource={updateGeoJsonSource}
                       />
@@ -1558,6 +1577,7 @@ function MapLayerEditor({
   sourceTable,
   onUpdateFlowmapLayer,
   onUpdateFlowmapSource,
+  onUpdateArcLayer,
   onUpdateGeoJsonLayer,
   onUpdateGeoJsonSource,
 }: {
@@ -1576,6 +1596,10 @@ function MapLayerEditor({
     sourceId: string,
     patch: Partial<FlowmapTableSource['columns']>,
   ) => void;
+  onUpdateArcLayer: (
+    layerId: string,
+    patch: Partial<Pick<ArcMapLayer, 'name' | 'icon' | 'color' | 'width'>>,
+  ) => void;
   onUpdateGeoJsonLayer: (
     layerId: string,
     patch: Partial<
@@ -1590,10 +1614,13 @@ function MapLayerEditor({
 }) {
   const [draftName, setDraftName] = useState(layer.name);
   const [draftColor, setDraftColor] = useState(
-    layer.type === 'geojson' ? layer.color : '#0c8599',
+    layer.type === 'geojson' || layer.type === 'arc' ? layer.color : '#0c8599',
   );
   const [draftOpacity, setDraftOpacity] = useState(
     layer.type === 'geojson' ? layer.opacity : 80,
+  );
+  const [draftArcWidth, setDraftArcWidth] = useState(
+    layer.type === 'arc' ? layer.width : 3,
   );
   const [draftThicknessScale, setDraftThicknessScale] = useState(
     layer.type === 'flowmap' ? layer.style.flowLineThicknessScale : 2,
@@ -1610,6 +1637,12 @@ function MapLayerEditor({
       return;
     }
 
+    if (layer.type === 'arc') {
+      setDraftColor(layer.color);
+      setDraftArcWidth(layer.width);
+      return;
+    }
+
     setDraftThicknessScale(layer.style.flowLineThicknessScale);
     setDraftTopFlows(layer.style.maxTopFlowsDisplayNum);
   }, [layer]);
@@ -1622,6 +1655,13 @@ function MapLayerEditor({
     startTransition(() => {
       if (layer.type === 'geojson') {
         onUpdateGeoJsonLayer(layer.id, {
+          name: draftName,
+        });
+        return;
+      }
+
+      if (layer.type === 'arc') {
+        onUpdateArcLayer(layer.id, {
           name: draftName,
         });
         return;
@@ -1758,25 +1798,112 @@ function MapLayerEditor({
         </>
       ) : null}
 
+      {(layer.type === 'flowmap' || layer.type === 'arc') &&
+      source.type === 'flowmap-table' ? (
+        <>
+          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+            Data setup
+          </Text>
+          <FlowmapSetupFields
+            columns={source.columns}
+            onChange={(patch) =>
+              startTransition(() => {
+                onUpdateFlowmapSource(source.id, patch);
+              })
+            }
+            table={sourceTable}
+          />
+        </>
+      ) : null}
+
+      {layer.type === 'arc' ? (
+        <>
+          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+            Visuals
+          </Text>
+          <Group align="end" grow>
+            <Box>
+              <Text c="dimmed" fw={500} mb={4} size="xs">
+                Color
+              </Text>
+              <input
+                aria-label={`Choose color for ${layer.name}`}
+                onBlur={() => {
+                  if (draftColor === layer.color) {
+                    return;
+                  }
+
+                  startTransition(() => {
+                    onUpdateArcLayer(layer.id, {
+                      color: draftColor,
+                    });
+                  });
+                }}
+                onChange={(event) => setDraftColor(event.currentTarget.value)}
+                style={{
+                  width: '100%',
+                  height: 36,
+                  border: '1px solid var(--mantine-color-gray-4)',
+                  borderRadius: 8,
+                  background: 'transparent',
+                  padding: 4,
+                }}
+                type="color"
+                value={draftColor}
+              />
+            </Box>
+
+            <Select
+              data={[
+                { label: 'Flow', value: 'flow' },
+                { label: 'Line', value: 'line' },
+              ]}
+              label="List icon"
+              onChange={(value) => {
+                if (!value) {
+                  return;
+                }
+
+                startTransition(() => {
+                  onUpdateArcLayer(layer.id, {
+                    icon: value as LayerGlyphIcon,
+                  });
+                });
+              }}
+              size="xs"
+              value={layer.icon}
+            />
+          </Group>
+
+          <Stack gap={4}>
+            <Group justify="space-between">
+              <Text c="dimmed" fw={500} size="xs">
+                Width
+              </Text>
+              <Text c="dimmed" size="xs">
+                {draftArcWidth}px
+              </Text>
+            </Group>
+            <Slider
+              max={12}
+              min={1}
+              onChange={setDraftArcWidth}
+              onChangeEnd={(value) =>
+                startTransition(() => {
+                  onUpdateArcLayer(layer.id, {
+                    width: value,
+                  });
+                })
+              }
+              size="sm"
+              value={draftArcWidth}
+            />
+          </Stack>
+        </>
+      ) : null}
+
       {layer.type === 'flowmap' ? (
         <>
-          {source.type === 'flowmap-table' ? (
-            <>
-              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-                Data setup
-              </Text>
-              <FlowmapSetupFields
-                columns={source.columns}
-                onChange={(patch) =>
-                  startTransition(() => {
-                    onUpdateFlowmapSource(source.id, patch);
-                  })
-                }
-                table={sourceTable}
-              />
-            </>
-          ) : null}
-
           <Text c="dimmed" fw={700} size="xs" tt="uppercase">
             Visuals
           </Text>
@@ -2090,7 +2217,7 @@ function DataInspector({
         return source ? [{ kind: 'geojson', layer, source }] : [];
       }
 
-      if (layer.type === 'flowmap') {
+      if (layer.type === 'flowmap' || layer.type === 'arc') {
         const source = mapSources.find(
           (candidate): candidate is FlowmapTableSource =>
             candidate.id === layer.sourceId &&
@@ -4126,8 +4253,10 @@ function isGeoJsonLayer(layer: MapLayer): layer is GeoJsonMapLayer {
   return layer.type === 'geojson';
 }
 
-function isFlowmapLayer(layer: MapLayer): layer is FlowmapMapLayer {
-  return layer.type === 'flowmap';
+function isMovementLayer(
+  layer: MapLayer,
+): layer is FlowmapMapLayer | ArcMapLayer {
+  return layer.type === 'flowmap' || layer.type === 'arc';
 }
 
 function buildLocatedFeatureSelection(
@@ -4350,6 +4479,7 @@ export function App() {
   );
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
+  const addArcLayer = useConnectionStore((state) => state.addArcLayer);
   const updateGeoJsonSource = useConnectionStore(
     (state) => state.updateGeoJsonSource,
   );
@@ -4608,6 +4738,7 @@ export function App() {
   }
 
   function handleCreateFlowLayer(payload: {
+    layerKind: MovementLayerKind;
     name: string;
     startMode: 'coordinates' | 'geometry';
     startLon: string;
@@ -4624,7 +4755,7 @@ export function App() {
       return;
     }
 
-    addFlowmapLayer({
+    const layerPayload = {
       connectionId: selectedConnectionId,
       schema: selectedInspectableTable.schema,
       table: selectedInspectableTable.name,
@@ -4643,7 +4774,14 @@ export function App() {
         magnitude: payload.magnitude,
         defaultMagnitude: payload.defaultMagnitude,
       },
-    });
+    };
+
+    if (payload.layerKind === 'arc') {
+      addArcLayer(layerPayload);
+      return;
+    }
+
+    addFlowmapLayer(layerPayload);
   }
 
   const selectedConnectionMapLayers = useMemo(
@@ -4664,7 +4802,7 @@ export function App() {
   const geoJsonSpatialFilterTargets = useMemo(
     () =>
       selectedConnectionMapLayers.flatMap((layer) => {
-        if (!isGeoJsonLayer(layer) && !isFlowmapLayer(layer)) {
+        if (!isGeoJsonLayer(layer) && !isMovementLayer(layer)) {
           return [];
         }
 

@@ -35,6 +35,7 @@ import { type HexColor, TerraDraw, TerraDrawPolygonMode } from 'terra-draw';
 import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter';
 
 import type {
+  ArcMapLayer,
   DatabaseConnection,
   FlowmapMapLayer,
   FlowmapTableSource,
@@ -230,7 +231,7 @@ interface FlowmapSelectionHighlight {
 
 function findFlowmapSelectionHighlight(
   selection: MapSelection | null,
-  layer: FlowmapMapLayer,
+  layer: FlowmapMapLayer | ArcMapLayer,
   source: FlowmapTableSource,
   sourceData: FlowmapDataResponse,
 ): FlowmapSelectionHighlight | null {
@@ -305,6 +306,69 @@ function createFlowmapSelectionHighlightLayers(
       stroked: true,
     }),
   ];
+}
+
+function createArcDeckLayers(
+  layer: ArcMapLayer,
+  source: FlowmapTableSource,
+  sourceData: FlowmapDataResponse,
+  onPick: (candidate: FeaturePickCandidate) => void,
+) {
+  const locationsById = new Map(
+    sourceData.locations.map((location) => [location.id, location]),
+  );
+  const flows = sourceData.flows.flatMap((flow) => {
+    const origin = locationsById.get(flow.originId);
+    const dest = locationsById.get(flow.destId);
+    if (!origin || !dest) {
+      return [];
+    }
+
+    return [
+      {
+        ...flow,
+        sourcePosition: [origin.lon, origin.lat] as [number, number],
+        targetPosition: [dest.lon, dest.lat] as [number, number],
+        origin,
+        dest,
+      },
+    ];
+  });
+
+  return [
+    new ArcLayer<(typeof flows)[number]>({
+      id: layer.id,
+      data: flows,
+      getSourcePosition: (flow) => flow.sourcePosition,
+      getTargetPosition: (flow) => flow.targetPosition,
+      getSourceColor: hexToRgba(layer.color, 220),
+      getTargetColor: hexToRgba(layer.color, 220),
+      getWidth: layer.width,
+      pickable: true,
+      widthUnits: 'pixels',
+      onClick: (pickInfo: { object?: unknown }) => {
+        const selection = buildMapSelection(pickInfo.object, layer, source);
+        if (!selection) {
+          return;
+        }
+
+        onPick(buildSelectionPickCandidate(selection, layer));
+      },
+    }),
+  ];
+}
+
+function hexToRgba(
+  hex: string,
+  alpha: number,
+): [number, number, number, number] {
+  const normalized = hex.replace('#', '');
+  const value = Number.parseInt(normalized, 16);
+  if (Number.isNaN(value) || normalized.length !== 6) {
+    return [77, 171, 247, alpha];
+  }
+
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255, alpha];
 }
 
 function isGeoJsonMapLayer(layer: MapLayer): layer is GeoJsonMapLayer {
@@ -610,7 +674,7 @@ export function MapPane({
 
       const clickPoint = event.point.clone();
       const hasVisibleFlowLayer = visibleLayersRef.current.some(
-        (layer) => layer.type === 'flowmap',
+        (layer) => layer.type === 'flowmap' || layer.type === 'arc',
       );
       window.setTimeout(
         () => {
@@ -1309,6 +1373,33 @@ export function MapPane({
       ) {
         layersList.push(
           createFlowmapDeckLayer(
+            layer,
+            source,
+            sourceData.payload.data,
+            queueDeckPickCandidate,
+          ),
+        );
+        const selectionHighlight = findFlowmapSelectionHighlight(
+          mapSelection,
+          layer,
+          source,
+          sourceData.payload.data,
+        );
+        if (selectionHighlight) {
+          layersList.push(
+            ...createFlowmapSelectionHighlightLayers(selectionHighlight),
+          );
+        }
+        return layersList;
+      }
+
+      if (
+        layer.type === 'arc' &&
+        source.type === 'flowmap-table' &&
+        sourceData.payload.sourceType === 'flowmap-table'
+      ) {
+        layersList.push(
+          ...createArcDeckLayers(
             layer,
             source,
             sourceData.payload.data,
