@@ -82,6 +82,7 @@ type TableSummary struct {
 	IsEditable      bool                 `json:"isEditable"`
 	Columns         []ColumnMeta         `json:"columns"`
 	GeometryColumns []GeometryColumnMeta `json:"geometryColumns"`
+	ForeignKeys     []ForeignKeyMeta     `json:"foreignKeys"`
 }
 
 type ListTablesResult struct {
@@ -135,6 +136,25 @@ type LookupRowsRequest struct {
 	Schema  string                   `json:"schema"`
 	Table   string                   `json:"table"`
 	RowKeys []map[string]interface{} `json:"rowKeys"`
+}
+
+type RelationLabelsRequest struct {
+	ConnectionTestRequest
+	Schema       string        `json:"schema"`
+	Table        string        `json:"table"`
+	Column       string        `json:"column"`
+	LabelColumns []string      `json:"labelColumns"`
+	Values       []interface{} `json:"values"`
+}
+
+type RelationOptionsRequest struct {
+	ConnectionTestRequest
+	Schema       string   `json:"schema"`
+	Table        string   `json:"table"`
+	Column       string   `json:"column"`
+	LabelColumns []string `json:"labelColumns"`
+	Search       string   `json:"search"`
+	Limit        int      `json:"limit"`
 }
 
 type LocateFeatureRequest struct {
@@ -253,6 +273,29 @@ type ListRowsResult struct {
 type RowRecord struct {
 	RowKey map[string]interface{} `json:"rowKey"`
 	Values map[string]interface{} `json:"values"`
+}
+
+type ForeignKeyMeta struct {
+	ColumnName         string   `json:"columnName"`
+	TargetSchema       string   `json:"targetSchema"`
+	TargetTable        string   `json:"targetTable"`
+	TargetColumn       string   `json:"targetColumn"`
+	LabelColumns       []string `json:"labelColumns"`
+	DefaultLabelColumn string   `json:"defaultLabelColumn"`
+}
+
+type RelationOption struct {
+	Value  interface{}            `json:"value"`
+	Label  string                 `json:"label"`
+	Values map[string]interface{} `json:"values"`
+}
+
+type RelationLabelsResult struct {
+	Options []RelationOption `json:"options"`
+}
+
+type RelationOptionsResult struct {
+	Options []RelationOption `json:"options"`
 }
 
 type RowReference struct {
@@ -477,6 +520,27 @@ func (request *LookupRowsRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
+}
+
+func (request *RelationLabelsRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.Column = strings.TrimSpace(request.Column)
+	for index := range request.LabelColumns {
+		request.LabelColumns[index] = strings.TrimSpace(request.LabelColumns[index])
+	}
+}
+
+func (request *RelationOptionsRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.Column = strings.TrimSpace(request.Column)
+	request.Search = strings.TrimSpace(request.Search)
+	for index := range request.LabelColumns {
+		request.LabelColumns[index] = strings.TrimSpace(request.LabelColumns[index])
+	}
 }
 
 func (request *LocateFeatureRequest) TrimSpaces() {
@@ -717,6 +781,27 @@ func (request *LookupRowsRequest) Normalize() {
 	}
 }
 
+func (request *RelationLabelsRequest) Normalize() {
+	if len(request.LabelColumns) > 3 {
+		request.LabelColumns = request.LabelColumns[:3]
+	}
+	if len(request.Values) > 200 {
+		request.Values = request.Values[:200]
+	}
+}
+
+func (request *RelationOptionsRequest) Normalize() {
+	if len(request.LabelColumns) > 3 {
+		request.LabelColumns = request.LabelColumns[:3]
+	}
+	if request.Limit <= 0 {
+		request.Limit = 25
+	}
+	if request.Limit > 50 {
+		request.Limit = 50
+	}
+}
+
 func (request *ListLayerFeaturesRequest) Normalize() {
 	if request.Limit <= 0 {
 		request.Limit = 1000
@@ -787,6 +872,48 @@ func (request LookupRowsRequest) Validate() error {
 
 	if len(request.RowKeys) == 0 {
 		return errors.New("At least one row key is required.")
+	}
+
+	return nil
+}
+
+func (request RelationLabelsRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+	if request.Column == "" {
+		return errors.New("Column is required.")
+	}
+	if len(request.Values) == 0 {
+		return errors.New("At least one value is required.")
+	}
+
+	return nil
+}
+
+func (request RelationOptionsRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+	if request.Column == "" {
+		return errors.New("Column is required.")
+	}
+	if request.Limit < 1 || request.Limit > 50 {
+		return errors.New("Limit must be between 1 and 50.")
 	}
 
 	return nil
@@ -1394,6 +1521,11 @@ func (service *Service) getTableMetadata(
 		})
 	}
 
+	foreignKeys, err := service.listForeignKeys(ctx, runner, schema, table)
+	if err != nil {
+		return nil, err
+	}
+
 	return &TableSummary{
 		Schema:          schema,
 		Name:            table,
@@ -1403,6 +1535,7 @@ func (service *Service) getTableMetadata(
 		IsEditable:      isEditableTable(access, primaryKey),
 		Columns:         columns,
 		GeometryColumns: geometryColumns,
+		ForeignKeys:     foreignKeys,
 	}, nil
 }
 
@@ -1716,6 +1849,143 @@ func (service *Service) LookupRows(
 		Columns:           columns,
 		Rows:              orderedRows,
 	}, nil
+}
+
+func (service *Service) ListRelationLabels(
+	ctx context.Context,
+	request RelationLabelsRequest,
+) (*RelationLabelsResult, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	relation, targetColumn, labelColumns, err := service.prepareRelationLookup(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+		request.Column,
+		request.LabelColumns,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	parameters := make([]interface{}, 0, len(request.Values))
+	placeholders := make([]string, 0, len(request.Values))
+	for _, value := range request.Values {
+		convertedValue, err := convertColumnValue(targetColumn, value)
+		if err != nil {
+			continue
+		}
+		parameters = append(parameters, convertedValue)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(parameters)))
+	}
+	if len(parameters) == 0 {
+		return &RelationLabelsResult{Options: []RelationOption{}}, nil
+	}
+
+	options, err := queryRelationOptions(
+		timeoutCtx,
+		conn,
+		relation,
+		targetColumn,
+		labelColumns,
+		fmt.Sprintf(
+			"source_row.%s in (%s)",
+			quoteIdentifier(relation.TargetColumn),
+			strings.Join(placeholders, ", "),
+		),
+		"",
+		parameters,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RelationLabelsResult{Options: options}, nil
+}
+
+func (service *Service) ListRelationOptions(
+	ctx context.Context,
+	request RelationOptionsRequest,
+) (*RelationOptionsResult, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	relation, targetColumn, labelColumns, err := service.prepareRelationLookup(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+		request.Column,
+		request.LabelColumns,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	parameters := make([]interface{}, 0, 2)
+	whereClause := ""
+	if request.Search != "" {
+		parameters = append(parameters, "%"+request.Search+"%")
+		searchPlaceholder := fmt.Sprintf("$%d", len(parameters))
+		searchParts := []string{
+			fmt.Sprintf(
+				"source_row.%s::text ilike %s",
+				quoteIdentifier(relation.TargetColumn),
+				searchPlaceholder,
+			),
+		}
+		for _, labelColumn := range labelColumns {
+			searchParts = append(
+				searchParts,
+				fmt.Sprintf(
+					"source_row.%s::text ilike %s",
+					quoteIdentifier(labelColumn.Name),
+					searchPlaceholder,
+				),
+			)
+		}
+		whereClause = fmt.Sprintf("(%s)", strings.Join(searchParts, " or "))
+	}
+
+	parameters = append(parameters, request.Limit)
+	limitClause := fmt.Sprintf("limit $%d", len(parameters))
+	options, err := queryRelationOptions(
+		timeoutCtx,
+		conn,
+		relation,
+		targetColumn,
+		labelColumns,
+		whereClause,
+		limitClause,
+		parameters,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RelationOptionsResult{Options: options}, nil
 }
 
 func (service *Service) LocateFeature(
@@ -3273,6 +3543,267 @@ func (service *Service) listGeometryColumns(
 	return definitions, nil
 }
 
+func (service *Service) listForeignKeys(
+	ctx context.Context,
+	runner queryRunner,
+	schema string,
+	table string,
+) ([]ForeignKeyMeta, error) {
+	rows, err := runner.Query(
+		ctx,
+		`
+		select
+		  source_attribute.attname as column_name,
+		  target_namespace.nspname as target_schema,
+		  target_class.relname as target_table,
+		  target_attribute.attname as target_column
+		from pg_constraint constraint_row
+		join pg_class source_class on source_class.oid = constraint_row.conrelid
+		join pg_namespace source_namespace on source_namespace.oid = source_class.relnamespace
+		join pg_class target_class on target_class.oid = constraint_row.confrelid
+		join pg_namespace target_namespace on target_namespace.oid = target_class.relnamespace
+		join pg_attribute source_attribute
+		  on source_attribute.attrelid = source_class.oid
+		  and source_attribute.attnum = constraint_row.conkey[1]
+		join pg_attribute target_attribute
+		  on target_attribute.attrelid = target_class.oid
+		  and target_attribute.attnum = constraint_row.confkey[1]
+		where constraint_row.contype = 'f'
+		  and array_length(constraint_row.conkey, 1) = 1
+		  and array_length(constraint_row.confkey, 1) = 1
+		  and source_namespace.nspname = $1
+		  and source_class.relname = $2
+		order by source_attribute.attnum
+		`,
+		schema,
+		table,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	relations := make([]ForeignKeyMeta, 0)
+	for rows.Next() {
+		var relation ForeignKeyMeta
+		if err := rows.Scan(
+			&relation.ColumnName,
+			&relation.TargetSchema,
+			&relation.TargetTable,
+			&relation.TargetColumn,
+		); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+		relations = append(relations, relation)
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	rows.Close()
+
+	for index := range relations {
+		labelColumns, defaultLabelColumn, err := service.relationLabelColumns(
+			ctx,
+			runner,
+			relations[index].TargetSchema,
+			relations[index].TargetTable,
+			relations[index].TargetColumn,
+		)
+		if err != nil {
+			return nil, err
+		}
+		relations[index].LabelColumns = labelColumns
+		relations[index].DefaultLabelColumn = defaultLabelColumn
+	}
+
+	return relations, nil
+}
+
+func (service *Service) relationLabelColumns(
+	ctx context.Context,
+	runner queryRunner,
+	schema string,
+	table string,
+	targetColumn string,
+) ([]string, string, error) {
+	definitions, err := service.listColumnDefinitions(ctx, runner, schema, table)
+	if err != nil {
+		return nil, "", err
+	}
+
+	preferredNames := []string{"name", "title", "label", "display_name", "code"}
+	labelColumns := make([]string, 0)
+	for _, preferredName := range preferredNames {
+		for _, definition := range definitions {
+			if definition.Name == targetColumn || definition.Name != preferredName {
+				continue
+			}
+			if isTextLikeColumn(definition) {
+				labelColumns = append(labelColumns, definition.Name)
+			}
+		}
+	}
+	for _, definition := range definitions {
+		if len(labelColumns) >= 6 {
+			break
+		}
+		if definition.Name == targetColumn || !isTextLikeColumn(definition) {
+			continue
+		}
+		if !slices.Contains(labelColumns, definition.Name) {
+			labelColumns = append(labelColumns, definition.Name)
+		}
+	}
+
+	defaultLabelColumn := ""
+	if len(labelColumns) > 0 {
+		defaultLabelColumn = labelColumns[0]
+	}
+
+	return labelColumns, defaultLabelColumn, nil
+}
+
+func (service *Service) prepareRelationLookup(
+	ctx context.Context,
+	runner queryRunner,
+	schema string,
+	table string,
+	column string,
+	requestedLabelColumns []string,
+) (ForeignKeyMeta, columnDefinition, []columnDefinition, error) {
+	relations, err := service.listForeignKeys(ctx, runner, schema, table)
+	if err != nil {
+		return ForeignKeyMeta{}, columnDefinition{}, nil, err
+	}
+
+	var relation *ForeignKeyMeta
+	for index := range relations {
+		if relations[index].ColumnName == column {
+			relation = &relations[index]
+			break
+		}
+	}
+	if relation == nil {
+		return ForeignKeyMeta{}, columnDefinition{}, nil, fmt.Errorf("%w: selected column is not a foreign key", ErrInvalidWriteRequest)
+	}
+
+	definitions, err := service.listColumnDefinitions(ctx, runner, relation.TargetSchema, relation.TargetTable)
+	if err != nil {
+		return ForeignKeyMeta{}, columnDefinition{}, nil, err
+	}
+	var targetColumn *columnDefinition
+	definitionByName := make(map[string]columnDefinition, len(definitions))
+	for index := range definitions {
+		definitionByName[definitions[index].Name] = definitions[index]
+		if definitions[index].Name == relation.TargetColumn {
+			targetColumn = &definitions[index]
+		}
+	}
+	if targetColumn == nil {
+		return ForeignKeyMeta{}, columnDefinition{}, nil, fmt.Errorf("%w: foreign key target column not found", ErrConnectionFailed)
+	}
+
+	labelNames := requestedLabelColumns
+	if len(labelNames) == 0 && relation.DefaultLabelColumn != "" {
+		labelNames = []string{relation.DefaultLabelColumn}
+	}
+	labelColumns := make([]columnDefinition, 0, len(labelNames))
+	for _, labelName := range labelNames {
+		definition, ok := definitionByName[labelName]
+		if !ok || definition.Name == relation.TargetColumn || !isTextLikeColumn(definition) {
+			continue
+		}
+		labelColumns = append(labelColumns, definition)
+	}
+
+	return *relation, *targetColumn, labelColumns, nil
+}
+
+func queryRelationOptions(
+	ctx context.Context,
+	runner queryRunner,
+	relation ForeignKeyMeta,
+	targetColumn columnDefinition,
+	labelColumns []columnDefinition,
+	whereClause string,
+	limitClause string,
+	parameters []interface{},
+) ([]RelationOption, error) {
+	selectExpressions := []string{
+		fmt.Sprintf("source_row.%s", quoteIdentifier(relation.TargetColumn)),
+	}
+	for _, labelColumn := range labelColumns {
+		selectExpressions = append(
+			selectExpressions,
+			fmt.Sprintf("source_row.%s", quoteIdentifier(labelColumn.Name)),
+		)
+	}
+	queryWhereClause := ""
+	if whereClause != "" {
+		queryWhereClause = " where " + whereClause
+	}
+
+	orderParts := make([]string, 0, len(labelColumns)+1)
+	for _, labelColumn := range labelColumns {
+		orderParts = append(orderParts, fmt.Sprintf("source_row.%s", quoteIdentifier(labelColumn.Name)))
+	}
+	orderParts = append(orderParts, fmt.Sprintf("source_row.%s", quoteIdentifier(relation.TargetColumn)))
+
+	query := fmt.Sprintf(
+		`select %s from %s.%s as source_row%s order by %s %s`,
+		strings.Join(selectExpressions, ", "),
+		quoteIdentifier(relation.TargetSchema),
+		quoteIdentifier(relation.TargetTable),
+		queryWhereClause,
+		strings.Join(orderParts, ", "),
+		limitClause,
+	)
+
+	rows, err := runner.Query(ctx, query, parameters...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	options := make([]RelationOption, 0)
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+
+		rawValue := normalizeValue(values[0])
+		labelValues := make(map[string]interface{}, len(labelColumns))
+		labelParts := make([]string, 0, len(labelColumns))
+		for index, labelColumn := range labelColumns {
+			value := normalizeValue(values[index+1])
+			labelValues[labelColumn.Name] = value
+			if value != nil && fmt.Sprint(value) != "" {
+				labelParts = append(labelParts, fmt.Sprint(value))
+			}
+		}
+		label := strings.Join(labelParts, " · ")
+		if label == "" {
+			label = fmt.Sprintf("#%v", rawValue)
+		}
+		options = append(options, RelationOption{
+			Value:  normalizeValueForColumn(targetColumn, rawValue),
+			Label:  label,
+			Values: labelValues,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return options, nil
+}
+
+func normalizeValueForColumn(_ columnDefinition, value interface{}) interface{} {
+	return value
+}
+
 func (service *Service) listPrimaryKeyColumns(
 	ctx context.Context,
 	runner queryRunner,
@@ -3644,6 +4175,13 @@ func isColumnSearchable(definition columnDefinition) bool {
 	default:
 		return true
 	}
+}
+
+func isTextLikeColumn(definition columnDefinition) bool {
+	return definition.UdtName == "text" ||
+		definition.UdtName == "varchar" ||
+		definition.UdtName == "bpchar" ||
+		strings.Contains(definition.Type, "character")
 }
 
 func isColumnFilterable(definition columnDefinition) bool {

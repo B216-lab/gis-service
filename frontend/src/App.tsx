@@ -20,7 +20,6 @@ import {
   Select,
   Slider,
   Stack,
-  Table,
   Tabs,
   Text,
   TextInput,
@@ -56,7 +55,13 @@ import {
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
+import {
+  MantineReactTable,
+  type MRT_ColumnDef,
+  useMantineReactTable,
+} from 'mantine-react-table';
 import maplibregl, { LngLatBounds } from 'maplibre-gl';
+import 'mantine-react-table/styles.css';
 import {
   type ChangeEvent,
   startTransition,
@@ -101,6 +106,7 @@ import {
   type MapLayer,
   type MapSource,
   type SpatialFilterPredicate,
+  type TableDisplayConfig,
   useConnectionStore,
 } from './features/connections/store';
 import { SavedViewModal } from './features/filters/SavedViewModal';
@@ -114,14 +120,18 @@ import {
   fetchInspectableSchemaTables,
   fetchInspectorRows,
   fetchInspectorRowsByKey,
+  fetchRelationLabels,
+  fetchRelationOptions,
   fetchTableMetadata,
   type InspectableSchema,
   type InspectableTable,
   type InspectableTableSummary,
   type InspectorColumn,
+  type InspectorForeignKey,
   type InspectorLookupRowsResponse,
   type InspectorRow,
   type InspectorRowsResponse,
+  type RelationOption,
   type TableChangeOperation,
 } from './features/inspector/api';
 import {
@@ -165,6 +175,28 @@ interface CatalogState {
 
 type RightPaneTab = 'layer' | 'data' | 'analysis';
 type MovementLayerKind = 'flowmap' | 'arc';
+
+type InspectorGridRow =
+  | {
+      id: string;
+      kind: 'draft';
+      draftRow: DraftInsertRow;
+      row: null;
+      rowPatch: undefined;
+      rowToken: null;
+      values: Record<string, unknown>;
+      isDeleted: false;
+    }
+  | {
+      id: string;
+      kind: 'record';
+      draftRow: null;
+      row: InspectorRow;
+      rowPatch: Record<string, unknown> | undefined;
+      rowToken: string | null;
+      values: Record<string, unknown>;
+      isDeleted: boolean;
+    };
 
 interface GeoJsonSpatialFilterTarget {
   layer: GeoJsonMapLayer | FlowmapMapLayer | ArcMapLayer;
@@ -2151,6 +2183,12 @@ function DataInspector({
   const [saveMessage, setSaveMessage] = useState('');
   const [locatingRowToken, setLocatingRowToken] = useState<string | null>(null);
   const [locateError, setLocateError] = useState('');
+  const [selectedGridRowId, setSelectedGridRowId] = useState<string | null>(
+    null,
+  );
+  const [relationLabels, setRelationLabels] = useState<
+    Record<string, Record<string, RelationOption>>
+  >({});
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(
@@ -2171,6 +2209,18 @@ function DataInspector({
   );
   const refreshGeoJsonSourcesForTable = useConnectionStore(
     (state) => state.refreshGeoJsonSourcesForTable,
+  );
+  const relationDisplayByKey = useConnectionStore(
+    (state) => state.relationDisplayByKey,
+  );
+  const setRelationDisplayConfig = useConnectionStore(
+    (state) => state.setRelationDisplayConfig,
+  );
+  const tableDisplayByKey = useConnectionStore(
+    (state) => state.tableDisplayByKey,
+  );
+  const setTableDisplayConfig = useConnectionStore(
+    (state) => state.setTableDisplayConfig,
   );
 
   const matchingSavedViews = useMemo(
@@ -2253,6 +2303,63 @@ function DataInspector({
   );
   const activePrimaryKey =
     rowsState?.primaryKey ?? selectedTable?.primaryKey ?? [];
+  const foreignKeyByColumn = useMemo(
+    () =>
+      new Map(
+        (selectedTable?.foreignKeys ?? []).map((foreignKey) => [
+          foreignKey.columnName,
+          foreignKey,
+        ]),
+      ),
+    [selectedTable?.foreignKeys],
+  );
+  const relationConfigByColumn = useMemo(() => {
+    if (!connection || !selectedTable) {
+      return new Map<string, string[]>();
+    }
+
+    return new Map(
+      (selectedTable.foreignKeys ?? []).map((foreignKey) => {
+        const key = relationDisplayKey(
+          connection.id,
+          selectedTable,
+          foreignKey,
+        );
+        const configuredColumns = relationDisplayByKey[key]?.labelColumns;
+        return [
+          foreignKey.columnName,
+          configuredColumns && configuredColumns.length > 0
+            ? configuredColumns
+            : foreignKey.defaultLabelColumn
+              ? [foreignKey.defaultLabelColumn]
+              : [],
+        ] as const;
+      }),
+    );
+  }, [connection, relationDisplayByKey, selectedTable]);
+  const tableDisplayKeyValue =
+    connection && selectedTable
+      ? tableDisplayKey(connection.id, selectedTable)
+      : null;
+  const tableDisplayConfig: TableDisplayConfig = tableDisplayKeyValue
+    ? (tableDisplayByKey[tableDisplayKeyValue] ?? {
+        columnLabels: {},
+        hiddenColumns: [],
+      })
+    : {
+        columnLabels: {},
+        hiddenColumns: [],
+      };
+  const columnVisibility = useMemo(
+    () =>
+      Object.fromEntries(
+        (rowsState?.columns ?? []).map((column) => [
+          column.name,
+          !tableDisplayConfig.hiddenColumns.includes(column.name),
+        ]),
+      ),
+    [rowsState?.columns, tableDisplayConfig.hiddenColumns],
+  );
   const hasDirtyChanges =
     draftInserts.length > 0 ||
     Object.keys(draftUpdates).length > 0 ||
@@ -2382,6 +2489,74 @@ function DataInspector({
     selectedTable,
   ]);
 
+  useEffect(() => {
+    if (!connection || !selectedTable || !rowsState) {
+      setRelationLabels({});
+      return;
+    }
+
+    const activeConnection = connection;
+    const activeTable = selectedTable;
+    const activeRowsState = rowsState;
+    const foreignKeys = selectedTable.foreignKeys ?? [];
+    if (foreignKeys.length === 0) {
+      setRelationLabels({});
+      return;
+    }
+
+    let isActive = true;
+
+    async function loadRelationLabels() {
+      const entries = await Promise.all(
+        foreignKeys.map(async (foreignKey) => {
+          const values = Array.from(
+            new Set(
+              activeRowsState.rows
+                .map((row) => row.values[foreignKey.columnName])
+                .filter((value) => value !== null && value !== undefined)
+                .map((value) => JSON.stringify(value)),
+            ),
+          ).map((value) => JSON.parse(value) as unknown);
+          if (values.length === 0) {
+            return [foreignKey.columnName, {}] as const;
+          }
+
+          const options = await fetchRelationLabels(activeConnection, {
+            schema: activeTable.schema,
+            table: activeTable.name,
+            column: foreignKey.columnName,
+            labelColumns:
+              relationConfigByColumn.get(foreignKey.columnName) ?? [],
+            values,
+          });
+
+          return [
+            foreignKey.columnName,
+            Object.fromEntries(
+              options.map((option) => [String(option.value), option]),
+            ),
+          ] as const;
+        }),
+      );
+
+      if (!isActive) {
+        return;
+      }
+
+      setRelationLabels(Object.fromEntries(entries));
+    }
+
+    void loadRelationLabels().catch(() => {
+      if (isActive) {
+        setRelationLabels({});
+      }
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [connection, relationConfigByColumn, rowsState, selectedTable]);
+
   async function handlePageChange(nextOffset: number) {
     if (!connection || !selectedTable) {
       return;
@@ -2442,64 +2617,62 @@ function DataInspector({
     setSaveMessage('');
   }
 
-  function handleDraftInsertChange(
-    draftId: string,
-    column: InspectorColumn,
-    nextValue: unknown,
-  ) {
-    setDraftInserts((current) =>
-      current.map((draftRow) =>
-        draftRow.id === draftId
-          ? {
-              ...draftRow,
-              values: {
-                ...draftRow.values,
-                [column.name]: normalizeEditorValue(column.type, nextValue),
-              },
-            }
-          : draftRow,
-      ),
-    );
-    setSaveMessage('');
-  }
+  const handleDraftInsertChange = useCallback(
+    (draftId: string, column: InspectorColumn, nextValue: unknown) => {
+      setDraftInserts((current) =>
+        current.map((draftRow) =>
+          draftRow.id === draftId
+            ? {
+                ...draftRow,
+                values: {
+                  ...draftRow.values,
+                  [column.name]: normalizeEditorValue(column.type, nextValue),
+                },
+              }
+            : draftRow,
+        ),
+      );
+      setSaveMessage('');
+    },
+    [],
+  );
 
-  function handleExistingCellChange(
-    row: InspectorRow,
-    column: InspectorColumn,
-    nextValue: unknown,
-  ) {
-    const rowToken = serializeRowKey(row.rowKey, activePrimaryKey);
-    if (!rowToken || draftDeletes[rowToken]) {
-      return;
-    }
-
-    const baseValue = row.values[column.name];
-    const normalizedValue = normalizeEditorValue(column.type, nextValue);
-
-    setDraftUpdates((current) => {
-      const currentRowPatch = current[rowToken] ?? {};
-      const nextRowPatch = {
-        ...currentRowPatch,
-      };
-
-      if (areEditorValuesEqual(baseValue, normalizedValue)) {
-        delete nextRowPatch[column.name];
-      } else {
-        nextRowPatch[column.name] = normalizedValue;
+  const handleExistingCellChange = useCallback(
+    (row: InspectorRow, column: InspectorColumn, nextValue: unknown) => {
+      const rowToken = serializeRowKey(row.rowKey, activePrimaryKey);
+      if (!rowToken || draftDeletes[rowToken]) {
+        return;
       }
 
-      if (Object.keys(nextRowPatch).length === 0) {
-        const { [rowToken]: _removed, ...rest } = current;
-        return rest;
-      }
+      const baseValue = row.values[column.name];
+      const normalizedValue = normalizeEditorValue(column.type, nextValue);
 
-      return {
-        ...current,
-        [rowToken]: nextRowPatch,
-      };
-    });
-    setSaveMessage('');
-  }
+      setDraftUpdates((current) => {
+        const currentRowPatch = current[rowToken] ?? {};
+        const nextRowPatch = {
+          ...currentRowPatch,
+        };
+
+        if (areEditorValuesEqual(baseValue, normalizedValue)) {
+          delete nextRowPatch[column.name];
+        } else {
+          nextRowPatch[column.name] = normalizedValue;
+        }
+
+        if (Object.keys(nextRowPatch).length === 0) {
+          const { [rowToken]: _removed, ...rest } = current;
+          return rest;
+        }
+
+        return {
+          ...current,
+          [rowToken]: nextRowPatch,
+        };
+      });
+      setSaveMessage('');
+    },
+    [activePrimaryKey, draftDeletes],
+  );
 
   function handleToggleDeleteExistingRow(row: InspectorRow) {
     const rowToken = serializeRowKey(row.rowKey, activePrimaryKey);
@@ -2698,6 +2871,266 @@ function DataInspector({
 
     removeSavedTableView(activeSavedView.id);
   }
+
+  const inspectorGridRows = useMemo<InspectorGridRow[]>(() => {
+    if (!rowsState) {
+      return [];
+    }
+
+    const draftRows: InspectorGridRow[] = draftInserts.map((draftRow) => ({
+      id: `draft:${draftRow.id}`,
+      kind: 'draft',
+      draftRow,
+      row: null,
+      rowPatch: undefined,
+      rowToken: null,
+      values: draftRow.values,
+      isDeleted: false,
+    }));
+
+    const recordRows = rowsState.rows.map<InspectorGridRow>((row) => {
+      const rowToken = serializeRowKey(row.rowKey, rowsState.primaryKey);
+      const rowPatch = rowToken ? draftUpdates[rowToken] : undefined;
+
+      return {
+        id:
+          rowToken ??
+          JSON.stringify([rowsState.offset, rowsState.primaryKey, row.values]),
+        kind: 'record',
+        draftRow: null,
+        row,
+        rowPatch,
+        rowToken,
+        values: {
+          ...row.values,
+          ...(rowPatch ?? {}),
+        },
+        isDeleted: rowToken ? Boolean(draftDeletes[rowToken]) : false,
+      };
+    });
+
+    return [...draftRows, ...recordRows];
+  }, [draftDeletes, draftInserts, draftUpdates, rowsState]);
+  const selectedGridRow =
+    inspectorGridRows.find((gridRow) => gridRow.id === selectedGridRowId) ??
+    null;
+
+  const inspectorColumns = useMemo<MRT_ColumnDef<InspectorGridRow>[]>(
+    () =>
+      (rowsState?.columns ?? []).map((column) => {
+        const foreignKey = foreignKeyByColumn.get(column.name);
+        const isPrimaryKey = activePrimaryKey.includes(column.name);
+        const columnLabel =
+          tableDisplayConfig.columnLabels[column.name]?.trim() || column.name;
+
+        return {
+          id: column.name,
+          accessorFn: (gridRow) => gridRow.values[column.name],
+          header: columnLabel,
+          Header: () => (
+            <Stack gap={4}>
+              <Group gap={4} wrap="nowrap">
+                <Text fw={600} size="sm">
+                  {columnLabel}
+                </Text>
+                {isPrimaryKey ? (
+                  <Badge color="blue" size="xs" variant="light">
+                    PK
+                  </Badge>
+                ) : null}
+                {foreignKey ? (
+                  <Badge color="grape" size="xs" variant="light">
+                    FK
+                  </Badge>
+                ) : null}
+              </Group>
+              <Text c="dimmed" size="xs">
+                {column.type}
+              </Text>
+            </Stack>
+          ),
+          Cell: ({ row }) => {
+            const gridRow = row.original;
+            const displayValue = gridRow.values[column.name];
+            const relationOption =
+              foreignKey && displayValue !== null && displayValue !== undefined
+                ? relationLabels[column.name]?.[relationValueKey(displayValue)]
+                : undefined;
+
+            return (
+              <RelationCellValue
+                isDeleted={gridRow.isDeleted}
+                option={relationOption}
+                value={displayValue}
+              />
+            );
+          },
+          enableEditing: false,
+          mantineTableBodyCellProps: {
+            style: {
+              fontFamily: getCellFontFamily(column.name, column.type),
+              textAlign: getCellTextAlign(column.type),
+              verticalAlign: 'top',
+            },
+          },
+          mantineTableHeadCellProps: {
+            style: {
+              minHeight: 54,
+              overflow: 'hidden',
+            },
+          },
+          size: foreignKey ? 240 : 180,
+        } satisfies MRT_ColumnDef<InspectorGridRow>;
+      }),
+    [
+      activePrimaryKey,
+      foreignKeyByColumn,
+      relationLabels,
+      rowsState?.columns,
+      tableDisplayConfig.columnLabels,
+    ],
+  );
+
+  const inspectorTable = useMantineReactTable<InspectorGridRow>({
+    columns: inspectorColumns,
+    data: inspectorGridRows,
+    enableBottomToolbar: false,
+    enableColumnActions: false,
+    enableColumnOrdering: true,
+    enableColumnPinning: true,
+    enableColumnResizing: true,
+    enableColumnVirtualization: false,
+    enableDensityToggle: true,
+    enableEditing: false,
+    enableGlobalFilter: true,
+    enablePagination: false,
+    enableRowActions: true,
+    enableRowVirtualization: true,
+    enableStickyHeader: true,
+    getRowId: (row) => row.id,
+    initialState: {
+      columnPinning: {
+        left: ['mrt-row-actions'],
+      },
+      density: 'xs',
+    },
+    layoutMode: 'grid',
+    mantinePaperProps: {
+      style: {
+        display: 'flex',
+        flex: 1,
+        flexDirection: 'column',
+        minHeight: 0,
+      },
+    },
+    mantineTableBodyRowProps: ({ row }) => ({
+      onClick: () => setSelectedGridRowId(row.original.id),
+      style: {
+        background:
+          row.original.id === selectedGridRowId
+            ? 'rgba(34, 139, 230, 0.12)'
+            : row.original.kind === 'draft'
+              ? 'rgba(18, 184, 134, 0.08)'
+              : row.original.isDeleted
+                ? 'rgba(224, 49, 49, 0.08)'
+                : row.original.rowPatch
+                  ? 'rgba(250, 176, 5, 0.08)'
+                  : undefined,
+        cursor: 'pointer',
+      },
+    }),
+    mantineTableContainerProps: {
+      style: {
+        flex: 1,
+        height: '100%',
+        minHeight: 0,
+        overflow: 'auto',
+      },
+    },
+    positionActionsColumn: 'first',
+    renderRowActions: ({ row }) => {
+      const gridRow = row.original;
+      if (gridRow.kind === 'draft') {
+        return (
+          <Group gap={6} wrap="nowrap">
+            <Badge color="teal" size="xs" variant="light">
+              New
+            </Badge>
+            <ActionIcon
+              aria-label="Remove new row"
+              color="red"
+              onClick={() => handleRemoveDraftInsertRow(gridRow.draftRow.id)}
+              size="sm"
+              variant="subtle"
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          </Group>
+        );
+      }
+
+      const canLocateRow =
+        Boolean(gridRow.row.rowKey) && locateTargets.length > 0;
+
+      return (
+        <Group gap={6} wrap="nowrap">
+          {gridRow.isDeleted ? (
+            <Badge color="red" size="xs" variant="light">
+              Delete
+            </Badge>
+          ) : gridRow.rowPatch ? (
+            <Badge color="orange" size="xs" variant="light">
+              Edit
+            </Badge>
+          ) : null}
+          {rowsState?.isEditable && gridRow.row.rowKey ? (
+            <ActionIcon
+              aria-label={
+                gridRow.isDeleted ? 'Restore row' : 'Mark row for delete'
+              }
+              color={gridRow.isDeleted ? 'gray' : 'red'}
+              onClick={() => handleToggleDeleteExistingRow(gridRow.row)}
+              size="sm"
+              variant="subtle"
+            >
+              {gridRow.isDeleted ? (
+                <IconRestore size={14} />
+              ) : (
+                <IconTrash size={14} />
+              )}
+            </ActionIcon>
+          ) : null}
+          {gridRow.row.rowKey ? (
+            <ActionIcon
+              aria-label="Locate row on map"
+              color="blue"
+              disabled={!canLocateRow}
+              loading={
+                Boolean(gridRow.rowToken) &&
+                locatingRowToken === gridRow.rowToken
+              }
+              onClick={() => void handleLocateRow(gridRow.row)}
+              size="sm"
+              title={
+                canLocateRow
+                  ? `Locate in ${locateTargets[0].layer.name}`
+                  : 'No visible geometry layer for this row'
+              }
+              variant="subtle"
+            >
+              <IconMapPin size={14} />
+            </ActionIcon>
+          ) : null}
+        </Group>
+      );
+    },
+    state: {
+      columnVisibility,
+      isLoading: isLoadingRows,
+      showAlertBanner: Boolean(rowsError),
+      showProgressBars: isLoadingRows,
+    },
+  });
 
   if (!connection) {
     return (
@@ -2930,15 +3363,11 @@ function DataInspector({
                   {rowsState.offset + rowsState.rows.length} of{' '}
                   {formatRowCount(rowsState.totalRows)}
                 </Text>
-                {rowsState.primaryKey.length > 0 ? (
-                  <Badge color="gray" size="sm" variant="light">
-                    PK {rowsState.primaryKey.join(', ')}
-                  </Badge>
-                ) : (
+                {rowsState.primaryKey.length === 0 ? (
                   <Badge color="gray" size="sm" variant="outline">
                     No primary key
                   </Badge>
-                )}
+                ) : null}
                 <Badge
                   color={rowsState.isEditable ? 'teal' : 'gray'}
                   size="sm"
@@ -2982,6 +3411,137 @@ function DataInspector({
               </Alert>
             ) : null}
 
+            {tableDisplayKeyValue && rowsState.columns.length > 0 ? (
+              <Menu
+                closeOnItemClick={false}
+                position="bottom-start"
+                shadow="md"
+              >
+                <Menu.Target>
+                  <Button size="compact-sm" variant="default">
+                    Columns
+                  </Button>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <ScrollArea h={360} type="auto">
+                    <Stack gap="xs" p="xs" w={360}>
+                      {rowsState.columns.map((column) => {
+                        const isHidden =
+                          tableDisplayConfig.hiddenColumns.includes(
+                            column.name,
+                          );
+                        const currentLabel =
+                          tableDisplayConfig.columnLabels[column.name] ?? '';
+
+                        return (
+                          <Stack gap={4} key={column.name}>
+                            <Checkbox
+                              checked={!isHidden}
+                              label={column.name}
+                              onChange={(event) => {
+                                if (!tableDisplayKeyValue) {
+                                  return;
+                                }
+
+                                const nextHidden = event.currentTarget.checked
+                                  ? tableDisplayConfig.hiddenColumns.filter(
+                                      (columnName) =>
+                                        columnName !== column.name,
+                                    )
+                                  : Array.from(
+                                      new Set([
+                                        ...tableDisplayConfig.hiddenColumns,
+                                        column.name,
+                                      ]),
+                                    );
+                                setTableDisplayConfig(tableDisplayKeyValue, {
+                                  ...tableDisplayConfig,
+                                  hiddenColumns: nextHidden,
+                                });
+                              }}
+                              size="xs"
+                            />
+                            <TextInput
+                              onChange={(event) => {
+                                if (!tableDisplayKeyValue) {
+                                  return;
+                                }
+
+                                const nextLabels = {
+                                  ...tableDisplayConfig.columnLabels,
+                                };
+                                const nextValue = event.currentTarget.value;
+                                if (nextValue.trim() === '') {
+                                  delete nextLabels[column.name];
+                                } else {
+                                  nextLabels[column.name] = nextValue;
+                                }
+
+                                setTableDisplayConfig(tableDisplayKeyValue, {
+                                  ...tableDisplayConfig,
+                                  columnLabels: nextLabels,
+                                });
+                              }}
+                              placeholder="Readable label"
+                              size="xs"
+                              value={currentLabel}
+                            />
+                          </Stack>
+                        );
+                      })}
+                    </Stack>
+                  </ScrollArea>
+                </Menu.Dropdown>
+              </Menu>
+            ) : null}
+
+            {connection &&
+            selectedTable &&
+            selectedTable.foreignKeys.length > 0 ? (
+              <Group gap="xs">
+                {selectedTable.foreignKeys.map((foreignKey) => {
+                  const relationColumns =
+                    relationConfigByColumn.get(foreignKey.columnName) ?? [];
+
+                  return (
+                    <Select
+                      allowDeselect={false}
+                      aria-label={`Relation label for ${foreignKey.columnName}`}
+                      data={foreignKey.labelColumns.map((labelColumn) => ({
+                        label: `${foreignKey.columnName}: ${labelColumn}`,
+                        value: labelColumn,
+                      }))}
+                      disabled={foreignKey.labelColumns.length === 0}
+                      key={foreignKey.columnName}
+                      onChange={(value) => {
+                        if (!value) {
+                          return;
+                        }
+
+                        setRelationLabels((currentLabels) => {
+                          const nextLabels = { ...currentLabels };
+                          delete nextLabels[foreignKey.columnName];
+                          return nextLabels;
+                        });
+                        setRelationDisplayConfig(
+                          relationDisplayKey(
+                            connection.id,
+                            selectedTable,
+                            foreignKey,
+                          ),
+                          { labelColumns: [value] },
+                        );
+                      }}
+                      placeholder={`${foreignKey.columnName}: raw id`}
+                      size="xs"
+                      value={relationColumns[0] ?? null}
+                      w={220}
+                    />
+                  );
+                })}
+              </Group>
+            ) : null}
+
             {rowsState.rows.length === 0 && draftInserts.length === 0 ? (
               <EmptyState
                 detail={
@@ -2994,258 +3554,34 @@ function DataInspector({
                 }
               />
             ) : (
-              <ScrollArea
-                offsetScrollbars
-                scrollbarSize={8}
-                style={{
-                  flex: 1,
-                  minHeight: 0,
-                }}
-              >
-                <Table
-                  highlightOnHover
-                  stickyHeader
-                  stickyHeaderOffset={0}
-                  striped
-                  withColumnBorders
+              <Flex gap="sm" style={{ flex: 1, minHeight: 0 }}>
+                <Box
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    minWidth: 0,
+                  }}
                 >
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th
-                        style={{
-                          minWidth: 120,
-                        }}
-                      >
-                        Row
-                      </Table.Th>
-                      {rowsState.columns.map((column) => (
-                        <Table.Th
-                          key={column.name}
-                          style={{
-                            minWidth: 160,
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          <Stack gap={0}>
-                            <Text fw={600} size="sm">
-                              {column.name}
-                            </Text>
-                            <Text c="dimmed" size="xs">
-                              {column.type}
-                            </Text>
-                          </Stack>
-                        </Table.Th>
-                      ))}
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {draftInserts.map((draftRow) => (
-                      <Table.Tr
-                        key={draftRow.id}
-                        style={{
-                          background: 'rgba(18, 184, 134, 0.08)',
-                        }}
-                      >
-                        <Table.Td>
-                          <Group gap={6} wrap="nowrap">
-                            <Badge color="teal" size="xs" variant="light">
-                              New
-                            </Badge>
-                            <ActionIcon
-                              aria-label="Remove new row"
-                              color="red"
-                              onClick={() =>
-                                handleRemoveDraftInsertRow(draftRow.id)
-                              }
-                              size="sm"
-                              variant="subtle"
-                            >
-                              <IconTrash size={14} />
-                            </ActionIcon>
-                          </Group>
-                        </Table.Td>
-                        {rowsState.columns.map((column) => (
-                          <Table.Td
-                            key={`${draftRow.id}-${column.name}`}
-                            style={{
-                              fontFamily: getCellFontFamily(
-                                column.name,
-                                column.type,
-                              ),
-                              maxWidth: 320,
-                              textAlign: getCellTextAlign(column.type),
-                              verticalAlign: 'top',
-                            }}
-                          >
-                            {isEditableColumnType(column.type) ? (
-                              renderEditableCell({
-                                column,
-                                onChange: (nextValue) =>
-                                  handleDraftInsertChange(
-                                    draftRow.id,
-                                    column,
-                                    nextValue,
-                                  ),
-                                value: draftRow.values[column.name],
-                              })
-                            ) : (
-                              <Text c="dimmed" size="sm">
-                                Auto / read only
-                              </Text>
-                            )}
-                          </Table.Td>
-                        ))}
-                      </Table.Tr>
-                    ))}
-
-                    {rowsState.rows.map((row) => {
-                      const rowToken = serializeRowKey(
-                        row.rowKey,
-                        rowsState.primaryKey,
-                      );
-                      const rowPatch = rowToken
-                        ? draftUpdates[rowToken]
-                        : undefined;
-                      const isDeleted = rowToken
-                        ? Boolean(draftDeletes[rowToken])
-                        : false;
-                      const canLocateRow =
-                        Boolean(row.rowKey) && locateTargets.length > 0;
-                      const rowRenderKey =
-                        rowToken ??
-                        JSON.stringify([
-                          rowsState.offset,
-                          rowsState.primaryKey,
-                          row.values,
-                        ]);
-
-                      return (
-                        <Table.Tr
-                          key={rowRenderKey}
-                          style={{
-                            background: isDeleted
-                              ? 'rgba(224, 49, 49, 0.08)'
-                              : rowPatch
-                                ? 'rgba(250, 176, 5, 0.08)'
-                                : undefined,
-                          }}
-                        >
-                          <Table.Td>
-                            <Group gap={6} wrap="nowrap">
-                              {isDeleted ? (
-                                <Badge color="red" size="xs" variant="light">
-                                  Delete
-                                </Badge>
-                              ) : rowPatch ? (
-                                <Badge color="orange" size="xs" variant="light">
-                                  Edit
-                                </Badge>
-                              ) : null}
-                              {rowsState.isEditable && row.rowKey ? (
-                                <ActionIcon
-                                  aria-label={
-                                    isDeleted
-                                      ? 'Restore row'
-                                      : 'Mark row for delete'
-                                  }
-                                  color={isDeleted ? 'gray' : 'red'}
-                                  onClick={() =>
-                                    handleToggleDeleteExistingRow(row)
-                                  }
-                                  size="sm"
-                                  variant="subtle"
-                                >
-                                  {isDeleted ? (
-                                    <IconRestore size={14} />
-                                  ) : (
-                                    <IconTrash size={14} />
-                                  )}
-                                </ActionIcon>
-                              ) : null}
-                              {row.rowKey ? (
-                                <ActionIcon
-                                  aria-label="Locate row on map"
-                                  color="blue"
-                                  disabled={!canLocateRow}
-                                  loading={
-                                    Boolean(rowToken) &&
-                                    locatingRowToken === rowToken
-                                  }
-                                  onClick={() => void handleLocateRow(row)}
-                                  size="sm"
-                                  title={
-                                    canLocateRow
-                                      ? `Locate in ${locateTargets[0].layer.name}`
-                                      : 'No visible geometry layer for this row'
-                                  }
-                                  variant="subtle"
-                                >
-                                  <IconMapPin size={14} />
-                                </ActionIcon>
-                              ) : null}
-                            </Group>
-                          </Table.Td>
-                          {rowsState.columns.map((column) => {
-                            const displayValue =
-                              rowPatch && column.name in rowPatch
-                                ? rowPatch[column.name]
-                                : row.values[column.name];
-                            const isEditableCell =
-                              rowsState.isEditable &&
-                              Boolean(row.rowKey) &&
-                              isEditableColumnType(column.type) &&
-                              !rowsState.primaryKey.includes(column.name);
-
-                            return (
-                              <Table.Td
-                                key={`${rowRenderKey}-${column.name}`}
-                                style={{
-                                  fontFamily: getCellFontFamily(
-                                    column.name,
-                                    column.type,
-                                  ),
-                                  maxWidth: 320,
-                                  textAlign: getCellTextAlign(column.type),
-                                  verticalAlign: 'top',
-                                }}
-                              >
-                                {isEditableCell ? (
-                                  renderEditableCell({
-                                    column,
-                                    disabled: isDeleted || isSavingChanges,
-                                    onChange: (nextValue) =>
-                                      handleExistingCellChange(
-                                        row,
-                                        column,
-                                        nextValue,
-                                      ),
-                                    value: displayValue,
-                                  })
-                                ) : (
-                                  <Text
-                                    lineClamp={3}
-                                    size="sm"
-                                    style={{
-                                      opacity: isDeleted ? 0.55 : 1,
-                                      textDecoration: isDeleted
-                                        ? 'line-through'
-                                        : undefined,
-                                      whiteSpace: 'pre-wrap',
-                                      wordBreak: 'break-word',
-                                    }}
-                                  >
-                                    {formatCellValue(displayValue)}
-                                  </Text>
-                                )}
-                              </Table.Td>
-                            );
-                          })}
-                        </Table.Tr>
-                      );
-                    })}
-                  </Table.Tbody>
-                </Table>
-              </ScrollArea>
+                  <MantineReactTable table={inspectorTable} />
+                </Box>
+                {connection && selectedTable && selectedGridRow ? (
+                  <RecordEditorPanel
+                    activePrimaryKey={activePrimaryKey}
+                    connection={connection}
+                    disabled={isSavingChanges}
+                    foreignKeyByColumn={foreignKeyByColumn}
+                    onChangeDraft={handleDraftInsertChange}
+                    onChangeExisting={handleExistingCellChange}
+                    onClose={() => setSelectedGridRowId(null)}
+                    relationConfigByColumn={relationConfigByColumn}
+                    relationLabels={relationLabels}
+                    row={selectedGridRow}
+                    selectedTable={selectedTable}
+                    tableColumns={rowsState.columns}
+                    tableIsEditable={rowsState.isEditable}
+                  />
+                ) : null}
+              </Flex>
             )}
 
             <Group justify="space-between">
@@ -4209,6 +4545,398 @@ function collectPositionsFromCoordinates(value: unknown): [number, number][] {
   }
 
   return value.flatMap(collectPositionsFromCoordinates);
+}
+
+function relationDisplayKey(
+  connectionId: string,
+  table: InspectableTable,
+  foreignKey: InspectorForeignKey,
+) {
+  return `${connectionId}:${table.schema}.${table.name}:${foreignKey.columnName}`;
+}
+
+function tableDisplayKey(connectionId: string, table: InspectableTable) {
+  return `${connectionId}:${table.schema}.${table.name}`;
+}
+
+function relationValueKey(value: unknown) {
+  return String(value);
+}
+
+function RecordEditorPanel({
+  activePrimaryKey,
+  connection,
+  disabled,
+  foreignKeyByColumn,
+  onChangeDraft,
+  onChangeExisting,
+  onClose,
+  relationConfigByColumn,
+  relationLabels,
+  row,
+  selectedTable,
+  tableColumns,
+  tableIsEditable,
+}: {
+  activePrimaryKey: string[];
+  connection: DatabaseConnection;
+  disabled: boolean;
+  foreignKeyByColumn: Map<string, InspectorForeignKey>;
+  onChangeDraft: (
+    draftId: string,
+    column: InspectorColumn,
+    nextValue: unknown,
+  ) => void;
+  onChangeExisting: (
+    row: InspectorRow,
+    column: InspectorColumn,
+    nextValue: unknown,
+  ) => void;
+  onClose: () => void;
+  relationConfigByColumn: Map<string, string[]>;
+  relationLabels: Record<string, Record<string, RelationOption>>;
+  row: InspectorGridRow;
+  selectedTable: InspectableTable;
+  tableColumns: InspectorColumn[];
+  tableIsEditable: boolean;
+}) {
+  return (
+    <Paper
+      p="sm"
+      radius="md"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        width: 340,
+      }}
+      withBorder
+    >
+      <Group justify="space-between" mb="xs" wrap="nowrap">
+        <div>
+          <Text fw={700} size="sm">
+            Record
+          </Text>
+          <Text c="dimmed" size="xs">
+            {row.kind === 'draft' ? 'New row' : 'Selected row'}
+          </Text>
+        </div>
+        <ActionIcon
+          aria-label="Close record editor"
+          onClick={onClose}
+          size="sm"
+          variant="subtle"
+        >
+          <IconX size={14} />
+        </ActionIcon>
+      </Group>
+
+      {row.isDeleted ? (
+        <Alert color="red" mb="xs" variant="light">
+          Row is marked for delete.
+        </Alert>
+      ) : null}
+
+      <ScrollArea
+        offsetScrollbars
+        scrollbarSize={8}
+        style={{ flex: 1, minHeight: 0 }}
+      >
+        <Stack gap="xs">
+          {tableColumns.map((column) => {
+            const foreignKey = foreignKeyByColumn.get(column.name);
+            const value = row.values[column.name];
+            const relationOption =
+              foreignKey && value !== null && value !== undefined
+                ? relationLabels[column.name]?.[relationValueKey(value)]
+                : undefined;
+            const isPrimaryKey = activePrimaryKey.includes(column.name);
+            const canEdit =
+              row.kind === 'draft'
+                ? isEditableColumnType(column.type)
+                : tableIsEditable &&
+                  Boolean(row.row?.rowKey) &&
+                  isEditableColumnType(column.type) &&
+                  !isPrimaryKey &&
+                  !row.isDeleted;
+
+            return (
+              <Stack gap={4} key={column.name}>
+                <Group gap={4} wrap="nowrap">
+                  <Text fw={600} size="xs">
+                    {column.name}
+                  </Text>
+                  {isPrimaryKey ? (
+                    <Badge color="blue" size="xs" variant="light">
+                      PK
+                    </Badge>
+                  ) : null}
+                  {foreignKey ? (
+                    <Badge color="grape" size="xs" variant="light">
+                      FK
+                    </Badge>
+                  ) : null}
+                </Group>
+                {canEdit ? (
+                  foreignKey ? (
+                    <RelationCellEditor
+                      connection={connection}
+                      disabled={disabled}
+                      foreignKey={foreignKey}
+                      initialOption={relationOption}
+                      labelColumns={
+                        relationConfigByColumn.get(column.name) ?? []
+                      }
+                      onChange={(nextValue) => {
+                        if (row.kind === 'draft') {
+                          onChangeDraft(row.draftRow.id, column, nextValue);
+                          return;
+                        }
+
+                        onChangeExisting(row.row, column, nextValue);
+                      }}
+                      selectedTable={selectedTable}
+                      value={value}
+                    />
+                  ) : (
+                    renderEditableCell({
+                      column,
+                      disabled,
+                      onChange: (nextValue) => {
+                        if (row.kind === 'draft') {
+                          onChangeDraft(row.draftRow.id, column, nextValue);
+                          return;
+                        }
+
+                        onChangeExisting(row.row, column, nextValue);
+                      },
+                      value,
+                    })
+                  )
+                ) : (
+                  <Box
+                    style={{
+                      border: '1px solid var(--mantine-color-default-border)',
+                      borderRadius: 4,
+                      padding: '5px 8px',
+                    }}
+                  >
+                    <RelationCellValue
+                      isDeleted={row.isDeleted}
+                      option={relationOption}
+                      value={value}
+                    />
+                  </Box>
+                )}
+              </Stack>
+            );
+          })}
+        </Stack>
+      </ScrollArea>
+    </Paper>
+  );
+}
+
+function RelationCellValue({
+  isDeleted,
+  option,
+  value,
+}: {
+  isDeleted: boolean;
+  option?: RelationOption;
+  value: unknown;
+}) {
+  if (option) {
+    return (
+      <Stack
+        gap={0}
+        style={{
+          opacity: isDeleted ? 0.55 : 1,
+          textAlign: 'left',
+          textDecoration: isDeleted ? 'line-through' : undefined,
+        }}
+      >
+        <Text lineClamp={2} size="sm">
+          {option.label}
+        </Text>
+        <Text c="dimmed" lineClamp={1} size="xs">
+          {formatCellValue(value)}
+        </Text>
+      </Stack>
+    );
+  }
+
+  return (
+    <Text
+      lineClamp={3}
+      size="sm"
+      style={{
+        opacity: isDeleted ? 0.55 : 1,
+        textDecoration: isDeleted ? 'line-through' : undefined,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      {formatCellValue(value)}
+    </Text>
+  );
+}
+
+function RelationCellEditor({
+  connection,
+  disabled,
+  foreignKey,
+  initialOption,
+  labelColumns,
+  onChange,
+  selectedTable,
+  value,
+}: {
+  connection: DatabaseConnection;
+  disabled?: boolean;
+  foreignKey: InspectorForeignKey;
+  initialOption?: RelationOption;
+  labelColumns: string[];
+  onChange: (value: unknown) => void;
+  selectedTable: InspectableTable;
+  value: unknown;
+}) {
+  const [search, setSearch] = useState('');
+  const [shouldLoadOptions, setShouldLoadOptions] = useState(false);
+  const [isLoadingOptions, setIsLoadingOptions] = useState(false);
+  const [options, setOptions] = useState<RelationOption[]>(
+    initialOption ? [initialOption] : [],
+  );
+  const currentValue =
+    value === null || value === undefined ? null : relationValueKey(value);
+
+  useEffect(() => {
+    if (!shouldLoadOptions) {
+      return;
+    }
+
+    let isActive = true;
+
+    async function loadOptions() {
+      setIsLoadingOptions(true);
+      const nextOptions = await fetchRelationOptions(connection, {
+        schema: selectedTable.schema,
+        table: selectedTable.name,
+        column: foreignKey.columnName,
+        labelColumns,
+        limit: 30,
+        search,
+      });
+
+      if (!isActive) {
+        return;
+      }
+
+      setOptions((currentOptions) => {
+        const byValue = new Map<string, RelationOption>();
+        for (const option of currentOptions) {
+          byValue.set(relationValueKey(option.value), option);
+        }
+        for (const option of nextOptions) {
+          byValue.set(relationValueKey(option.value), option);
+        }
+        if (initialOption) {
+          byValue.set(relationValueKey(initialOption.value), initialOption);
+        }
+        return Array.from(byValue.values());
+      });
+    }
+
+    void loadOptions()
+      .catch(() => {
+        if (isActive && initialOption) {
+          setOptions([initialOption]);
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoadingOptions(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    connection,
+    foreignKey.columnName,
+    initialOption,
+    labelColumns,
+    search,
+    selectedTable.name,
+    selectedTable.schema,
+    shouldLoadOptions,
+  ]);
+
+  const optionByValue = useMemo(() => {
+    const byValue = new Map<string, RelationOption>();
+    for (const option of options) {
+      byValue.set(relationValueKey(option.value), option);
+    }
+    return byValue;
+  }, [options]);
+  const selectedOptionLabel = currentValue
+    ? (optionByValue.get(currentValue)?.label ?? '')
+    : '';
+
+  const data = useMemo(
+    () =>
+      options.map((option) => ({
+        label: option.label,
+        value: relationValueKey(option.value),
+      })),
+    [options],
+  );
+
+  return (
+    <Select
+      clearable
+      data={data}
+      disabled={disabled}
+      nothingFoundMessage={isLoadingOptions ? 'Loading...' : 'No records'}
+      onChange={(nextValue) => {
+        if (nextValue === null) {
+          onChange(null);
+          return;
+        }
+
+        onChange(optionByValue.get(nextValue)?.value ?? nextValue);
+      }}
+      onDropdownOpen={() => {
+        setSearch('');
+        setShouldLoadOptions(true);
+      }}
+      onFocus={() => {
+        setSearch('');
+        setShouldLoadOptions(true);
+      }}
+      onSearchChange={(nextSearch) => {
+        if (nextSearch === selectedOptionLabel) {
+          setSearch('');
+          setShouldLoadOptions(true);
+          return;
+        }
+
+        setSearch(nextSearch);
+        setShouldLoadOptions(true);
+      }}
+      placeholder="Select related record"
+      searchable
+      searchValue={search}
+      size="xs"
+      styles={{
+        input: {
+          textAlign: 'left',
+        },
+      }}
+      value={currentValue}
+    />
+  );
 }
 
 function isGeometryInspectorColumn(column: InspectorColumn) {

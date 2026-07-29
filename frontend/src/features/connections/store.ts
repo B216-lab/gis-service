@@ -119,6 +119,15 @@ export interface ArcMapLayer extends BaseMapLayer {
 
 export type MapLayer = GeoJsonMapLayer | FlowmapMapLayer | ArcMapLayer;
 
+export interface RelationDisplayConfig {
+  labelColumns: string[];
+}
+
+export interface TableDisplayConfig {
+  columnLabels: Record<string, string>;
+  hiddenColumns: string[];
+}
+
 interface LegacyImportedLayer {
   id: string;
   connectionId: string;
@@ -140,6 +149,8 @@ interface ConnectionStoreState {
   mapSources: MapSource[];
   mapLayers: MapLayer[];
   savedTableViews: SavedTableView[];
+  relationDisplayByKey: Record<string, RelationDisplayConfig>;
+  tableDisplayByKey: Record<string, TableDisplayConfig>;
   selectedBasemapId: BasemapId;
   selectedConnectionId: string | null;
   selectedTableByConnectionId: Record<string, string | null>;
@@ -170,6 +181,11 @@ interface ConnectionStoreState {
   setSelectedBasemap: (basemapId: BasemapId) => void;
   selectConnection: (connectionId: string) => void;
   setSelectedTable: (connectionId: string, tableKey: string | null) => void;
+  setRelationDisplayConfig: (
+    key: string,
+    config: RelationDisplayConfig,
+  ) => void;
+  setTableDisplayConfig: (key: string, config: TableDisplayConfig) => void;
   addGeoJsonLayer: (payload: {
     connectionId: string;
     schema: string;
@@ -621,6 +637,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
       mapSources: [],
       mapLayers: [],
       savedTableViews: [],
+      relationDisplayByKey: {},
+      tableDisplayByKey: {},
       selectedBasemapId: defaultBasemapId,
       selectedConnectionId: null,
       selectedTableByConnectionId: {},
@@ -820,6 +838,20 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           selectedTableByConnectionId: {
             ...state.selectedTableByConnectionId,
             [connectionId]: tableKey,
+          },
+        })),
+      setRelationDisplayConfig: (key, config) =>
+        set((state) => ({
+          relationDisplayByKey: {
+            ...state.relationDisplayByKey,
+            [key]: config,
+          },
+        })),
+      setTableDisplayConfig: (key, config) =>
+        set((state) => ({
+          tableDisplayByKey: {
+            ...state.tableDisplayByKey,
+            [key]: config,
           },
         })),
       addGeoJsonLayer: (payload) =>
@@ -1163,6 +1195,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             mapLayers?: Partial<MapLayer>[];
             savedTableFilters?: SavedTableFilter[];
             savedTableViews?: Partial<SavedTableView>[];
+            relationDisplayByKey?: Record<string, RelationDisplayConfig>;
+            tableDisplayByKey?: Record<string, TableDisplayConfig>;
           }
         >;
 
@@ -1192,6 +1226,10 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           ]
             .map(normalizeSavedTableView)
             .filter((view): view is SavedTableView => view !== null),
+          relationDisplayByKey:
+            state.relationDisplayByKey ?? currentState.relationDisplayByKey,
+          tableDisplayByKey:
+            state.tableDisplayByKey ?? currentState.tableDisplayByKey,
         };
       },
       partialize: (state) => ({
@@ -1199,6 +1237,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         mapSources: state.mapSources,
         mapLayers: state.mapLayers,
         savedTableViews: state.savedTableViews,
+        relationDisplayByKey: state.relationDisplayByKey,
+        tableDisplayByKey: state.tableDisplayByKey,
         selectedConnectionId: state.selectedConnectionId,
         selectedTableByConnectionId: state.selectedTableByConnectionId,
       }),

@@ -12,6 +12,7 @@ export interface InspectableTable {
   isEditable: boolean;
   columns: InspectorColumn[];
   geometryColumns: InspectorGeometryColumn[];
+  foreignKeys: InspectorForeignKey[];
 }
 
 export interface InspectableSchema {
@@ -36,6 +37,15 @@ export interface InspectorGeometryColumn {
   storageType: string;
   geometryType: string;
   srid: number;
+}
+
+export interface InspectorForeignKey {
+  columnName: string;
+  targetSchema: string;
+  targetTable: string;
+  targetColumn: string;
+  labelColumns: string[];
+  defaultLabelColumn: string;
 }
 
 export interface InspectorRowsResponse {
@@ -63,6 +73,12 @@ export interface InspectorLookupRowsResponse {
 
 export interface InspectorRow {
   rowKey: Record<string, unknown> | null;
+  values: Record<string, unknown>;
+}
+
+export interface RelationOption {
+  value: unknown;
+  label: string;
   values: Record<string, unknown>;
 }
 
@@ -254,6 +270,68 @@ export async function fetchInspectorRowsByKey(
     response,
     'Failed to load selected rows.',
   );
+}
+
+export async function fetchRelationLabels(
+  connection: DatabaseConnection,
+  payload: {
+    schema: string;
+    table: string;
+    column: string;
+    labelColumns: string[];
+    values: unknown[];
+  },
+) {
+  const response = await fetch('/api/v1/database-connections/relation-labels', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...connectionPayload(connection),
+      ...payload,
+    }),
+  });
+
+  const result = await decodePayload<{ options: RelationOption[] }>(
+    response,
+    'Failed to load relation labels.',
+  );
+
+  return result.options;
+}
+
+export async function fetchRelationOptions(
+  connection: DatabaseConnection,
+  payload: {
+    schema: string;
+    table: string;
+    column: string;
+    labelColumns: string[];
+    search: string;
+    limit: number;
+  },
+) {
+  const response = await fetch(
+    '/api/v1/database-connections/relation-options',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...connectionPayload(connection),
+        ...payload,
+      }),
+    },
+  );
+
+  const result = await decodePayload<{ options: RelationOption[] }>(
+    response,
+    'Failed to load relation options.',
+  );
+
+  return result.options;
 }
 
 export async function commitInspectorRows(

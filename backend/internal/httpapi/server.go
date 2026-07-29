@@ -90,6 +90,14 @@ func (server *Server) routes() {
 		server.handleLookupRows,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/relation-labels",
+		server.handleRelationLabels,
+	)
+	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/relation-options",
+		server.handleRelationOptions,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/features/locate",
 		server.handleLocateFeature,
 	)
@@ -433,6 +441,60 @@ func (server *Server) handleLookupRows(
 			"database_row_lookup_failed",
 			"Unexpected server error.",
 		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleRelationLabels(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.RelationLabelsRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+		return
+	}
+
+	payload.TrimSpaces()
+	payload.Normalize()
+	if err := payload.Validate(); err != nil {
+		writeError(writer, http.StatusUnprocessableEntity, "invalid_relation_labels_request", err.Error())
+		return
+	}
+
+	result, err := server.service.ListRelationLabels(request.Context(), payload)
+	if err != nil {
+		handleServiceError(writer, err, "database_relation_labels_failed", "Unexpected server error.")
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleRelationOptions(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.RelationOptionsRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.")
+		return
+	}
+
+	payload.TrimSpaces()
+	payload.Normalize()
+	if err := payload.Validate(); err != nil {
+		writeError(writer, http.StatusUnprocessableEntity, "invalid_relation_options_request", err.Error())
+		return
+	}
+
+	result, err := server.service.ListRelationOptions(request.Context(), payload)
+	if err != nil {
+		handleServiceError(writer, err, "database_relation_options_failed", "Unexpected server error.")
 		return
 	}
 

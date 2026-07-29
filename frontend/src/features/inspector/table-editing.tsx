@@ -48,7 +48,7 @@ export function renderEditableCell({
       size="xs"
       styles={{
         input: {
-          textAlign: getCellTextAlign(column.type),
+          textAlign: 'left',
         },
       }}
       value={formatEditorValue(value)}
