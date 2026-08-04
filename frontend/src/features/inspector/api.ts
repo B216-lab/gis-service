@@ -1,4 +1,7 @@
-import type { DatabaseConnection } from '../connections/store';
+import type {
+  DatabaseConnection,
+  TableDisplayConfig,
+} from '../connections/store';
 import type { TableFilterDefinition } from '../filters/types';
 import type { RowReference } from '../map/selection';
 
@@ -86,6 +89,11 @@ export interface CommitTableChangesRequest {
   schema: string;
   table: string;
   operations: TableChangeOperation[];
+}
+
+export interface ServerTableDisplayConfig extends TableDisplayConfig {
+  schema: string;
+  table: string;
 }
 
 export interface TableChangeOperation {
@@ -195,6 +203,58 @@ export async function fetchTableMetadata(
   return await decodePayload<InspectableTable>(
     response,
     'Failed to load table metadata.',
+  );
+}
+
+export async function fetchTableDisplayConfigs(connection: DatabaseConnection) {
+  const response = await fetch(
+    '/api/v1/database-connections/table-display-configs',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(connectionPayload(connection)),
+    },
+  );
+
+  const payload = await decodePayload<{ configs: ServerTableDisplayConfig[] }>(
+    response,
+    'Failed to load table display settings.',
+  );
+
+  return payload.configs;
+}
+
+export async function saveTableDisplayConfig(
+  connection: DatabaseConnection,
+  payload: {
+    schema: string;
+    table: string;
+    config: TableDisplayConfig;
+  },
+) {
+  const response = await fetch(
+    '/api/v1/database-connections/table-display-configs/save',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...connectionPayload(connection),
+        schema: payload.schema,
+        table: payload.table,
+        tableAlias: payload.config.tableAlias ?? '',
+        columnLabels: payload.config.columnLabels,
+        hiddenColumns: payload.config.hiddenColumns,
+      }),
+    },
+  );
+
+  return await decodePayload<ServerTableDisplayConfig>(
+    response,
+    'Failed to save table display settings.',
   );
 }
 

@@ -124,6 +124,7 @@ export interface RelationDisplayConfig {
 }
 
 export interface TableDisplayConfig {
+  tableAlias?: string;
   columnLabels: Record<string, string>;
   hiddenColumns: string[];
 }
@@ -186,6 +187,7 @@ interface ConnectionStoreState {
     config: RelationDisplayConfig,
   ) => void;
   setTableDisplayConfig: (key: string, config: TableDisplayConfig) => void;
+  setTableDisplayConfigs: (configs: Record<string, TableDisplayConfig>) => void;
   addGeoJsonLayer: (payload: {
     connectionId: string;
     schema: string;
@@ -363,14 +365,7 @@ function createDefaultFlowmapStyle(): FlowmapMapLayer['style'] {
 function normalizeConnection(
   connection: DatabaseConnection,
 ): DatabaseConnection {
-  const isBundledLocalTestConnection =
-    connection.name === 'Local PostGIS Test' &&
-    connection.host === '127.0.0.1' &&
-    connection.port === '55432' &&
-    connection.database === 'geopanel_test' &&
-    connection.user === 'geopanel';
-
-  if (isBundledLocalTestConnection && connection.password === '') {
+  if (isBundledLocalTestConnection(connection) && connection.password === '') {
     return {
       ...connection,
       password: 'geopanel',
@@ -383,6 +378,16 @@ function normalizeConnection(
     password: '',
     isServerManaged: connection.isServerManaged ?? false,
   };
+}
+
+function isBundledLocalTestConnection(connection: DatabaseConnection) {
+  return (
+    connection.name === 'Local PostGIS Test' &&
+    connection.host === '127.0.0.1' &&
+    connection.port === '55432' &&
+    connection.database === 'geopanel_test' &&
+    connection.user === 'geopanel'
+  );
 }
 
 function stripConnectionSecret(connection: DatabaseConnection) {
@@ -616,24 +621,7 @@ function migrateLegacyLayers(
 export const useConnectionStore = create<ConnectionStoreState>()(
   persist(
     (set) => ({
-      connections: [
-        {
-          id: createConnectionId(),
-          name: 'Local PostGIS Test',
-          host: '127.0.0.1',
-          port: '55432',
-          database: 'geopanel_test',
-          user: 'geopanel',
-          password: 'geopanel',
-          isServerManaged: false,
-          isActive: true,
-          createdAt: new Date().toISOString(),
-          testStatus: 'idle',
-          testMessage: 'Not tested yet.',
-          postgresVersion: '',
-          postgisVersion: '',
-        },
-      ],
+      connections: [],
       mapSources: [],
       mapLayers: [],
       savedTableViews: [],
@@ -852,6 +840,13 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           tableDisplayByKey: {
             ...state.tableDisplayByKey,
             [key]: config,
+          },
+        })),
+      setTableDisplayConfigs: (configs) =>
+        set((state) => ({
+          tableDisplayByKey: {
+            ...state.tableDisplayByKey,
+            ...configs,
           },
         })),
       addGeoJsonLayer: (payload) =>
@@ -1211,13 +1206,24 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           nextMapSources,
           nextMapLayers,
         );
+        const nextConnections = (
+          state.connections ?? currentState.connections
+        ).map(normalizeConnection);
+        const filteredConnections = nextConnections.filter(
+          (connection) => !isBundledLocalTestConnection(connection),
+        );
+        const persistedSelectedConnectionId =
+          state.selectedConnectionId ?? null;
+        const selectedConnectionId = filteredConnections.some(
+          (connection) => connection.id === persistedSelectedConnectionId,
+        )
+          ? persistedSelectedConnectionId
+          : (filteredConnections[0]?.id ?? null);
 
         return {
           ...currentState,
           ...state,
-          connections: (state.connections ?? currentState.connections).map(
-            normalizeConnection,
-          ),
+          connections: filteredConnections,
           mapSources: migratedLegacy.mapSources,
           mapLayers: migratedLegacy.mapLayers,
           savedTableViews: [
@@ -1230,6 +1236,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
             state.relationDisplayByKey ?? currentState.relationDisplayByKey,
           tableDisplayByKey:
             state.tableDisplayByKey ?? currentState.tableDisplayByKey,
+          selectedConnectionId,
         };
       },
       partialize: (state) => ({
@@ -1238,7 +1245,6 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         mapLayers: state.mapLayers,
         savedTableViews: state.savedTableViews,
         relationDisplayByKey: state.relationDisplayByKey,
-        tableDisplayByKey: state.tableDisplayByKey,
         selectedConnectionId: state.selectedConnectionId,
         selectedTableByConnectionId: state.selectedTableByConnectionId,
       }),

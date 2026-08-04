@@ -6,3 +6,6 @@ frontend/*.tsbuildinfo
 backend/api
 .DS_Store
 .env
+.env.dev
+.env.dev.backup.*
+.playwright*

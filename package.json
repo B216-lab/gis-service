@@ -3,6 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
+    "dev:setup": "./scripts/dev-worktree setup",
+    "dev:up": "./scripts/dev-worktree up",
+    "dev:down": "./scripts/dev-worktree down",
+    "dev:restart": "./scripts/dev-worktree restart",
+    "dev:logs": "./scripts/dev-worktree logs",
+    "dev:status": "./scripts/dev-worktree status",
+    "dev:env": "./scripts/dev-worktree env",
     "frontend:dev": "bun run --cwd frontend dev",
     "frontend:build": "bun run --cwd frontend build",
     "frontend:check": "bun run --cwd frontend check",

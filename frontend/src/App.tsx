@@ -123,6 +123,7 @@ import {
   fetchInspectorRowsByKey,
   fetchRelationLabels,
   fetchRelationOptions,
+  fetchTableDisplayConfigs,
   fetchTableMetadata,
   type InspectableSchema,
   type InspectableTable,
@@ -133,6 +134,7 @@ import {
   type InspectorRow,
   type InspectorRowsResponse,
   type RelationOption,
+  saveTableDisplayConfig,
   type TableChangeOperation,
 } from './features/inspector/api';
 import {
@@ -364,10 +366,10 @@ function ConnectionManager({
   );
   const updateArcLayer = useConnectionStore((state) => state.updateArcLayer);
   const removeMapLayer = useConnectionStore((state) => state.removeMapLayer);
-
-  const activeConnections = connections.filter(
-    (connection) => connection.isActive,
+  const tableDisplayByKey = useConnectionStore(
+    (state) => state.tableDisplayByKey,
   );
+
   const canImportSelectedTable = Boolean(
     selectedInspectableTable &&
       selectedInspectableTable.geometryColumns.length > 0,
@@ -395,15 +397,32 @@ function ConnectionManager({
     label: `${column.name} (${column.geometryType})`,
     value: column.name,
   }));
+  const selectedTableAlias =
+    selectedConnectionId && selectedInspectableTable
+      ? tableDisplayByKey[
+          tableDisplayKey(selectedConnectionId, selectedInspectableTable)
+        ]?.tableAlias?.trim()
+      : '';
   const flowValidationMessages = validateFlowLayerForm(
     flowLayerForm,
     selectedInspectableTable,
   );
+  const currentFlowLayerDefaults = useMemo(() => {
+    const defaults = createFlowLayerDefaults(selectedInspectableTable);
+    if (!selectedInspectableTable || !selectedTableAlias) {
+      return defaults;
+    }
+
+    return {
+      ...defaults,
+      name: `${selectedTableAlias} flows`,
+    };
+  }, [selectedInspectableTable, selectedTableAlias]);
 
   useEffect(() => {
-    setFlowLayerForm(createFlowLayerDefaults(selectedInspectableTable));
+    setFlowLayerForm(currentFlowLayerDefaults);
     setFlowLayerError('');
-  }, [selectedInspectableTable]);
+  }, [currentFlowLayerDefaults]);
 
   function handleFieldChange(event: ChangeEvent<HTMLInputElement>) {
     const { name, value } = event.currentTarget;
@@ -420,7 +439,7 @@ function ConnectionManager({
 
   function handleOpenMovementLayerModal(layerKind: MovementLayerKind) {
     setMovementLayerKind(layerKind);
-    setFlowLayerForm(createFlowLayerDefaults(selectedInspectableTable));
+    setFlowLayerForm(currentFlowLayerDefaults);
     setFlowLayerError('');
     flowLayerModal.open();
   }
@@ -503,7 +522,7 @@ function ConnectionManager({
         body: JSON.stringify(connectionRequestPayload(connection)),
       });
 
-      const payload = (await response.json()) as
+      const payload = (await response.json().catch(() => null)) as
         | {
             success: boolean;
             message: string;
@@ -515,11 +534,12 @@ function ConnectionManager({
               code: string;
               message: string;
             };
-          };
+          }
+        | null;
 
-      if (!response.ok || 'error' in payload) {
+      if (!response.ok || !payload || 'error' in payload) {
         const message =
-          'error' in payload
+          payload && 'error' in payload
             ? payload.error.message
             : 'Database connection test failed.';
         setConnectionTestError(connection.id, message);
@@ -821,9 +841,6 @@ function ConnectionManager({
             <Text fw={700} size="sm">
               Connected Sources
             </Text>
-            <Text c="dimmed" size="xs">
-              {activeConnections.length} active / {connections.length} saved
-            </Text>
           </div>
           <ActionIcon
             aria-label="Add connection"
@@ -939,45 +956,7 @@ function ConnectionManager({
                       </Menu>
                     </Group>
 
-                    <Group gap="xs" justify="space-between" wrap="nowrap">
-                      <Group gap={6}>
-                        <Badge
-                          color={
-                            connection.testStatus === 'success'
-                              ? 'green'
-                              : connection.testStatus === 'error'
-                                ? 'red'
-                                : connection.testStatus === 'testing'
-                                  ? 'yellow'
-                                  : connection.isActive
-                                    ? 'green'
-                                    : 'gray'
-                          }
-                          radius="sm"
-                          variant="light"
-                        >
-                          {connection.testStatus === 'success'
-                            ? 'Connected'
-                            : connection.testStatus === 'error'
-                              ? 'Failed'
-                              : connection.testStatus === 'testing'
-                                ? 'Testing'
-                                : connection.isActive
-                                  ? 'Active'
-                                  : 'Saved'}
-                        </Badge>
-                        {isSelected ? (
-                          <Badge color="blue" radius="sm" variant="light">
-                            Selected
-                          </Badge>
-                        ) : null}
-                        {connection.isServerManaged ? (
-                          <Badge color="grape" radius="sm" variant="light">
-                            Server
-                          </Badge>
-                        ) : null}
-                      </Group>
-
+                    <Group gap="xs" justify="flex-end" wrap="nowrap">
                       <Button
                         color="blue"
                         leftSection={
@@ -1004,11 +983,19 @@ function ConnectionManager({
                       </Button>
                     </Group>
 
+                    {connection.testStatus === 'error' ? (
+                      <Text c="red" size="xs">
+                        {connection.testMessage}
+                      </Text>
+                    ) : null}
+
                     {isSelected && connection.testStatus === 'success' ? (
                       <ConnectionCatalog
                         catalog={catalog}
+                        connectionId={selectedConnectionId}
                         opened={catalogOpened}
                         selectedTableKey={selectedTableKey}
+                        tableDisplayByKey={tableDisplayByKey}
                         savedViews={savedViews}
                         onLoadSchemas={onLoadSchemas}
                         onRemoveSavedView={onRemoveSavedView}
@@ -1060,36 +1047,41 @@ function ConnectionManager({
               <Text fw={700} size="sm">
                 Map Layers
               </Text>
-              <Text c="dimmed" size="xs">
-                {mapLayers.length} layer
-                {mapLayers.length === 1 ? '' : 's'}
-              </Text>
             </div>
-            <Group gap="xs" wrap="nowrap">
-              <Button
-                disabled={!canImportSelectedTable}
-                onClick={onImportSelectedTable}
-                size="compact-sm"
-              >
-                Import Layer
-              </Button>
-              <Button
-                disabled={!canCreateFlowLayer}
-                onClick={() => handleOpenMovementLayerModal('flowmap')}
-                size="compact-sm"
-                variant="light"
-              >
-                Create Flowmap
-              </Button>
-              <Button
-                disabled={!canCreateFlowLayer}
-                onClick={() => handleOpenMovementLayerModal('arc')}
-                size="compact-sm"
-                variant="light"
-              >
-                Create Arc
-              </Button>
-            </Group>
+            <Menu position="bottom-end" shadow="md" width={220}>
+              <Menu.Target>
+                <Button
+                  rightSection={<IconChevronDown size={14} />}
+                  size="compact-sm"
+                  variant="light"
+                >
+                  Layer Actions
+                </Button>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Item
+                  disabled={!canImportSelectedTable}
+                  leftSection={<IconDatabasePlus size={14} />}
+                  onClick={onImportSelectedTable}
+                >
+                  Import Layer
+                </Menu.Item>
+                <Menu.Item
+                  disabled={!canCreateFlowLayer}
+                  leftSection={<IconRoute size={14} />}
+                  onClick={() => handleOpenMovementLayerModal('flowmap')}
+                >
+                  Create Flowmap
+                </Menu.Item>
+                <Menu.Item
+                  disabled={!canCreateFlowLayer}
+                  leftSection={<IconLayersIntersect size={14} />}
+                  onClick={() => handleOpenMovementLayerModal('arc')}
+                >
+                  Create Arc
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
           </Group>
 
           <Stack gap={4}>
@@ -1231,9 +1223,11 @@ function ConnectionManager({
 
 function ConnectionCatalog({
   catalog,
+  connectionId,
   opened,
   savedViews,
   selectedTableKey,
+  tableDisplayByKey,
   onLoadSchemas,
   onRemoveSavedView,
   onSelectSavedView,
@@ -1243,9 +1237,11 @@ function ConnectionCatalog({
   onToggleSchemaExpanded,
 }: {
   catalog: CatalogState;
+  connectionId: string | null;
   opened: boolean;
   savedViews: SavedTableView[];
   selectedTableKey: string | null;
+  tableDisplayByKey: Record<string, TableDisplayConfig>;
   onLoadSchemas: () => void;
   onRemoveSavedView: (viewId: string, viewName: string) => void;
   onSelectSavedView: (viewId: string) => void;
@@ -1384,27 +1380,47 @@ function ConnectionCatalog({
                         </Text>
                       ) : null}
 
-                      {tables.map((table) => (
-                        <Button
-                          key={table.fullName}
-                          color={
-                            selectedTableKey === table.fullName
-                              ? 'blue'
-                              : 'gray'
-                          }
-                          justify="flex-start"
-                          leftSection={<IconTable size={14} />}
-                          onClick={() => onSelectTable(table.fullName)}
-                          size="compact-xs"
-                          variant={
-                            selectedTableKey === table.fullName
-                              ? 'light'
-                              : 'subtle'
-                          }
-                        >
-                          {table.name}
-                        </Button>
-                      ))}
+                      {tables.map((table) => {
+                        const tableAlias = connectionId
+                          ? tableDisplayByKey[
+                              tableDisplayKeyFromParts(
+                                connectionId,
+                                table.schema,
+                                table.name,
+                              )
+                            ]?.tableAlias?.trim()
+                          : '';
+
+                        return (
+                          <Button
+                            key={table.fullName}
+                            aria-label={
+                              tableAlias
+                                ? `${tableAlias} (${table.fullName})`
+                                : table.fullName
+                            }
+                            color={
+                              selectedTableKey === table.fullName
+                                ? 'blue'
+                                : 'gray'
+                            }
+                            justify="flex-start"
+                            leftSection={<IconTable size={14} />}
+                            onClick={() => onSelectTable(table.fullName)}
+                            size="compact-xs"
+                            title={table.fullName}
+                            variant={
+                              selectedTableKey === table.fullName
+                                ? 'light'
+                                : 'subtle'
+                            }
+                          >
+                            <Text size="xs" truncate="end">
+                              {tableAlias || table.name}
+                            </Text>
+                          </Button>
+                        );
+                      })}
 
                       {schemaViews.map((view) => {
                         const viewKey = createSavedViewSelectionKey(view.id);
@@ -2344,13 +2360,16 @@ function DataInspector({
       : null;
   const tableDisplayConfig: TableDisplayConfig = tableDisplayKeyValue
     ? (tableDisplayByKey[tableDisplayKeyValue] ?? {
+        tableAlias: '',
         columnLabels: {},
         hiddenColumns: [],
       })
     : {
+        tableAlias: '',
         columnLabels: {},
         hiddenColumns: [],
       };
+  const selectedTableAlias = tableDisplayConfig.tableAlias?.trim() || null;
   const columnVisibility = useMemo(
     () =>
       Object.fromEntries(
@@ -2792,6 +2811,25 @@ function DataInspector({
 
     resetDraftState();
     setSaveMessage('');
+  }
+
+  function handleTableDisplayConfigChange(nextConfig: TableDisplayConfig) {
+    if (!connection || !selectedTable || !tableDisplayKeyValue) {
+      return;
+    }
+
+    setTableDisplayConfig(tableDisplayKeyValue, nextConfig);
+    void saveTableDisplayConfig(connection, {
+      schema: selectedTable.schema,
+      table: selectedTable.name,
+      config: nextConfig,
+    }).catch((error) => {
+      setSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to save table display settings.',
+      );
+    });
   }
 
   async function handleLocateRow(row: InspectorRow) {
@@ -3359,7 +3397,9 @@ function DataInspector({
             <Group justify="space-between">
               <Group gap="xs">
                 <Text c="dimmed" size="xs">
-                  {selectedTable.fullName} • {selectedTable.kind} • rows{' '}
+                  {selectedTableAlias ?? selectedTable.fullName}
+                  {selectedTableAlias ? ` • ${selectedTable.fullName}` : ''} •{' '}
+                  {selectedTable.kind} • rows{' '}
                   {rowsState.rows.length === 0 ? 0 : rowsState.offset + 1}-
                   {rowsState.offset + rowsState.rows.length} of{' '}
                   {formatRowCount(rowsState.totalRows)}
@@ -3420,12 +3460,24 @@ function DataInspector({
               >
                 <Menu.Target>
                   <Button size="compact-sm" variant="default">
-                    Columns
+                    Display
                   </Button>
                 </Menu.Target>
                 <Menu.Dropdown>
                   <ScrollArea h={360} type="auto">
                     <Stack gap="xs" p="xs" w={360}>
+                      <TextInput
+                        label="Table alias"
+                        onChange={(event) => {
+                          handleTableDisplayConfigChange({
+                            ...tableDisplayConfig,
+                            tableAlias: event.currentTarget.value,
+                          });
+                        }}
+                        placeholder={selectedTable.name}
+                        size="xs"
+                        value={tableDisplayConfig.tableAlias ?? ''}
+                      />
                       {rowsState.columns.map((column) => {
                         const isHidden =
                           tableDisplayConfig.hiddenColumns.includes(
@@ -3455,7 +3507,7 @@ function DataInspector({
                                         column.name,
                                       ]),
                                     );
-                                setTableDisplayConfig(tableDisplayKeyValue, {
+                                handleTableDisplayConfigChange({
                                   ...tableDisplayConfig,
                                   hiddenColumns: nextHidden,
                                 });
@@ -3478,7 +3530,7 @@ function DataInspector({
                                   nextLabels[column.name] = nextValue;
                                 }
 
-                                setTableDisplayConfig(tableDisplayKeyValue, {
+                                handleTableDisplayConfigChange({
                                   ...tableDisplayConfig,
                                   columnLabels: nextLabels,
                                 });
@@ -4557,7 +4609,15 @@ function relationDisplayKey(
 }
 
 function tableDisplayKey(connectionId: string, table: InspectableTable) {
-  return `${connectionId}:${table.schema}.${table.name}`;
+  return tableDisplayKeyFromParts(connectionId, table.schema, table.name);
+}
+
+function tableDisplayKeyFromParts(
+  connectionId: string,
+  schema: string,
+  table: string,
+) {
+  return `${connectionId}:${schema}.${table}`;
 }
 
 function relationValueKey(value: unknown) {
@@ -5209,6 +5269,12 @@ export function App() {
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
   const addArcLayer = useConnectionStore((state) => state.addArcLayer);
+  const tableDisplayByKey = useConnectionStore(
+    (state) => state.tableDisplayByKey,
+  );
+  const setTableDisplayConfigs = useConnectionStore(
+    (state) => state.setTableDisplayConfigs,
+  );
   const updateGeoJsonSource = useConnectionStore(
     (state) => state.updateGeoJsonSource,
   );
@@ -5296,6 +5362,12 @@ export function App() {
   const selectedInspectableTable = selectedSourceTableKey
     ? (tableMetadataByKey[selectedSourceTableKey] ?? null)
     : null;
+  const selectedTableAlias =
+    selectedConnectionId && selectedInspectableTable
+      ? tableDisplayByKey[
+          tableDisplayKey(selectedConnectionId, selectedInspectableTable)
+        ]?.tableAlias?.trim()
+      : '';
   const visibleTableOptions = useMemo(
     () =>
       selectedSchemaNames.flatMap(
@@ -5458,7 +5530,9 @@ export function App() {
       table: selectedInspectableTable.name,
       fullName: selectedInspectableTable.fullName,
       kind: selectedInspectableTable.kind,
-      name: selectedSavedView?.name ?? selectedInspectableTable.name,
+      name:
+        selectedSavedView?.name ??
+        (selectedTableAlias || selectedInspectableTable.name),
       geometryColumn: geometryColumn.name,
       geometryType: geometryColumn.geometryType,
       filter: selectedSavedView?.filter ?? null,
@@ -5662,6 +5736,55 @@ export function App() {
 
     setCatalogError('');
   }, [selectedConnection]);
+
+  useEffect(() => {
+    if (!selectedConnection || selectedConnection.testStatus !== 'success') {
+      return;
+    }
+
+    let isActive = true;
+    const activeConnection = selectedConnection;
+
+    async function loadTableDisplayConfigs() {
+      try {
+        const configs = await fetchTableDisplayConfigs(activeConnection);
+        if (!isActive) {
+          return;
+        }
+
+        setTableDisplayConfigs(
+          Object.fromEntries(
+            configs.map((config) => [
+              tableDisplayKeyFromParts(
+                activeConnection.id,
+                config.schema,
+                config.table,
+              ),
+              {
+                tableAlias: config.tableAlias,
+                columnLabels: config.columnLabels ?? {},
+                hiddenColumns: config.hiddenColumns ?? [],
+              },
+            ]),
+          ),
+        );
+      } catch (error) {
+        if (isActive) {
+          setCatalogError(
+            error instanceof Error
+              ? error.message
+              : 'Failed to load table display settings.',
+          );
+        }
+      }
+    }
+
+    void loadTableDisplayConfigs();
+
+    return () => {
+      isActive = false;
+    };
+  }, [selectedConnection, setTableDisplayConfigs]);
 
   useEffect(() => {
     if (!selectedConnection || !selectedSourceTableKey) {

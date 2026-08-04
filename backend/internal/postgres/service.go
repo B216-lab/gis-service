@@ -85,8 +85,20 @@ type TableSummary struct {
 	ForeignKeys     []ForeignKeyMeta     `json:"foreignKeys"`
 }
 
+type TableDisplayConfig struct {
+	Schema        string            `json:"schema"`
+	Table         string            `json:"table"`
+	TableAlias    string            `json:"tableAlias"`
+	ColumnLabels  map[string]string `json:"columnLabels"`
+	HiddenColumns []string          `json:"hiddenColumns"`
+}
+
 type ListTablesResult struct {
 	Tables []TableSummary `json:"tables"`
+}
+
+type ListTableDisplayConfigsResult struct {
+	Configs []TableDisplayConfig `json:"configs"`
 }
 
 type SchemaSummary struct {
@@ -106,6 +118,15 @@ type TableMetadataRequest struct {
 	ConnectionTestRequest
 	Schema string `json:"schema"`
 	Table  string `json:"table"`
+}
+
+type SaveTableDisplayConfigRequest struct {
+	ConnectionTestRequest
+	Schema        string            `json:"schema"`
+	Table         string            `json:"table"`
+	TableAlias    string            `json:"tableAlias"`
+	ColumnLabels  map[string]string `json:"columnLabels"`
+	HiddenColumns []string          `json:"hiddenColumns"`
 }
 
 type ListRowsRequest struct {
@@ -570,6 +591,31 @@ func (request *TableMetadataRequest) TrimSpaces() {
 	request.Table = strings.TrimSpace(request.Table)
 }
 
+func (request *SaveTableDisplayConfigRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+	request.TableAlias = strings.TrimSpace(request.TableAlias)
+	for column, label := range request.ColumnLabels {
+		trimmedColumn := strings.TrimSpace(column)
+		trimmedLabel := strings.TrimSpace(label)
+		if trimmedColumn == "" || trimmedLabel == "" {
+			delete(request.ColumnLabels, column)
+			continue
+		}
+		if trimmedColumn != column || trimmedLabel != label {
+			delete(request.ColumnLabels, column)
+			request.ColumnLabels[trimmedColumn] = trimmedLabel
+		}
+	}
+	for index := range request.HiddenColumns {
+		request.HiddenColumns[index] = strings.TrimSpace(request.HiddenColumns[index])
+	}
+	request.HiddenColumns = slices.DeleteFunc(request.HiddenColumns, func(column string) bool {
+		return column == ""
+	})
+}
+
 func (request *ListLayerFeaturesRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
@@ -995,6 +1041,22 @@ func (request TableMetadataRequest) Validate() error {
 	return nil
 }
 
+func (request SaveTableDisplayConfigRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	return nil
+}
+
 func (request *CommitTableChangesRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
@@ -1368,6 +1430,139 @@ func (service *Service) GetTableMetadata(
 	return service.getTableMetadata(timeoutCtx, conn, request.Schema, request.Table)
 }
 
+func (service *Service) ListTableDisplayConfigs(
+	ctx context.Context,
+	request ConnectionTestRequest,
+) (*ListTableDisplayConfigsResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	if err := service.ensureTableDisplayConfigStore(timeoutCtx, conn); err != nil {
+		return nil, err
+	}
+
+	rows, err := conn.Query(
+		timeoutCtx,
+		`
+		select schema_name, table_name, table_alias, column_labels, hidden_columns
+		from _geopanel.table_display_configs
+		order by schema_name, table_name
+		`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	configs := make([]TableDisplayConfig, 0)
+	for rows.Next() {
+		config := TableDisplayConfig{}
+		var columnLabelsJSON []byte
+		if err := rows.Scan(
+			&config.Schema,
+			&config.Table,
+			&config.TableAlias,
+			&columnLabelsJSON,
+			&config.HiddenColumns,
+		); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+
+		if len(columnLabelsJSON) > 0 {
+			if err := json.Unmarshal(columnLabelsJSON, &config.ColumnLabels); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+			}
+		}
+		if config.ColumnLabels == nil {
+			config.ColumnLabels = map[string]string{}
+		}
+		if config.HiddenColumns == nil {
+			config.HiddenColumns = []string{}
+		}
+		configs = append(configs, config)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return &ListTableDisplayConfigsResult{
+		Configs: configs,
+	}, nil
+}
+
+func (service *Service) SaveTableDisplayConfig(
+	ctx context.Context,
+	request SaveTableDisplayConfigRequest,
+) (*TableDisplayConfig, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	if err := service.ensureTableDisplayConfigStore(timeoutCtx, conn); err != nil {
+		return nil, err
+	}
+
+	columnLabelsJSON, err := json.Marshal(request.ColumnLabels)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidWriteRequest, err)
+	}
+
+	config := TableDisplayConfig{
+		Schema:        request.Schema,
+		Table:         request.Table,
+		TableAlias:    request.TableAlias,
+		ColumnLabels:  request.ColumnLabels,
+		HiddenColumns: request.HiddenColumns,
+	}
+	if config.ColumnLabels == nil {
+		config.ColumnLabels = map[string]string{}
+	}
+	if config.HiddenColumns == nil {
+		config.HiddenColumns = []string{}
+	}
+
+	_, err = conn.Exec(
+		timeoutCtx,
+		`
+		insert into _geopanel.table_display_configs (
+		  schema_name,
+		  table_name,
+		  table_alias,
+		  column_labels,
+		  hidden_columns
+		)
+		values ($1, $2, $3, $4::jsonb, $5)
+		on conflict (schema_name, table_name) do update set
+		  table_alias = excluded.table_alias,
+		  column_labels = excluded.column_labels,
+		  hidden_columns = excluded.hidden_columns,
+		  updated_at = now()
+		`,
+		request.Schema,
+		request.Table,
+		request.TableAlias,
+		string(columnLabelsJSON),
+		request.HiddenColumns,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return &config, nil
+}
+
 func (service *Service) ListTables(
 	ctx context.Context,
 	request ConnectionTestRequest,
@@ -1537,6 +1732,33 @@ func (service *Service) getTableMetadata(
 		GeometryColumns: geometryColumns,
 		ForeignKeys:     foreignKeys,
 	}, nil
+}
+
+func (service *Service) ensureTableDisplayConfigStore(
+	ctx context.Context,
+	runner queryRunner,
+) error {
+	_, err := runner.Exec(
+		ctx,
+		`
+		create schema if not exists _geopanel;
+
+		create table if not exists _geopanel.table_display_configs (
+		  schema_name text not null,
+		  table_name text not null,
+		  table_alias text not null default '',
+		  column_labels jsonb not null default '{}'::jsonb,
+		  hidden_columns text[] not null default '{}'::text[],
+		  updated_at timestamptz not null default now(),
+		  primary key (schema_name, table_name)
+		);
+		`,
+	)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return nil
 }
 
 func (service *Service) ListRows(

@@ -82,6 +82,14 @@ func (server *Server) routes() {
 		server.handleTableMetadata,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/table-display-configs",
+		server.handleListTableDisplayConfigs,
+	)
+	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/table-display-configs/save",
+		server.handleSaveTableDisplayConfig,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/rows",
 		server.handleListRows,
 	)
@@ -353,6 +361,90 @@ func (server *Server) handleTableMetadata(
 			writer,
 			err,
 			"database_table_metadata_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleListTableDisplayConfigs(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.ConnectionTestRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_connection_payload",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.ListTableDisplayConfigs(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"table_display_config_list_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleSaveTableDisplayConfig(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.SaveTableDisplayConfigRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_table_display_config_payload",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.SaveTableDisplayConfig(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"table_display_config_save_failed",
 			"Unexpected server error.",
 		)
 		return
