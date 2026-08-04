@@ -114,6 +114,7 @@ import type {
   SavedTableView,
   TableFilterDefinition,
 } from './features/filters/types';
+import { LanguageSwitcher } from './features/i18n/i18n';
 import {
   commitInspectorRows,
   fetchInspectableSchemas,
@@ -5876,6 +5877,7 @@ export function App() {
               style={{ width: 132 }}
               value={selectedBasemapId ?? defaultBasemapId}
             />
+            <LanguageSwitcher />
             <ColorSchemeToggle />
           </Group>
         </Flex>

@@ -10,6 +10,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
+import { I18nProvider } from './features/i18n/i18n';
 import './styles.css';
 
 const colorSchemeManager = localStorageColorSchemeManager({
@@ -29,7 +30,9 @@ createRoot(container).render(
       colorSchemeManager={colorSchemeManager}
       defaultColorScheme="auto"
     >
-      <App />
+      <I18nProvider>
+        <App />
+      </I18nProvider>
     </MantineProvider>
   </StrictMode>,
 );
