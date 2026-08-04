@@ -159,6 +159,14 @@ type LookupRowsRequest struct {
 	RowKeys []map[string]interface{} `json:"rowKeys"`
 }
 
+type RelatedRowsRequest struct {
+	ConnectionTestRequest
+	Schema string                 `json:"schema"`
+	Table  string                 `json:"table"`
+	RowKey map[string]interface{} `json:"rowKey"`
+	Limit  int                    `json:"limit"`
+}
+
 type RelationLabelsRequest struct {
 	ConnectionTestRequest
 	Schema       string        `json:"schema"`
@@ -332,6 +340,22 @@ type LookupRowsResult struct {
 	PrimaryKey        []string     `json:"primaryKey"`
 	Columns           []ColumnMeta `json:"columns"`
 	Rows              []RowRecord  `json:"rows"`
+}
+
+type RelatedRowsGroup struct {
+	Label           string               `json:"label"`
+	Schema          string               `json:"schema"`
+	Table           string               `json:"table"`
+	SourceColumn    string               `json:"sourceColumn"`
+	TargetColumn    string               `json:"targetColumn"`
+	PrimaryKey      []string             `json:"primaryKey"`
+	Columns         []ColumnMeta         `json:"columns"`
+	GeometryColumns []GeometryColumnMeta `json:"geometryColumns"`
+	Rows            []RowRecord          `json:"rows"`
+}
+
+type RelatedRowsResult struct {
+	Groups []RelatedRowsGroup `json:"groups"`
 }
 
 type LocateFeatureResult struct {
@@ -538,6 +562,12 @@ func (request *ListRowsRequest) TrimSpaces() {
 }
 
 func (request *LookupRowsRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	request.Schema = strings.TrimSpace(request.Schema)
+	request.Table = strings.TrimSpace(request.Table)
+}
+
+func (request *RelatedRowsRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
 	request.Table = strings.TrimSpace(request.Table)
@@ -918,6 +948,26 @@ func (request LookupRowsRequest) Validate() error {
 
 	if len(request.RowKeys) == 0 {
 		return errors.New("At least one row key is required.")
+	}
+
+	return nil
+}
+
+func (request RelatedRowsRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if request.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+
+	if request.Table == "" {
+		return errors.New("Table is required.")
+	}
+
+	if len(request.RowKey) == 0 {
+		return errors.New("Row key is required.")
 	}
 
 	return nil
@@ -2070,6 +2120,190 @@ func (service *Service) LookupRows(
 		PrimaryKey:        primaryKey,
 		Columns:           columns,
 		Rows:              orderedRows,
+	}, nil
+}
+
+func (service *Service) ListRelatedRows(
+	ctx context.Context,
+	request RelatedRowsRequest,
+) (*RelatedRowsResult, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	primaryKey, err := service.listPrimaryKeyColumns(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRowKey(request.RowKey, primaryKey); err != nil {
+		return nil, err
+	}
+
+	relations, err := service.listReferencingForeignKeys(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	limit := request.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	groups := make([]RelatedRowsGroup, 0, len(relations))
+	for _, relation := range relations {
+		sourceValue, ok := request.RowKey[relation.TargetColumn]
+		if !ok || sourceValue == nil {
+			continue
+		}
+
+		group, err := service.listRelatedRowsForRelation(
+			timeoutCtx,
+			conn,
+			relation,
+			sourceValue,
+			limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+
+	return &RelatedRowsResult{
+		Groups: groups,
+	}, nil
+}
+
+func (service *Service) listRelatedRowsForRelation(
+	ctx context.Context,
+	runner queryRunner,
+	relation ForeignKeyMeta,
+	sourceValue interface{},
+	limit int,
+) (RelatedRowsGroup, error) {
+	columnDefinitions, err := service.listColumnDefinitions(
+		ctx,
+		runner,
+		relation.TargetSchema,
+		relation.TargetTable,
+	)
+	if err != nil {
+		return RelatedRowsGroup{}, err
+	}
+
+	primaryKey, err := service.listPrimaryKeyColumns(
+		ctx,
+		runner,
+		relation.TargetSchema,
+		relation.TargetTable,
+	)
+	if err != nil {
+		return RelatedRowsGroup{}, err
+	}
+
+	geometryDefinitions, err := service.listGeometryColumns(
+		ctx,
+		runner,
+		relation.TargetSchema,
+		relation.TargetTable,
+	)
+	if err != nil {
+		return RelatedRowsGroup{}, err
+	}
+
+	selectExpressions := make([]string, 0, len(columnDefinitions))
+	columns := make([]ColumnMeta, 0, len(columnDefinitions))
+	for _, column := range columnDefinitions {
+		selectExpressions = append(selectExpressions, columnSelectExpression(column))
+		columns = append(columns, ColumnMeta{
+			Name: column.Name,
+			Type: displayColumnType(column),
+		})
+	}
+
+	orderByClause := ""
+	if len(primaryKey) > 0 {
+		orderedPrimaryKey := make([]string, 0, len(primaryKey))
+		for _, columnName := range primaryKey {
+			orderedPrimaryKey = append(orderedPrimaryKey, quoteIdentifier(columnName))
+		}
+		orderByClause = fmt.Sprintf(" order by %s", strings.Join(orderedPrimaryKey, ", "))
+	}
+
+	query := fmt.Sprintf(
+		`select %s from %s.%s as source_row where %s = $1%s limit $2`,
+		strings.Join(selectExpressions, ", "),
+		quoteIdentifier(relation.TargetSchema),
+		quoteIdentifier(relation.TargetTable),
+		quoteIdentifier(relation.ColumnName),
+		orderByClause,
+	)
+
+	rows, err := runner.Query(ctx, query, sourceValue, limit)
+	if err != nil {
+		return RelatedRowsGroup{}, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	records := make([]RowRecord, 0, limit)
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return RelatedRowsGroup{}, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+
+		record := make(map[string]interface{}, len(columns))
+		for index, column := range columns {
+			record[column.Name] = normalizeValue(values[index])
+		}
+		records = append(records, RowRecord{
+			RowKey: buildRowKey(record, primaryKey),
+			Values: record,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return RelatedRowsGroup{}, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	geometryColumns := make([]GeometryColumnMeta, 0, len(geometryDefinitions))
+	for _, geometryColumn := range geometryDefinitions {
+		geometryColumns = append(geometryColumns, GeometryColumnMeta{
+			Name:         geometryColumn.Name,
+			StorageType:  geometryColumn.StorageType,
+			GeometryType: geometryColumn.GeometryType,
+			SRID:         geometryColumn.SRID,
+		})
+	}
+
+	return RelatedRowsGroup{
+		Label:           relation.TargetTable,
+		Schema:          relation.TargetSchema,
+		Table:           relation.TargetTable,
+		SourceColumn:    relation.TargetColumn,
+		TargetColumn:    relation.ColumnName,
+		PrimaryKey:      primaryKey,
+		Columns:         columns,
+		GeometryColumns: geometryColumns,
+		Rows:            records,
 	}, nil
 }
 
@@ -3837,6 +4071,67 @@ func (service *Service) listForeignKeys(
 		}
 		relations[index].LabelColumns = labelColumns
 		relations[index].DefaultLabelColumn = defaultLabelColumn
+	}
+
+	return relations, nil
+}
+
+func (service *Service) listReferencingForeignKeys(
+	ctx context.Context,
+	runner queryRunner,
+	schema string,
+	table string,
+) ([]ForeignKeyMeta, error) {
+	rows, err := runner.Query(
+		ctx,
+		`
+		select
+		  source_attribute.attname as column_name,
+		  source_namespace.nspname as source_schema,
+		  source_class.relname as source_table,
+		  target_attribute.attname as target_column
+		from pg_constraint constraint_row
+		join pg_class source_class on source_class.oid = constraint_row.conrelid
+		join pg_namespace source_namespace on source_namespace.oid = source_class.relnamespace
+		join pg_class target_class on target_class.oid = constraint_row.confrelid
+		join pg_namespace target_namespace on target_namespace.oid = target_class.relnamespace
+		join pg_attribute source_attribute
+		  on source_attribute.attrelid = source_class.oid
+		  and source_attribute.attnum = constraint_row.conkey[1]
+		join pg_attribute target_attribute
+		  on target_attribute.attrelid = target_class.oid
+		  and target_attribute.attnum = constraint_row.confkey[1]
+		where constraint_row.contype = 'f'
+		  and array_length(constraint_row.conkey, 1) = 1
+		  and array_length(constraint_row.confkey, 1) = 1
+		  and target_namespace.nspname = $1
+		  and target_class.relname = $2
+		order by source_namespace.nspname, source_class.relname, source_attribute.attnum
+		`,
+		schema,
+		table,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer rows.Close()
+
+	relations := make([]ForeignKeyMeta, 0)
+	for rows.Next() {
+		var relation ForeignKeyMeta
+		if err := rows.Scan(
+			&relation.ColumnName,
+			&relation.TargetSchema,
+			&relation.TargetTable,
+			&relation.TargetColumn,
+		); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+		relations = append(relations, relation)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 
 	return relations, nil

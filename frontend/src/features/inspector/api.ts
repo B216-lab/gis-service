@@ -74,6 +74,22 @@ export interface InspectorLookupRowsResponse {
   rows: InspectorRow[];
 }
 
+export interface RelatedRowsGroup {
+  label: string;
+  schema: string;
+  table: string;
+  sourceColumn: string;
+  targetColumn: string;
+  primaryKey: string[];
+  columns: InspectorColumn[];
+  geometryColumns: InspectorGeometryColumn[];
+  rows: InspectorRow[];
+}
+
+export interface RelatedRowsResponse {
+  groups: RelatedRowsGroup[];
+}
+
 export interface InspectorRow {
   rowKey: Record<string, unknown> | null;
   values: Record<string, unknown>;
@@ -329,6 +345,35 @@ export async function fetchInspectorRowsByKey(
   return await decodePayload<InspectorLookupRowsResponse>(
     response,
     'Failed to load selected rows.',
+  );
+}
+
+export async function fetchRelatedRows(
+  connection: DatabaseConnection,
+  payload: {
+    schema: string;
+    table: string;
+    rowKey: Record<string, unknown>;
+    limit: number;
+  },
+) {
+  const response = await fetch('/api/v1/database-connections/rows/related', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...connectionPayload(connection),
+      schema: payload.schema,
+      table: payload.table,
+      rowKey: payload.rowKey,
+      limit: payload.limit,
+    }),
+  });
+
+  return await decodePayload<RelatedRowsResponse>(
+    response,
+    'Failed to load related rows.',
   );
 }
 

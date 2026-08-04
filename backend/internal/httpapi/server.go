@@ -98,6 +98,10 @@ func (server *Server) routes() {
 		server.handleLookupRows,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/rows/related",
+		server.handleRelatedRows,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/relation-labels",
 		server.handleRelationLabels,
 	)
@@ -531,6 +535,48 @@ func (server *Server) handleLookupRows(
 			writer,
 			err,
 			"database_row_lookup_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleRelatedRows(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.RelatedRowsRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_related_rows_request",
+			err.Error(),
+		)
+		return
+	}
+
+	result, err := server.service.ListRelatedRows(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"database_related_rows_fetch_failed",
 			"Unexpected server error.",
 		)
 		return

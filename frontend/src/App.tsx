@@ -121,6 +121,7 @@ import {
   fetchInspectableSchemaTables,
   fetchInspectorRows,
   fetchInspectorRowsByKey,
+  fetchRelatedRows,
   fetchRelationLabels,
   fetchRelationOptions,
   fetchTableDisplayConfigs,
@@ -133,6 +134,7 @@ import {
   type InspectorLookupRowsResponse,
   type InspectorRow,
   type InspectorRowsResponse,
+  type RelatedRowsGroup,
   type RelationOption,
   saveTableDisplayConfig,
   type TableChangeOperation,
@@ -2164,6 +2166,7 @@ function DataInspector({
   mapLayers = [],
   mapSources = [],
   onLocateFeature,
+  onLocateRelatedFeature,
   selectedView,
   selectedTable,
   tablesError,
@@ -2178,6 +2181,10 @@ function DataInspector({
     target: LocateTarget,
     row: InspectorRow,
     primaryKey: string[],
+  ) => Promise<void>;
+  onLocateRelatedFeature: (
+    group: RelatedRowsGroup,
+    row: InspectorRow,
   ) => Promise<void>;
   selectedView: SavedTableView | null;
   selectedTable: InspectableTable | null;
@@ -2200,6 +2207,9 @@ function DataInspector({
   const [saveMessage, setSaveMessage] = useState('');
   const [locatingRowToken, setLocatingRowToken] = useState<string | null>(null);
   const [locateError, setLocateError] = useState('');
+  const [relatedGroups, setRelatedGroups] = useState<RelatedRowsGroup[]>([]);
+  const [isLoadingRelatedRows, setIsLoadingRelatedRows] = useState(false);
+  const [relatedRowsError, setRelatedRowsError] = useState('');
   const [selectedGridRowId, setSelectedGridRowId] = useState<string | null>(
     null,
   );
@@ -2852,6 +2862,31 @@ function DataInspector({
     }
   }
 
+  async function handleLocateRelatedRow(
+    group: RelatedRowsGroup,
+    row: InspectorRow,
+  ) {
+    if (!row.rowKey || group.geometryColumns.length === 0) {
+      return;
+    }
+
+    const rowToken = serializeRowKey(row.rowKey, group.primaryKey);
+    setLocatingRowToken(rowToken);
+    setLocateError('');
+
+    try {
+      await onLocateRelatedFeature(group, row);
+    } catch (error) {
+      setLocateError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to locate related row.',
+      );
+    } finally {
+      setLocatingRowToken(null);
+    }
+  }
+
   function handleOpenSavedViewModal() {
     setEditingSavedView(null);
     savedViewModal.open();
@@ -2953,6 +2988,62 @@ function DataInspector({
   const selectedGridRow =
     inspectorGridRows.find((gridRow) => gridRow.id === selectedGridRowId) ??
     null;
+
+  useEffect(() => {
+    if (
+      !connection ||
+      !selectedTable ||
+      !selectedGridRow ||
+      selectedGridRow.kind !== 'record' ||
+      !selectedGridRow.row.rowKey
+    ) {
+      setRelatedGroups([]);
+      setRelatedRowsError('');
+      setIsLoadingRelatedRows(false);
+      return;
+    }
+
+    const activeConnection = connection;
+    const activeTable = selectedTable;
+    const activeRowKey = selectedGridRow.row.rowKey;
+    let isActive = true;
+
+    async function loadRelatedRows() {
+      setIsLoadingRelatedRows(true);
+      setRelatedRowsError('');
+
+      try {
+        const payload = await fetchRelatedRows(activeConnection, {
+          schema: activeTable.schema,
+          table: activeTable.name,
+          rowKey: activeRowKey,
+          limit: 20,
+        });
+        if (isActive) {
+          setRelatedGroups(payload.groups);
+        }
+      } catch (error) {
+        if (isActive) {
+          setRelatedGroups([]);
+          setRelatedRowsError(
+            error instanceof Error
+              ? error.message
+              : 'Failed to load related rows.',
+          );
+        }
+      } finally {
+        if (isActive) {
+          setIsLoadingRelatedRows(false);
+        }
+      }
+    }
+
+    void loadRelatedRows();
+
+    return () => {
+      isActive = false;
+    };
+  }, [connection, selectedGridRow, selectedTable]);
 
   const inspectorColumns = useMemo<MRT_ColumnDef<InspectorGridRow>[]>(
     () =>
@@ -3623,11 +3714,17 @@ function DataInspector({
                     connection={connection}
                     disabled={isSavingChanges}
                     foreignKeyByColumn={foreignKeyByColumn}
+                    isLoadingRelatedRows={isLoadingRelatedRows}
                     onChangeDraft={handleDraftInsertChange}
                     onChangeExisting={handleExistingCellChange}
                     onClose={() => setSelectedGridRowId(null)}
+                    onLocateRelatedRow={(group, relatedRow) =>
+                      void handleLocateRelatedRow(group, relatedRow)
+                    }
                     relationConfigByColumn={relationConfigByColumn}
                     relationLabels={relationLabels}
+                    relatedGroups={relatedGroups}
+                    relatedRowsError={relatedRowsError}
                     row={selectedGridRow}
                     selectedTable={selectedTable}
                     tableColumns={rowsState.columns}
@@ -4629,11 +4726,15 @@ function RecordEditorPanel({
   connection,
   disabled,
   foreignKeyByColumn,
+  isLoadingRelatedRows,
   onChangeDraft,
   onChangeExisting,
   onClose,
+  onLocateRelatedRow,
   relationConfigByColumn,
   relationLabels,
+  relatedGroups,
+  relatedRowsError,
   row,
   selectedTable,
   tableColumns,
@@ -4643,6 +4744,7 @@ function RecordEditorPanel({
   connection: DatabaseConnection;
   disabled: boolean;
   foreignKeyByColumn: Map<string, InspectorForeignKey>;
+  isLoadingRelatedRows: boolean;
   onChangeDraft: (
     draftId: string,
     column: InspectorColumn,
@@ -4654,8 +4756,11 @@ function RecordEditorPanel({
     nextValue: unknown,
   ) => void;
   onClose: () => void;
+  onLocateRelatedRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
   relationConfigByColumn: Map<string, string[]>;
   relationLabels: Record<string, Record<string, RelationOption>>;
+  relatedGroups: RelatedRowsGroup[];
+  relatedRowsError: string;
   row: InspectorGridRow;
   selectedTable: InspectableTable;
   tableColumns: InspectorColumn[];
@@ -4792,9 +4897,123 @@ function RecordEditorPanel({
               </Stack>
             );
           })}
+          <RelatedRowsPanel
+            groups={relatedGroups}
+            isLoading={isLoadingRelatedRows}
+            onLocateRow={onLocateRelatedRow}
+            error={relatedRowsError}
+          />
         </Stack>
       </ScrollArea>
     </Paper>
+  );
+}
+
+function RelatedRowsPanel({
+  error,
+  groups,
+  isLoading,
+  onLocateRow,
+}: {
+  error: string;
+  groups: RelatedRowsGroup[];
+  isLoading: boolean;
+  onLocateRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
+}) {
+  const groupsWithRows = groups.filter((group) => group.rows.length > 0);
+
+  if (isLoading) {
+    return (
+      <Group gap={6} mt="sm">
+        <Loader size={12} />
+        <Text c="dimmed" size="xs">
+          Loading related records
+        </Text>
+      </Group>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert color="orange" mt="sm" variant="light">
+        {error}
+      </Alert>
+    );
+  }
+
+  if (groups.length === 0) {
+    return null;
+  }
+
+  return (
+    <Stack gap="xs" mt="sm">
+      <Text fw={700} size="xs">
+        Related data
+      </Text>
+      {groupsWithRows.length === 0 ? (
+        <Text c="dimmed" size="xs">
+          No related records.
+        </Text>
+      ) : null}
+      {groupsWithRows.map((group) => (
+        <Stack
+          gap={6}
+          key={`${group.schema}.${group.table}.${group.targetColumn}`}
+        >
+          <Group justify="space-between" wrap="nowrap">
+            <Text fw={600} size="xs">
+              {group.label}
+            </Text>
+            <Badge color="gray" size="xs" variant="light">
+              {group.rows.length}
+            </Badge>
+          </Group>
+          {group.rows.slice(0, 5).map((relatedRow, index) => {
+            const titleColumn =
+              group.columns.find((column) =>
+                /^(name|title|label|display_name)$/i.test(column.name),
+              )?.name ?? group.primaryKey[0];
+            const title =
+              (titleColumn ? relatedRow.values[titleColumn] : null) ??
+              `${group.table} #${index + 1}`;
+            const hasGeometry = group.geometryColumns.length > 0;
+
+            return (
+              <Paper
+                key={
+                  relatedRow.rowKey
+                    ? serializeRowKey(relatedRow.rowKey, group.primaryKey)
+                    : `${group.table}:${index}`
+                }
+                p="xs"
+                radius="sm"
+                withBorder
+              >
+                <Group justify="space-between" wrap="nowrap">
+                  <Stack gap={1} style={{ minWidth: 0 }}>
+                    <Text lineClamp={1} size="xs">
+                      {formatCellValue(title)}
+                    </Text>
+                    <Text c="dimmed" lineClamp={1} size="xs">
+                      {group.schema}.{group.table}
+                    </Text>
+                  </Stack>
+                  <ActionIcon
+                    aria-label={`Locate ${group.table} related row`}
+                    disabled={!hasGeometry || !relatedRow.rowKey}
+                    onClick={() => onLocateRow(group, relatedRow)}
+                    size="sm"
+                    variant="subtle"
+                  >
+                    <IconMapPin size={14} />
+                  </ActionIcon>
+                </Group>
+              </Paper>
+            );
+          })}
+        </Stack>
+      ))}
+    </Stack>
   );
 }
 
@@ -5929,6 +6148,78 @@ export function App() {
     }
   }
 
+  async function handleLocateRelatedFeature(
+    group: RelatedRowsGroup,
+    row: InspectorRow,
+  ) {
+    if (
+      !selectedConnection ||
+      group.geometryColumns.length === 0 ||
+      !row.rowKey
+    ) {
+      return;
+    }
+
+    const geometryColumn = group.geometryColumns[0];
+    const existingLayer = selectedConnectionMapLayers.find(
+      (layer): layer is GeoJsonMapLayer => {
+        if (layer.type !== 'geojson') {
+          return false;
+        }
+
+        const source = findLayerSource(mapSources, layer);
+        return (
+          source?.type === 'geojson-table' &&
+          source.schema === group.schema &&
+          source.table === group.table &&
+          source.geometryColumn === geometryColumn.name
+        );
+      },
+    );
+
+    if (!existingLayer && selectedConnectionId) {
+      addGeoJsonLayer({
+        connectionId: selectedConnectionId,
+        schema: group.schema,
+        table: group.table,
+        fullName: `${group.schema}.${group.table}`,
+        kind: 'table',
+        name: group.label,
+        geometryColumn: geometryColumn.name,
+        geometryType: geometryColumn.geometryType,
+      });
+    }
+
+    const result = await locateGeoJsonFeature(selectedConnection, {
+      schema: group.schema,
+      table: group.table,
+      geometryColumn: geometryColumn.name,
+      rowKey: row.rowKey,
+    });
+
+    if (existingLayer) {
+      const source = findLayerSource(mapSources, existingLayer);
+      if (source?.type === 'geojson-table') {
+        setMapSelection(
+          buildLocatedFeatureSelection(result, {
+            kind: 'geojson',
+            layer: existingLayer,
+            source,
+          }),
+        );
+        setActiveLayerId(existingLayer.id);
+      }
+    }
+
+    setRightPaneTab('data');
+    if (result.bounds) {
+      setLocateFeatureBounds({
+        token: Date.now(),
+        bounds: result.bounds,
+      });
+    }
+  }
+
   function handleFeatureCreated(source: GeoJsonTableSource) {
     refreshGeoJsonSourcesForTable({
       connectionId: source.connectionId,
@@ -6086,6 +6377,7 @@ export function App() {
                     mapLayers={selectedVisibleMapLayers}
                     mapSources={mapSources}
                     onLocateFeature={handleLocateFeature}
+                    onLocateRelatedFeature={handleLocateRelatedFeature}
                     selectedView={selectedSavedView}
                     selectedTable={selectedInspectableTable}
                     tablesError={catalogError}
