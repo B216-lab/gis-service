@@ -27,6 +27,18 @@ const translations: Record<string, string> = {
   Satellite: 'Спутник',
   'Data & Layers': 'Данные и слои',
   Workspace: 'Рабочая область',
+  'Application settings': 'Настройки приложения',
+  'Map settings': 'Настройки карты',
+  Display: 'Отображение',
+  'Data Sources': 'Источники данных',
+  Map: 'Карта',
+  'Auto-hide panel': 'Автоматически скрывать панель',
+  'Pin panel open': 'Закрепить панель',
+  'Float selected tab': 'Открыть выбранную вкладку в окне',
+  'Drag tabs to dock · pin or float panels':
+    'Перетаскивайте вкладки для стыковки · закрепляйте или открывайте в окнах',
+  'Reset workspace layout': 'Сбросить компоновку рабочей области',
+  Resize: 'Изменить размер',
   'Add PostGIS connection': 'Добавить подключение PostGIS',
   'Display name': 'Название',
   Host: 'Хост',
@@ -41,6 +53,15 @@ const translations: Record<string, string> = {
   'Browser connections are local. Server connections keep password on backend.':
     'Подключения браузера локальные. Серверные подключения хранят пароль на бэкенде.',
   'Save connection': 'Сохранить подключение',
+  'Visible schemas': 'Видимые схемы',
+  'Choose schemas shown in catalog and give technical names readable aliases. Settings are stored in database.':
+    'Выберите схемы для каталога и задайте техническим именам понятные псевдонимы. Настройки хранятся в базе данных.',
+  'Schema settings failed': 'Ошибка настроек схем',
+  Alias: 'Псевдоним',
+  Show: 'Показать',
+  'Configure schemas': 'Настроить схемы',
+  'All schemas are hidden. Configure schemas from connection options.':
+    'Все схемы скрыты. Настройте схемы в параметрах подключения.',
   'Layer name': 'Название слоя',
   'Lon/lat columns': 'Столбцы lon/lat',
   'Geometry column': 'Столбец геометрии',
@@ -57,6 +78,7 @@ const translations: Record<string, string> = {
   'Numeric lat/y column': 'Числовой столбец lat/y',
   'Density column': 'Столбец плотности',
   'Default density': 'Плотность по умолчанию',
+  Density: 'Плотность',
   'Optional numeric weight/count column': 'Необязательный числовой вес/счетчик',
   'Flow setup incomplete': 'Настройка потока не завершена',
   'One table. Static read-only flows from selected point columns.':
@@ -66,6 +88,7 @@ const translations: Record<string, string> = {
   'Add connection': 'Добавить подключение',
   Connection: 'Подключение',
   'Configured on backend': 'Настроено на бэкенде',
+  'Connection test passed.': 'Подключение успешно проверено.',
   'Not tested': 'Не проверено',
   Delete: 'Удалить',
   Connected: 'Подключено',
@@ -82,6 +105,12 @@ const translations: Record<string, string> = {
   'Save first PostGIS connection to start building data sources.':
     'Сохраните первое подключение PostGIS, чтобы начать создавать источники данных.',
   'Map Layers': 'Слои карты',
+  'Layer Actions': 'Действия со слоями',
+  All: 'Все',
+  Configured: 'Настроенные',
+  Previews: 'Предпросмотры',
+  'Record preview': 'Предпросмотр записи',
+  'No layers match this filter.': 'Нет слоев для выбранного фильтра.',
   'Import Layer': 'Импорт слоя',
   'Create Flowmap': 'Создать карту потоков',
   'Create Arc': 'Создать дуги',
@@ -144,6 +173,9 @@ const translations: Record<string, string> = {
   Discard: 'Отменить',
   Save: 'Сохранить',
   'Refresh rows': 'Обновить строки',
+  'Table alias': 'Псевдоним таблицы',
+  'Relation values': 'Связанные значения',
+  'Raw id': 'Исходный идентификатор',
   'Edit active saved view': 'Редактировать активное представление',
   'Delete active saved view': 'Удалить активное представление',
   'Table discovery failed': 'Ошибка поиска таблиц',
@@ -195,6 +227,10 @@ const translations: Record<string, string> = {
     'Настройки слоя позже переедут в правую панель. Редактор стиля пока остается слева.',
   'Source summary': 'Сводка источника',
   Table: 'Таблица',
+  table: 'таблица',
+  view: 'представление',
+  'partitioned table': 'секционированная таблица',
+  'materialized view': 'материализованное представление',
   Geometry: 'Геометрия',
   'Flow columns': 'Столбцы потоков',
   'Spatial filter active': 'Пространственный фильтр активен',
@@ -227,6 +263,7 @@ const translations: Record<string, string> = {
     'Для выбранных первичных ключей строки не найдены.',
   'Geometry preview unavailable': 'Предпросмотр геометрии недоступен',
   Record: 'Запись',
+  'Record editor': 'Редактор записи',
   'New row': 'Новая строка',
   'Selected row': 'Выбранная строка',
   'Close record editor': 'Закрыть редактор записи',
@@ -242,6 +279,18 @@ const translations: Record<string, string> = {
   'Loading...': 'Загрузка...',
   'No records': 'Нет записей',
   'Select related record': 'Выберите связанную запись',
+  'Related data': 'Связанные данные',
+  'Loading related records': 'Загрузка связанных записей',
+  'No related records.': 'Нет связанных записей.',
+  Fields: 'Поля',
+  'Geo:': 'Гео:',
+  'No geographic columns.': 'Нет географических столбцов.',
+  Arc: 'Дуга',
+  'Show arc': 'Показать дугу',
+  From: 'Откуда',
+  To: 'Куда',
+  'No changes': 'Нет изменений',
+  'Saved.': 'Сохранено.',
   'Entire flow inside': 'Весь поток внутри',
   'Endpoint inside': 'Конец внутри',
   'Fully inside': 'Полностью внутри',
@@ -286,6 +335,8 @@ const translations: Record<string, string> = {
   'Pick object': 'Выбрать объект',
   'Close feature picker': 'Закрыть выбор объекта',
   Feature: 'Объект',
+  Location: 'Точка',
+  'Flow layer': 'Слой потоков',
   'No editable polygon layer selected':
     'Редактируемый полигональный слой не выбран',
   'Draw polygon': 'Нарисовать полигон',
@@ -294,6 +345,53 @@ const translations: Record<string, string> = {
   Cancel: 'Отмена',
   'Loading map...': 'Загрузка карты...',
   'Loading visible layers...': 'Загрузка видимых слоев...',
+  'Zoom in': 'Приблизить',
+  'Zoom out': 'Отдалить',
+  Optional: 'Необязательно',
+  true: 'да',
+  false: 'нет',
+  unknown: 'неизвестно',
+  Loaded: 'Загружено',
+  of: 'из',
+  'requested rows.': 'запрошенных строк.',
+  '• rows': '• строки',
+  'Table:': 'Таблица:',
+  'Geometry:': 'Геометрия:',
+  'Flow columns:': 'Столбцы потоков:',
+  'Focused on': 'Фокус на',
+  with: 'с',
+  'Clicked object mapped to': 'Объект на карте связан с',
+  'Loading first page from': 'Загрузка первой страницы из',
+  'Database connection test failed.':
+    'Не удалось проверить подключение к базе данных.',
+  'Failed to load schema display settings.':
+    'Не удалось загрузить настройки отображения схем.',
+  'Failed to save schema display settings.':
+    'Не удалось сохранить настройки отображения схем.',
+  'Failed to load schemas.': 'Не удалось загрузить схемы.',
+  'Failed to load related rows.': 'Не удалось загрузить связанные строки.',
+  'Failed to load selected rows.': 'Не удалось загрузить выбранные строки.',
+  'Failed to load table display settings.':
+    'Не удалось загрузить настройки отображения таблицы.',
+  'Failed to load table metadata.': 'Не удалось загрузить метаданные таблицы.',
+  'Failed to load table rows.': 'Не удалось загрузить строки таблицы.',
+  'Failed to locate related row.':
+    'Не удалось найти связанную строку на карте.',
+  'Failed to locate row.': 'Не удалось найти строку на карте.',
+  'Failed to save related record.': 'Не удалось сохранить связанную запись.',
+  'Failed to save table changes.': 'Не удалось сохранить изменения таблицы.',
+  'Failed to save table display settings.':
+    'Не удалось сохранить настройки отображения таблицы.',
+  'Failed to load visible layers.': 'Не удалось загрузить видимые слои.',
+  'Failed to register vector tile source.':
+    'Не удалось зарегистрировать источник векторных тайлов.',
+  'Failed to create feature.': 'Не удалось создать объект.',
+  'Drawn geometry must be polygon.':
+    'Нарисованная геометрия должна быть полигоном.',
+  'Select editable polygon layer first.':
+    'Сначала выберите редактируемый полигональный слой.',
+  'Selected row does not have usable flow coordinates.':
+    'В выбранной строке нет подходящих координат потока.',
 };
 
 function detectInitialLanguage(): AppLanguage {
@@ -317,6 +415,23 @@ function translateText(value: string) {
   }
 
   return value
+    .replace(/\bVisible schemas(?=\s*·)/g, 'Видимые схемы')
+    .replace(/^Alias for\s+(.+)$/g, 'Псевдоним для $1')
+    .replace(/^Relation label for\s+(.+)$/g, 'Подпись связи для $1')
+    .replace(
+      /^Inspect\s+(.+)\s+related row\s+(.+)$/g,
+      'Открыть связанную запись $1 $2',
+    )
+    .replace(/^Edit\s+(.+)$/g, 'Редактировать $1')
+    .replace(/^Expand\s+(.+)$/g, 'Развернуть $1')
+    .replace(/^Collapse\s+(.+)$/g, 'Свернуть $1')
+    .replace(/^(.+)\s+options$/g, '$1: параметры')
+    .replace(/^Record\s+·\s+/g, 'Запись · ')
+    .replace(/^Related\s+·\s+/g, 'Связанные · ')
+    .replace(/^(.+)\s+record inspector$/g, 'Запись $1')
+    .replace(/^Delete\s+(?!layer\s+"|saved view\s+")(.+)$/g, 'Удалить $1')
+    .replace(/^Locate in\s+(.+)$/g, 'Найти в слое $1')
+    .replace(/\b(\d+)\s+pending\b/g, 'Несохраненных изменений: $1')
     .replace(
       /\b(\d+)\s+active\s+\/\s+(\d+)\s+saved\b/g,
       '$1 активно / $2 сохранено',
@@ -328,6 +443,9 @@ function translateText(value: string) {
       /\bLoaded\s+(\d+)\s+of\s+(\d+)\s+requested rows\./g,
       'Загружено $1 из $2 запрошенных строк.',
     )
+    .replace(/\b(\d+)\s+rows?\b/g, 'Строк: $1')
+    .replace(/^New feature:\s+(.+)$/g, 'Новый объект: $1')
+    .replace(/^(.+)\s+flows$/g, '$1: потоки')
     .replace(/\bFocused on\s+(.+)\s+with\s+(.+)$/g, 'Фокус на $1, $2')
     .replace(/\bClicked object mapped to\s+/g, 'Объект на карте связан с ')
     .replace(
@@ -349,11 +467,10 @@ function translateText(value: string) {
     );
 }
 
-function localizeNode(root: ParentNode, language: AppLanguage) {
-  if (language !== 'ru') {
-    return;
-  }
+const originalTextByNode = new WeakMap<Text, string>();
+const originalAttributesByElement = new WeakMap<Element, Map<string, string>>();
 
+function localizeNode(root: ParentNode, language: AppLanguage) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const textNodes: Text[] = [];
   while (walker.nextNode()) {
@@ -361,7 +478,17 @@ function localizeNode(root: ParentNode, language: AppLanguage) {
   }
 
   for (const node of textNodes) {
-    const nextValue = translateText(node.nodeValue ?? '');
+    const currentValue = node.nodeValue ?? '';
+    const storedValue = originalTextByNode.get(node);
+    const originalValue =
+      storedValue !== undefined &&
+      currentValue !== storedValue &&
+      currentValue !== translateText(storedValue)
+        ? currentValue
+        : (storedValue ?? currentValue);
+    originalTextByNode.set(node, originalValue);
+    const nextValue =
+      language === 'ru' ? translateText(originalValue) : originalValue;
     if (nextValue !== node.nodeValue) {
       node.nodeValue = nextValue;
     }
@@ -374,11 +501,35 @@ function localizeNode(root: ParentNode, language: AppLanguage) {
       if (!value) {
         continue;
       }
-      const nextValue = translateText(value);
+      let originalAttributes = originalAttributesByElement.get(element);
+      if (!originalAttributes) {
+        originalAttributes = new Map<string, string>();
+        originalAttributesByElement.set(element, originalAttributes);
+      }
+      const storedValue = originalAttributes.get(attrName);
+      const originalValue =
+        storedValue !== undefined &&
+        value !== storedValue &&
+        value !== translateText(storedValue)
+          ? value
+          : (storedValue ?? value);
+      originalAttributes.set(attrName, originalValue);
+      const nextValue =
+        language === 'ru' ? translateText(originalValue) : originalValue;
       if (nextValue !== value) {
         element.setAttribute(attrName, nextValue);
       }
     }
+  }
+}
+
+function localizeApplication(language: AppLanguage) {
+  const root = document.getElementById('root');
+  if (root) {
+    localizeNode(root, language);
+  }
+  for (const portal of document.querySelectorAll('[data-portal="true"]')) {
+    localizeNode(portal, language);
   }
 }
 
@@ -411,14 +562,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, [language]);
 
   useEffect(() => {
-    const root = document.getElementById('root');
-    if (!root) {
-      return;
-    }
-
-    localizeNode(root, language);
-    const observer = new MutationObserver(() => localizeNode(root, language));
-    observer.observe(root, {
+    localizeApplication(language);
+    const observer = new MutationObserver(() => localizeApplication(language));
+    observer.observe(document.body, {
       attributes: true,
       characterData: true,
       childList: true,
@@ -428,11 +574,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     return () => observer.disconnect();
   }, [language]);
 
-  return (
-    <I18nContext.Provider key={language} value={value}>
-      {children}
-    </I18nContext.Provider>
-  );
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
 export function useI18n() {

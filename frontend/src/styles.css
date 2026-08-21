@@ -17,3 +17,26 @@ body {
 *::after {
   box-sizing: border-box;
 }
+
+.workspace-layout .flexlayout__layout {
+  --flexlayout-color-text: var(--mantine-color-text);
+  --flexlayout-color-background: var(--mantine-color-body);
+  --flexlayout-color-base: var(--mantine-color-body);
+  --flexlayout-color-1: var(--mantine-color-default);
+  --flexlayout-color-2: var(--mantine-color-default-hover);
+  --flexlayout-color-3: var(--mantine-color-gray-light);
+  --flexlayout-color-4: var(--mantine-color-default-border);
+  --flexlayout-color-5: var(--mantine-color-gray-light-hover);
+  --flexlayout-color-icon: var(--mantine-color-dimmed);
+  --flexlayout-color-focus: var(--mantine-primary-color-filled);
+  --flexlayout-color-drag1: var(--mantine-primary-color-filled);
+  --flexlayout-color-drag1-background: var(--mantine-primary-color-light);
+  --flexlayout-font-family: var(--mantine-font-family);
+  --flexlayout-font-size: var(--mantine-font-size-xs);
+  --flexlayout-splitter-size: 6px;
+  --flexlayout-splitter-active-size: 10px;
+}
+
+.workspace-layout .flexlayout__tab_toolbar_button {
+  color: var(--mantine-color-dimmed);
+}

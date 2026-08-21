@@ -335,6 +335,7 @@ export async function fetchFlowmapSourceData(
       magnitudeColumn: source.columns.magnitude,
       defaultMagnitude: source.columns.defaultMagnitude,
       spatialFilter: source.spatialFilter ?? null,
+      rowKey: source.rowRef?.rowKey ?? null,
       limit: 5000,
     }),
   });

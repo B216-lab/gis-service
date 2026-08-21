@@ -9,3 +9,4 @@ backend/api
 .env.dev
 .env.dev.backup.*
 .playwright*
+.dev-run/

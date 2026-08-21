@@ -78,6 +78,10 @@ func (server *Server) routes() {
 		server.handleListSchemaTables,
 	)
 	server.mux.HandleFunc(
+		"POST /api/v1/database-connections/schema-display-configs/save",
+		server.handleSaveSchemaDisplayConfigs,
+	)
+	server.mux.HandleFunc(
 		"POST /api/v1/database-connections/tables/metadata",
 		server.handleTableMetadata,
 	)
@@ -329,6 +333,47 @@ func (server *Server) handleListSchemaTables(
 	}
 
 	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) handleSaveSchemaDisplayConfigs(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	var payload postgres.SaveSchemaDisplayConfigsRequest
+
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"invalid_json",
+			"Request body must be valid JSON.",
+		)
+		return
+	}
+
+	payload.TrimSpaces()
+	if err := payload.Validate(); err != nil {
+		writeError(
+			writer,
+			http.StatusUnprocessableEntity,
+			"invalid_schema_display_configs_payload",
+			err.Error(),
+		)
+		return
+	}
+
+	configs, err := server.service.SaveSchemaDisplayConfigs(request.Context(), payload)
+	if err != nil {
+		handleServiceError(
+			writer,
+			err,
+			"schema_display_configs_save_failed",
+			"Unexpected server error.",
+		)
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{"configs": configs})
 }
 
 func (server *Server) handleTableMetadata(

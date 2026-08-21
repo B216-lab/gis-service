@@ -37,16 +37,20 @@ export function ColorSchemeToggle() {
 export function PanelFrame({
   title,
   hint,
+  action,
   children,
+  padding = 'md',
 }: {
   title?: string;
   hint?: string;
+  action?: ReactNode;
   children?: ReactNode;
+  padding?: 0 | 'md';
 }) {
   return (
     <Paper
       h="100%"
-      p="md"
+      p={padding}
       radius={0}
       shadow="xs"
       style={{
@@ -57,18 +61,19 @@ export function PanelFrame({
         overflow: 'hidden',
       }}
     >
-      {title || hint ? (
+      {title || hint || action ? (
         <Flex align="center" justify="space-between" mb="md">
           {title ? (
             <Title c="text" order={5} tt="uppercase">
               {title}
             </Title>
           ) : null}
-          {hint ? (
-            <Text c="dimmed" fw={500} size="xs">
-              {hint}
-            </Text>
-          ) : null}
+          {action ??
+            (hint ? (
+              <Text c="dimmed" fw={500} size="xs">
+                {hint}
+              </Text>
+            ) : null)}
         </Flex>
       ) : null}
 

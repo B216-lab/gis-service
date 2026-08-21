@@ -1,4 +1,5 @@
-import { Checkbox, TextInput } from '@mantine/core';
+import { Checkbox, NumberInput, TextInput } from '@mantine/core';
+import { DatePickerInput, DateTimePicker } from '@mantine/dates';
 
 import type {
   TableFilterCondition,
@@ -31,12 +32,61 @@ export function renderEditableCell({
   onChange: (value: unknown) => void;
   value: unknown;
 }) {
+  if (isDateColumnType(column.type)) {
+    return (
+      <DatePickerInput
+        aria-label={`Edit ${column.name}`}
+        clearable
+        disabled={disabled}
+        onChange={onChange}
+        size="xs"
+        value={formatDateEditorValue(value)}
+        valueFormat="YYYY-MM-DD"
+      />
+    );
+  }
+
+  if (isTimestampColumnType(column.type)) {
+    return (
+      <DateTimePicker
+        aria-label={`Edit ${column.name}`}
+        clearable
+        disabled={disabled}
+        onChange={(nextValue) =>
+          onChange(formatTimestampChange(column.type, nextValue, value))
+        }
+        size="xs"
+        value={formatTimestampEditorValue(value)}
+        valueFormat="YYYY-MM-DD HH:mm:ss"
+        withSeconds
+      />
+    );
+  }
+
   if (isBooleanColumnType(column.type)) {
     return (
       <Checkbox
         checked={Boolean(value)}
         disabled={disabled}
         onChange={(event) => onChange(event.currentTarget.checked)}
+      />
+    );
+  }
+
+  if (isNumericColumnType(column.type)) {
+    return (
+      <NumberInput
+        allowDecimal={!isIntegerColumnType(column.type)}
+        aria-label={`Edit ${column.name}`}
+        disabled={disabled}
+        onChange={onChange}
+        size="xs"
+        styles={{
+          input: {
+            textAlign: 'right',
+          },
+        }}
+        value={formatNumericEditorValue(value)}
       />
     );
   }
@@ -54,6 +104,47 @@ export function renderEditableCell({
       value={formatEditorValue(value)}
     />
   );
+}
+
+function formatNumericEditorValue(value: unknown): string | number {
+  if (typeof value === 'number' || typeof value === 'string') {
+    return value;
+  }
+
+  return '';
+}
+
+function formatDateEditorValue(value: unknown) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  return value.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
+}
+
+function formatTimestampEditorValue(value: unknown) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+  return match ? `${match[1]} ${match[2]}` : null;
+}
+
+function formatTimestampChange(
+  columnType: string,
+  value: string | null,
+  originalValue: unknown,
+) {
+  if (value === null || !isTimestampWithTimeZoneColumnType(columnType)) {
+    return value;
+  }
+
+  const originalOffset =
+    typeof originalValue === 'string'
+      ? originalValue.match(/(Z|[+-]\d{2}:\d{2})$/i)?.[0]
+      : undefined;
+  return originalOffset ? `${value.replace(' ', 'T')}${originalOffset}` : value;
 }
 
 function formatEditorValue(value: unknown) {
@@ -108,8 +199,26 @@ export function isNumericColumnType(columnType: string) {
   return /int|numeric|double|real|decimal|serial/i.test(columnType);
 }
 
+function isIntegerColumnType(columnType: string) {
+  return /smallint|bigint|integer|smallserial|bigserial|serial|int[248]/i.test(
+    columnType,
+  );
+}
+
 export function isBooleanColumnType(columnType: string) {
   return /bool/i.test(columnType);
+}
+
+export function isDateColumnType(columnType: string) {
+  return /^date$/i.test(columnType.trim());
+}
+
+export function isTimestampColumnType(columnType: string) {
+  return /timestamp/i.test(columnType);
+}
+
+function isTimestampWithTimeZoneColumnType(columnType: string) {
+  return /timestamp with time zone|timestamptz/i.test(columnType);
 }
 
 export function isEditableColumnType(columnType: string) {

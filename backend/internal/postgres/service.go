@@ -102,7 +102,9 @@ type ListTableDisplayConfigsResult struct {
 }
 
 type SchemaSummary struct {
-	Name string `json:"name"`
+	Name    string `json:"name"`
+	Alias   string `json:"alias"`
+	Visible bool   `json:"visible"`
 }
 
 type ListSchemasResult struct {
@@ -112,6 +114,17 @@ type ListSchemasResult struct {
 type SchemaTablesRequest struct {
 	ConnectionTestRequest
 	Schema string `json:"schema"`
+}
+
+type SchemaDisplayConfig struct {
+	Schema  string `json:"schema"`
+	Alias   string `json:"alias"`
+	Visible bool   `json:"visible"`
+}
+
+type SaveSchemaDisplayConfigsRequest struct {
+	ConnectionTestRequest
+	Configs []SchemaDisplayConfig `json:"configs"`
 }
 
 type TableMetadataRequest struct {
@@ -258,20 +271,21 @@ type SpatialFilter struct {
 
 type ListFlowmapDataRequest struct {
 	ConnectionTestRequest
-	Schema              string         `json:"schema"`
-	Table               string         `json:"table"`
-	StartMode           string         `json:"startMode"`
-	StartLonColumn      string         `json:"startLonColumn"`
-	StartLatColumn      string         `json:"startLatColumn"`
-	StartGeometryColumn string         `json:"startGeometryColumn"`
-	EndMode             string         `json:"endMode"`
-	EndLonColumn        string         `json:"endLonColumn"`
-	EndLatColumn        string         `json:"endLatColumn"`
-	EndGeometryColumn   string         `json:"endGeometryColumn"`
-	MagnitudeColumn     string         `json:"magnitudeColumn"`
-	DefaultMagnitude    float64        `json:"defaultMagnitude"`
-	SpatialFilter       *SpatialFilter `json:"spatialFilter"`
-	Limit               int            `json:"limit"`
+	Schema              string                 `json:"schema"`
+	Table               string                 `json:"table"`
+	StartMode           string                 `json:"startMode"`
+	StartLonColumn      string                 `json:"startLonColumn"`
+	StartLatColumn      string                 `json:"startLatColumn"`
+	StartGeometryColumn string                 `json:"startGeometryColumn"`
+	EndMode             string                 `json:"endMode"`
+	EndLonColumn        string                 `json:"endLonColumn"`
+	EndLatColumn        string                 `json:"endLatColumn"`
+	EndGeometryColumn   string                 `json:"endGeometryColumn"`
+	MagnitudeColumn     string                 `json:"magnitudeColumn"`
+	DefaultMagnitude    float64                `json:"defaultMagnitude"`
+	SpatialFilter       *SpatialFilter         `json:"spatialFilter"`
+	RowKey              map[string]interface{} `json:"rowKey"`
+	Limit               int                    `json:"limit"`
 }
 
 type ColumnMeta struct {
@@ -349,6 +363,7 @@ type RelatedRowsGroup struct {
 	SourceColumn    string               `json:"sourceColumn"`
 	TargetColumn    string               `json:"targetColumn"`
 	PrimaryKey      []string             `json:"primaryKey"`
+	IsEditable      bool                 `json:"isEditable"`
 	Columns         []ColumnMeta         `json:"columns"`
 	GeometryColumns []GeometryColumnMeta `json:"geometryColumns"`
 	Rows            []RowRecord          `json:"rows"`
@@ -615,6 +630,14 @@ func (request *SchemaTablesRequest) TrimSpaces() {
 	request.Schema = strings.TrimSpace(request.Schema)
 }
 
+func (request *SaveSchemaDisplayConfigsRequest) TrimSpaces() {
+	request.ConnectionTestRequest.TrimSpaces()
+	for index := range request.Configs {
+		request.Configs[index].Schema = strings.TrimSpace(request.Configs[index].Schema)
+		request.Configs[index].Alias = strings.TrimSpace(request.Configs[index].Alias)
+	}
+}
+
 func (request *TableMetadataRequest) TrimSpaces() {
 	request.ConnectionTestRequest.TrimSpaces()
 	request.Schema = strings.TrimSpace(request.Schema)
@@ -852,9 +875,6 @@ func (request *ListRowsRequest) Normalize() {
 }
 
 func (request *LookupRowsRequest) Normalize() {
-	if len(request.RowKeys) > 50 {
-		request.RowKeys = request.RowKeys[:50]
-	}
 }
 
 func (request *RelationLabelsRequest) Normalize() {
@@ -1070,6 +1090,24 @@ func (request SchemaTablesRequest) Validate() error {
 
 	if request.Schema == "" {
 		return errors.New("Schema is required.")
+	}
+
+	return nil
+}
+
+func (request SaveSchemaDisplayConfigsRequest) Validate() error {
+	if err := request.ConnectionTestRequest.Validate(); err != nil {
+		return err
+	}
+
+	if len(request.Configs) == 0 {
+		return errors.New("At least one schema config is required.")
+	}
+
+	for _, config := range request.Configs {
+		if config.Schema == "" {
+			return errors.New("Schema is required.")
+		}
 	}
 
 	return nil
@@ -1407,11 +1445,20 @@ func (service *Service) ListSchemas(
 	}
 	defer conn.Close(context.Background())
 
+	if err := service.ensureSchemaDisplayConfigStore(timeoutCtx, conn); err != nil {
+		return nil, err
+	}
+
 	rows, err := conn.Query(
 		timeoutCtx,
 		`
-		select n.nspname as schema_name
+		select
+		  n.nspname as schema_name,
+		  coalesce(config.alias, '') as alias,
+		  coalesce(config.visible, true) as visible
 		from pg_namespace n
+		left join _geopanel.schema_display_configs config
+		  on config.schema_name = n.nspname
 		where n.nspname not in ('pg_catalog', 'information_schema')
 		  and n.nspname not like 'pg_toast%'
 		  and n.nspname not like 'pg_temp_%'
@@ -1433,7 +1480,7 @@ func (service *Service) ListSchemas(
 	schemas := make([]SchemaSummary, 0)
 	for rows.Next() {
 		var schema SchemaSummary
-		if err := rows.Scan(&schema.Name); err != nil {
+		if err := rows.Scan(&schema.Name, &schema.Alias, &schema.Visible); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 		}
 		schemas = append(schemas, schema)
@@ -1446,6 +1493,54 @@ func (service *Service) ListSchemas(
 	return &ListSchemasResult{
 		Schemas: schemas,
 	}, nil
+}
+
+func (service *Service) SaveSchemaDisplayConfigs(
+	ctx context.Context,
+	request SaveSchemaDisplayConfigsRequest,
+) ([]SchemaDisplayConfig, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, service.timeout)
+	defer cancel()
+
+	conn, err := service.connect(timeoutCtx, request.ConnectionTestRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	tx, err := conn.Begin(timeoutCtx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer tx.Rollback(context.Background())
+
+	if err := service.ensureSchemaDisplayConfigStore(timeoutCtx, tx); err != nil {
+		return nil, err
+	}
+
+	for _, config := range request.Configs {
+		_, err = tx.Exec(
+			timeoutCtx,
+			`insert into _geopanel.schema_display_configs (schema_name, alias, visible)
+			 values ($1, $2, $3)
+			 on conflict (schema_name) do update set
+			   alias = excluded.alias,
+			   visible = excluded.visible,
+			   updated_at = now()`,
+			config.Schema,
+			config.Alias,
+			config.Visible,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		}
+	}
+
+	if err := tx.Commit(timeoutCtx); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return request.Configs, nil
 }
 
 func (service *Service) ListSchemaTables(
@@ -1811,6 +1906,30 @@ func (service *Service) ensureTableDisplayConfigStore(
 	return nil
 }
 
+func (service *Service) ensureSchemaDisplayConfigStore(
+	ctx context.Context,
+	runner queryRunner,
+) error {
+	_, err := runner.Exec(
+		ctx,
+		`
+		create schema if not exists _geopanel;
+
+		create table if not exists _geopanel.schema_display_configs (
+		  schema_name text primary key,
+		  alias text not null default '',
+		  visible boolean not null default true,
+		  updated_at timestamptz not null default now()
+		);
+		`,
+	)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	return nil
+}
+
 func (service *Service) ListRows(
 	ctx context.Context,
 	request ListRowsRequest,
@@ -1847,7 +1966,6 @@ func (service *Service) ListRows(
 	if err != nil {
 		return nil, err
 	}
-
 	access, err := service.getTableAccess(
 		timeoutCtx,
 		conn,
@@ -2210,6 +2328,16 @@ func (service *Service) listRelatedRowsForRelation(
 		return RelatedRowsGroup{}, err
 	}
 
+	access, err := service.getTableAccess(
+		ctx,
+		runner,
+		relation.TargetSchema,
+		relation.TargetTable,
+	)
+	if err != nil {
+		return RelatedRowsGroup{}, err
+	}
+
 	primaryKey, err := service.listPrimaryKeyColumns(
 		ctx,
 		runner,
@@ -2301,6 +2429,7 @@ func (service *Service) listRelatedRowsForRelation(
 		SourceColumn:    relation.TargetColumn,
 		TargetColumn:    relation.ColumnName,
 		PrimaryKey:      primaryKey,
+		IsEditable:      isEditableTable(access, primaryKey),
 		Columns:         columns,
 		GeometryColumns: geometryColumns,
 		Rows:            records,
@@ -3406,6 +3535,10 @@ func (service *Service) ListFlowmapData(
 	if err != nil {
 		return nil, err
 	}
+	columnByName := make(map[string]columnDefinition, len(columnDefinitions))
+	for _, column := range columnDefinitions {
+		columnByName[column.Name] = column
+	}
 
 	startLonExpression, startLatExpression := flowmapPointExpressions(
 		request.StartMode,
@@ -3474,18 +3607,40 @@ func (service *Service) ListFlowmapData(
 		endLonExpression,
 		endLatExpression,
 	)
+	parameters := []interface{}{}
+	if request.RowKey != nil {
+		if err := validateRowKey(request.RowKey, primaryKey); err != nil {
+			return nil, err
+		}
+
+		rowKeyClause, rowKeyParameters, err := buildPrimaryKeyFilter(
+			columnByName,
+			primaryKey,
+			request.RowKey,
+			len(parameters),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		parameters = append(parameters, rowKeyParameters...)
+		notNullPredicates = append(
+			notNullPredicates,
+			fmt.Sprintf("(%s)", rowKeyClause),
+		)
+	}
+
 	spatialClause, err := service.buildFlowmapSpatialFilterClause(
 		timeoutCtx,
 		conn,
 		request.SpatialFilter,
 		startPointExpression,
 		endPointExpression,
-		0,
+		len(parameters),
 	)
 	if err != nil {
 		return nil, err
 	}
-	parameters := []interface{}{}
 	withClauses := make([]string, 0, 1)
 	if spatialClause != nil {
 		withClauses = append(withClauses, spatialClause.CTE)

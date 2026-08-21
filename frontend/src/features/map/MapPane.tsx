@@ -49,7 +49,6 @@ import {
   createPolygonFeature,
   type FlowmapDataResponse,
   fetchFlowmapSourceData,
-  fetchGeoJsonSourceExtent,
   type GeoBounds,
   type GeoJsonGeometry,
   type LayerTileSourceResponse,
@@ -97,11 +96,6 @@ type SourceCacheEntry = {
   payload: LoadedSourceData;
 };
 type SourceDataCache = Record<string, SourceCacheEntry>;
-type SourceExtentCacheEntry = {
-  signature: string;
-  bounds: GeoBounds | null;
-};
-type SourceExtentCache = Record<string, SourceExtentCacheEntry>;
 type VectorTileSourceCacheEntry = {
   signature: string;
   source: LayerTileSourceResponse;
@@ -131,50 +125,9 @@ function registerPmtilesProtocol() {
   window.__geopanelPmtilesProtocolRegistered = true;
 }
 
-function extendBoundsWithSourceData(
-  bounds: LngLatBounds,
-  sourceData: LoadedSourceData,
-) {
-  for (const location of sourceData.data.locations) {
-    bounds.extend([location.lon, location.lat]);
-  }
-}
-
 function extendBoundsWithGeoBounds(bounds: LngLatBounds, geoBounds: GeoBounds) {
   bounds.extend([geoBounds.west, geoBounds.south]);
   bounds.extend([geoBounds.east, geoBounds.north]);
-}
-
-function computeVisibleBounds(params: {
-  extentCache: SourceExtentCache;
-  sourceCache: SourceDataCache;
-  visibleSources: MapSource[];
-}) {
-  const bounds = new LngLatBounds();
-  let hasCoordinates = false;
-
-  for (const source of params.visibleSources) {
-    if (source.type === 'geojson-table') {
-      const extentEntry = params.extentCache[source.id];
-      if (!extentEntry?.bounds) {
-        continue;
-      }
-
-      extendBoundsWithGeoBounds(bounds, extentEntry.bounds);
-      hasCoordinates = true;
-      continue;
-    }
-
-    const sourceData = params.sourceCache[source.id];
-    if (!sourceData) {
-      continue;
-    }
-
-    extendBoundsWithSourceData(bounds, sourceData.payload);
-    hasCoordinates = hasCoordinates || !bounds.isEmpty();
-  }
-
-  return hasCoordinates ? bounds : null;
 }
 
 function createFlowmapDeckLayer(
@@ -493,10 +446,8 @@ export function MapPane({
   const activeBasemapIdRef = useRef<BasemapId>(basemapId);
   const activeLayerIdRef = useRef<string | null>(activeLayerId);
   const sourceCacheRef = useRef<SourceDataCache>({});
-  const sourceExtentCacheRef = useRef<SourceExtentCache>({});
   const vectorTileSourceCacheRef = useRef<VectorTileSourceCache>({});
   const appliedVectorSourceSignaturesRef = useRef<Record<string, string>>({});
-  const fittedSourceIdsRef = useRef<string>('');
   const visibleLayersRef = useRef<MapLayer[]>(visibleLayers);
   const sourcesRef = useRef<MapSource[]>(sources);
   const onSelectMapObjectRef = useRef(onSelectMapObject);
@@ -512,7 +463,6 @@ export function MapPane({
     useState<FeaturePickCandidate | null>(null);
   const [layerError, setLayerError] = useState('');
   const [cacheVersion, setCacheVersion] = useState(0);
-  const [extentVersion, setExtentVersion] = useState(0);
   const [styleVersion, setStyleVersion] = useState(0);
   const [isDrawingPolygon, setIsDrawingPolygon] = useState(false);
   const [pendingGeometry, setPendingGeometry] =
@@ -542,10 +492,6 @@ export function MapPane({
         return source ? [source] : [];
       }),
     [sources, visibleSourceIds],
-  );
-  const visibleSourceSignature = useMemo(
-    () => [...visibleSourceIds].sort().join('|'),
-    [visibleSourceIds],
   );
   const geoJsonVisibleSources = useMemo(
     () => visibleSources.filter(isGeoJsonTableSource),
@@ -626,6 +572,8 @@ export function MapPane({
       interleaved: true,
       layers: [],
     });
+    const resizeObserver = new ResizeObserver(() => map.resize());
+    resizeObserver.observe(container);
 
     map.addControl(navigation, 'top-left');
     map.addControl(overlay);
@@ -824,6 +772,7 @@ export function MapPane({
     overlayRef.current = overlay;
 
     return () => {
+      resizeObserver.disconnect();
       drawRef.current?.stop();
       drawRef.current = null;
       map.off('click', handleMapClick);
@@ -895,9 +844,7 @@ export function MapPane({
     if (!connection || connection.testStatus !== 'success') {
       overlayRef.current.setProps({ layers: [] });
       sourceCacheRef.current = {};
-      sourceExtentCacheRef.current = {};
       vectorTileSourceCacheRef.current = {};
-      fittedSourceIdsRef.current = '';
       setLayerError('');
       setIsLoadingSources(false);
       onSelectMapObjectRef.current(null);
@@ -1244,83 +1191,6 @@ export function MapPane({
   }, [isMapReady, locateFeatureBounds]);
 
   useEffect(() => {
-    if (!isMapReady || !connection || connection.testStatus !== 'success') {
-      return;
-    }
-
-    if (geoJsonVisibleSources.length === 0) {
-      return;
-    }
-
-    const missingExtentSources = geoJsonVisibleSources.filter(
-      (source) =>
-        !sourceExtentCacheRef.current[source.id] ||
-        sourceExtentCacheRef.current[source.id].signature !==
-          JSON.stringify(source),
-    );
-
-    if (missingExtentSources.length === 0) {
-      return;
-    }
-
-    const activeConnection = connection;
-    let isActive = true;
-    const abortController = new AbortController();
-    setLayerError('');
-
-    async function loadMissingExtents() {
-      try {
-        const loadedEntries = await Promise.all(
-          missingExtentSources.map(async (source) => {
-            const response = await fetchGeoJsonSourceExtent(
-              activeConnection,
-              source,
-              abortController.signal,
-            );
-
-            return [
-              source.id,
-              {
-                signature: JSON.stringify(source),
-                bounds: response.bounds,
-              },
-            ] as const;
-          }),
-        );
-
-        if (!isActive) {
-          return;
-        }
-
-        const nextCache = { ...sourceExtentCacheRef.current };
-        for (const [sourceId, extentEntry] of loadedEntries) {
-          nextCache[sourceId] = extentEntry;
-        }
-
-        sourceExtentCacheRef.current = nextCache;
-        setExtentVersion((value) => value + 1);
-      } catch (error) {
-        if (!isActive || abortController.signal.aborted) {
-          return;
-        }
-
-        setLayerError(
-          error instanceof Error
-            ? error.message
-            : 'Failed to load layer extent.',
-        );
-      }
-    }
-
-    void loadMissingExtents();
-
-    return () => {
-      isActive = false;
-      abortController.abort();
-    };
-  }, [connection, geoJsonVisibleSources, isMapReady]);
-
-  useEffect(() => {
     if (!isMapReady || !overlayRef.current) {
       return;
     }
@@ -1454,34 +1324,14 @@ export function MapPane({
         queueDeckPickCandidate(buildSelectionPickCandidate(selection, layer));
       },
     });
-
-    if (visibleSourceSignature !== fittedSourceIdsRef.current) {
-      void extentVersion;
-
-      const bounds = computeVisibleBounds({
-        extentCache: sourceExtentCacheRef.current,
-        sourceCache: sourceCacheRef.current,
-        visibleSources,
-      });
-      if (bounds && mapRef.current) {
-        mapRef.current.fitBounds(bounds, {
-          padding: 48,
-          duration: 700,
-        });
-      }
-      fittedSourceIdsRef.current = visibleSourceSignature;
-    }
   }, [
     cacheVersion,
     connection,
-    extentVersion,
     isMapReady,
     mapSelection,
     styleVersion,
     sources,
     visibleLayers,
-    visibleSources,
-    visibleSourceSignature,
   ]);
 
   useEffect(() => {
@@ -1545,7 +1395,6 @@ export function MapPane({
 
     delete vectorTileSourceCacheRef.current[sourceId];
     delete appliedVectorSourceSignaturesRef.current[mapSourceId];
-    delete sourceExtentCacheRef.current[sourceId];
     loadingVectorSourceIdsRef.current.delete(mapSourceId);
 
     if (map?.getSource(mapSourceId)) {
@@ -1562,7 +1411,6 @@ export function MapPane({
     }
 
     setIsLoadingVectorTiles(false);
-    setExtentVersion((value) => value + 1);
     setStyleVersion((value) => value + 1);
   }
 
@@ -1674,7 +1522,6 @@ export function MapPane({
         minHeight: 0,
         minWidth: 0,
         overflow: 'hidden',
-        borderRadius: 'var(--mantine-radius-md)',
       }}
     >
       <Box

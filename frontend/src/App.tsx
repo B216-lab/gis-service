@@ -1,4 +1,3 @@
-import { Split } from '@gfazioli/mantine-split-pane';
 import {
   ActionIcon,
   Alert,
@@ -8,7 +7,6 @@ import {
   Center,
   Checkbox,
   Collapse,
-  Flex,
   Group,
   Loader,
   Menu,
@@ -17,14 +15,15 @@ import {
   Paper,
   PasswordInput,
   ScrollArea,
+  SegmentedControl,
   Select,
   Slider,
   Stack,
+  Switch,
   Tabs,
   Text,
   TextInput,
   ThemeIcon,
-  Title,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
@@ -60,6 +59,7 @@ import {
   type MRT_ColumnDef,
   useMantineReactTable,
 } from 'mantine-react-table';
+import { MRT_Localization_RU } from 'mantine-react-table/locales/ru/index.esm.mjs';
 import maplibregl, { LngLatBounds } from 'maplibre-gl';
 import 'mantine-react-table/styles.css';
 import {
@@ -96,6 +96,10 @@ import {
   PanelFrame,
 } from './features/app/chrome';
 import {
+  useWorkspacePanels,
+  WorkspaceLayout,
+} from './features/app/WorkspaceLayout';
+import {
   type ArcMapLayer,
   type DatabaseConnection,
   type FlowmapMapLayer,
@@ -104,6 +108,7 @@ import {
   type GeoJsonTableSource,
   type LayerGlyphIcon,
   type MapLayer,
+  type MapLayerPurpose,
   type MapSource,
   type SpatialFilterPredicate,
   type TableDisplayConfig,
@@ -114,7 +119,7 @@ import type {
   SavedTableView,
   TableFilterDefinition,
 } from './features/filters/types';
-import { LanguageSwitcher } from './features/i18n/i18n';
+import { LanguageSwitcher, useI18n } from './features/i18n/i18n';
 import {
   commitInspectorRows,
   fetchInspectableSchemas,
@@ -136,6 +141,7 @@ import {
   type InspectorRowsResponse,
   type RelatedRowsGroup,
   type RelationOption,
+  saveSchemaDisplayConfigs,
   saveTableDisplayConfig,
   type TableChangeOperation,
 } from './features/inspector/api';
@@ -164,6 +170,9 @@ import { MapPane } from './features/map/MapPane';
 import type { MapSelection } from './features/map/selection';
 
 const pageSize = 100;
+const recordEditorPanelId = 'record-editor';
+const relatedRowsPanelId = 'related-rows';
+const relatedRecordPanelId = 'related-record';
 
 type SchemaTablesByName = Record<string, InspectableTableSummary[]>;
 type LoadingSchemaTablesByName = Record<string, boolean>;
@@ -249,6 +258,8 @@ const initialConnectionForm: ConnectionFormState = {
   password: '',
 };
 
+type ConnectionManagerView = 'sources' | 'layers';
+
 function connectionRequestPayload(connection: DatabaseConnection) {
   if (connection.isServerManaged) {
     return {
@@ -285,6 +296,7 @@ function ConnectionManager({
   selectedInspectableTable,
   selectedTableKey,
   tables,
+  view,
 }: {
   activeLayerId: string | null;
   catalog: CatalogState;
@@ -316,11 +328,15 @@ function ConnectionManager({
   selectedInspectableTable: InspectableTable | null;
   selectedTableKey: string | null;
   tables: InspectableTable[];
+  view: ConnectionManagerView;
 }) {
   const [connectionOpened, connectionModal] = useDisclosure(false);
   const [flowLayerOpened, flowLayerModal] = useDisclosure(false);
   const [catalogOpened, catalogDisclosure] = useDisclosure(false);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
+  const [layerPurposeFilter, setLayerPurposeFilter] = useState<
+    'all' | MapLayerPurpose
+  >('all');
   const [form, setForm] = useState<ConnectionFormState>(initialConnectionForm);
   const [flowLayerForm, setFlowLayerForm] = useState<FlowLayerFormState>(() =>
     createFlowLayerDefaults(selectedInspectableTable),
@@ -328,6 +344,12 @@ function ConnectionManager({
   const [movementLayerKind, setMovementLayerKind] =
     useState<MovementLayerKind>('flowmap');
   const [flowLayerError, setFlowLayerError] = useState('');
+  const [schemaConfigConnection, setSchemaConfigConnection] =
+    useState<DatabaseConnection | null>(null);
+  const [schemaConfigs, setSchemaConfigs] = useState<InspectableSchema[]>([]);
+  const [schemaConfigError, setSchemaConfigError] = useState('');
+  const [isLoadingSchemaConfigs, setIsLoadingSchemaConfigs] = useState(false);
+  const [isSavingSchemaConfigs, setIsSavingSchemaConfigs] = useState(false);
   const connections = useConnectionStore((state) => state.connections);
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
@@ -420,6 +442,10 @@ function ConnectionManager({
       name: `${selectedTableAlias} flows`,
     };
   }, [selectedInspectableTable, selectedTableAlias]);
+  const filteredMapLayers =
+    layerPurposeFilter === 'all'
+      ? mapLayers
+      : mapLayers.filter((layer) => layer.purpose === layerPurposeFilter);
 
   useEffect(() => {
     setFlowLayerForm(currentFlowLayerDefaults);
@@ -561,8 +587,131 @@ function ConnectionManager({
     }
   }
 
+  async function handleOpenSchemaConfig(connection: DatabaseConnection) {
+    setSchemaConfigConnection(connection);
+    setSchemaConfigs([]);
+    setSchemaConfigError('');
+    setIsLoadingSchemaConfigs(true);
+
+    try {
+      setSchemaConfigs(await fetchInspectableSchemas(connection));
+    } catch (error) {
+      setSchemaConfigError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to load schema display settings.',
+      );
+    } finally {
+      setIsLoadingSchemaConfigs(false);
+    }
+  }
+
+  async function handleSaveSchemaConfigs() {
+    if (!schemaConfigConnection) {
+      return;
+    }
+
+    setIsSavingSchemaConfigs(true);
+    setSchemaConfigError('');
+    try {
+      await saveSchemaDisplayConfigs(schemaConfigConnection, schemaConfigs);
+      if (schemaConfigConnection.id === selectedConnectionId) {
+        onLoadSchemas();
+      }
+      setSchemaConfigConnection(null);
+    } catch (error) {
+      setSchemaConfigError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to save schema display settings.',
+      );
+    } finally {
+      setIsSavingSchemaConfigs(false);
+    }
+  }
+
   return (
     <>
+      <Modal
+        centered
+        onClose={() => setSchemaConfigConnection(null)}
+        opened={schemaConfigConnection !== null}
+        title={`Visible schemas${schemaConfigConnection ? ` · ${schemaConfigConnection.name}` : ''}`}
+      >
+        <Stack gap="sm">
+          <Text c="dimmed" size="sm">
+            Choose schemas shown in catalog and give technical names readable
+            aliases. Settings are stored in database.
+          </Text>
+
+          {schemaConfigError ? (
+            <Alert color="red" title="Schema settings failed" variant="light">
+              {schemaConfigError}
+            </Alert>
+          ) : null}
+
+          {isLoadingSchemaConfigs ? (
+            <Center py="lg">
+              <Loader size="sm" />
+            </Center>
+          ) : (
+            <ScrollArea.Autosize mah={420} offsetScrollbars>
+              <Stack gap="xs" pr="xs">
+                {schemaConfigs.map((schema, index) => (
+                  <Group key={schema.name} align="flex-end" wrap="nowrap">
+                    <TextInput
+                      aria-label={`Alias for ${schema.name}`}
+                      description={schema.name}
+                      label="Alias"
+                      onChange={(event) => {
+                        const alias = event.currentTarget.value;
+                        setSchemaConfigs((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, alias } : item,
+                          ),
+                        );
+                      }}
+                      placeholder={schema.name}
+                      style={{ flex: 1 }}
+                      value={schema.alias}
+                    />
+                    <Switch
+                      checked={schema.visible}
+                      label="Show"
+                      onChange={(event) => {
+                        const visible = event.currentTarget.checked;
+                        setSchemaConfigs((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, visible } : item,
+                          ),
+                        );
+                      }}
+                      pb={7}
+                    />
+                  </Group>
+                ))}
+              </Stack>
+            </ScrollArea.Autosize>
+          )}
+
+          <Group justify="flex-end">
+            <Button
+              onClick={() => setSchemaConfigConnection(null)}
+              variant="default"
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={isLoadingSchemaConfigs || schemaConfigs.length === 0}
+              loading={isSavingSchemaConfigs}
+              onClick={() => void handleSaveSchemaConfigs()}
+            >
+              Save
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
       <Modal
         centered
         onClose={handleClose}
@@ -837,387 +986,442 @@ function ConnectionManager({
         </Stack>
       </Modal>
 
-      <Stack h="100%" gap="md">
-        <Group justify="space-between" wrap="nowrap">
-          <div>
-            <Text fw={700} size="sm">
-              Connected Sources
-            </Text>
-          </div>
-          <ActionIcon
-            aria-label="Add connection"
-            color="blue"
-            onClick={connectionModal.open}
-            radius="xl"
-            size="lg"
-            variant="light"
-          >
-            <IconDatabasePlus size={18} />
-          </ActionIcon>
-        </Group>
+      <Stack h="100%" gap="md" style={{ minHeight: 0, minWidth: 0 }}>
+        {view === 'sources' ? (
+          <>
+            <Group justify="space-between" wrap="nowrap">
+              <div>
+                <Text fw={700} size="sm">
+                  Connected Sources
+                </Text>
+              </div>
+              <ActionIcon
+                aria-label="Add connection"
+                color="blue"
+                onClick={connectionModal.open}
+                radius="xl"
+                size="lg"
+                variant="light"
+              >
+                <IconDatabasePlus size={18} />
+              </ActionIcon>
+            </Group>
 
-        <ScrollArea
-          offsetScrollbars
-          scrollbarSize={6}
-          style={{
-            flex: 1,
-            minHeight: 0,
-          }}
-        >
-          <Stack gap="sm" pr="xs">
-            {connections.map((connection) => {
-              const isSelected = connection.id === selectedConnectionId;
+            <ScrollArea
+              offsetScrollbars
+              scrollbarSize={6}
+              style={{
+                flex: 1,
+                minHeight: 0,
+              }}
+            >
+              <Stack gap="sm" pr="xs">
+                {connections.map((connection) => {
+                  const isSelected = connection.id === selectedConnectionId;
 
-              return (
-                <Paper
-                  key={connection.id}
-                  onClick={() => selectConnection(connection.id)}
-                  p="sm"
-                  radius="md"
-                  shadow={isSelected ? 'sm' : 'xs'}
-                  style={{
-                    border: isSelected
-                      ? '1px solid var(--mantine-color-blue-4)'
-                      : '1px solid var(--mantine-color-gray-3)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Stack gap={8}>
-                    <Group justify="space-between" wrap="nowrap">
-                      <Group gap="xs" wrap="nowrap">
-                        {connection.isActive ? (
-                          <IconPlugConnected
-                            color="var(--mantine-color-green-6)"
-                            size={16}
-                          />
-                        ) : (
-                          <IconPlug
-                            color="var(--mantine-color-gray-6)"
-                            size={16}
-                          />
-                        )}
-                        <Text fw={600} size="sm" truncate="end">
-                          {connection.name}
-                        </Text>
-                      </Group>
+                  return (
+                    <Paper
+                      key={connection.id}
+                      onClick={() => selectConnection(connection.id)}
+                      p="sm"
+                      radius="md"
+                      shadow={isSelected ? 'sm' : 'xs'}
+                      style={{
+                        border: isSelected
+                          ? '1px solid var(--mantine-color-blue-4)'
+                          : '1px solid var(--mantine-color-gray-3)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Stack gap={8}>
+                        <Group justify="space-between" wrap="nowrap">
+                          <Group gap="xs" wrap="nowrap">
+                            {connection.isActive ? (
+                              <IconPlugConnected
+                                color="var(--mantine-color-green-6)"
+                                size={16}
+                              />
+                            ) : (
+                              <IconPlug
+                                color="var(--mantine-color-gray-6)"
+                                size={16}
+                              />
+                            )}
+                            <Text fw={600} size="sm" truncate="end">
+                              {connection.name}
+                            </Text>
+                          </Group>
 
-                      <Menu position="bottom-end" shadow="md" width={260}>
-                        <Menu.Target>
-                          <ActionIcon
-                            aria-label={`${connection.name} options`}
+                          <Menu position="bottom-end" shadow="md" width={260}>
+                            <Menu.Target>
+                              <ActionIcon
+                                aria-label={`${connection.name} options`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                }}
+                                size="sm"
+                                variant="subtle"
+                              >
+                                <IconDotsVertical size={16} />
+                              </ActionIcon>
+                            </Menu.Target>
+                            <Menu.Dropdown
+                              onClick={(event) => {
+                                event.stopPropagation();
+                              }}
+                            >
+                              <Menu.Label>Connection</Menu.Label>
+                              <Menu.Item
+                                leftSection={<IconInfoCircle size={14} />}
+                                closeMenuOnClick={false}
+                              >
+                                <Stack gap={2}>
+                                  <Text size="xs">
+                                    {connection.isServerManaged
+                                      ? 'Configured on backend'
+                                      : `${connection.host}:${connection.port} / ${connection.database}`}
+                                  </Text>
+                                  <Text c="dimmed" size="xs">
+                                    {connection.testMessage || 'Not tested'}
+                                  </Text>
+                                  {connection.testStatus === 'success' ? (
+                                    <Text c="dimmed" size="xs">
+                                      PostGIS {connection.postgisVersion}
+                                    </Text>
+                                  ) : null}
+                                </Stack>
+                              </Menu.Item>
+                              <Menu.Divider />
+                              <Menu.Item
+                                leftSection={<IconSettings size={14} />}
+                                onClick={() =>
+                                  void handleOpenSchemaConfig(connection)
+                                }
+                              >
+                                Configure schemas
+                              </Menu.Item>
+                              <Menu.Item
+                                color="red"
+                                disabled={connection.isServerManaged}
+                                leftSection={<IconTrash size={14} />}
+                                onClick={() => {
+                                  if (connection.isServerManaged) {
+                                    return;
+                                  }
+                                  removeConnection(connection.id);
+                                }}
+                              >
+                                Delete
+                              </Menu.Item>
+                            </Menu.Dropdown>
+                          </Menu>
+                        </Group>
+
+                        <Group gap="xs" justify="flex-end" wrap="nowrap">
+                          <Button
+                            color="blue"
+                            leftSection={
+                              connection.testStatus === 'testing' ? (
+                                <Loader size={14} />
+                              ) : (
+                                <IconPlugConnected size={14} />
+                              )
+                            }
                             onClick={(event) => {
                               event.stopPropagation();
+                              void handleTestConnection(connection);
                             }}
-                            size="sm"
+                            size="compact-xs"
+                            variant={
+                              connection.testStatus === 'success'
+                                ? 'light'
+                                : 'filled'
+                            }
+                          >
+                            {connection.testStatus === 'testing'
+                              ? 'Testing'
+                              : 'Test'}
+                          </Button>
+                        </Group>
+
+                        {connection.testStatus === 'error' ? (
+                          <Text c="red" size="xs">
+                            {connection.testMessage}
+                          </Text>
+                        ) : null}
+
+                        {isSelected && connection.testStatus === 'success' ? (
+                          <ConnectionCatalog
+                            catalog={catalog}
+                            connectionId={selectedConnectionId}
+                            opened={catalogOpened}
+                            selectedTableKey={selectedTableKey}
+                            tableDisplayByKey={tableDisplayByKey}
+                            savedViews={savedViews}
+                            onLoadSchemas={onLoadSchemas}
+                            onRemoveSavedView={onRemoveSavedView}
+                            onSelectSavedView={onSelectSavedView}
+                            onSelectTable={onSelectCatalogTable}
+                            onToggle={handleToggleCatalog}
+                            onToggleSchema={onToggleCatalogSchema}
+                            onToggleSchemaExpanded={
+                              onToggleCatalogSchemaExpanded
+                            }
+                          />
+                        ) : null}
+
+                        <Group justify="flex-end">
+                          <Button
+                            color={connection.isActive ? 'gray' : 'teal'}
+                            leftSection={
+                              connection.isActive ? (
+                                <IconCheck size={14} />
+                              ) : (
+                                <IconPlug size={14} />
+                              )
+                            }
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleConnectionActive(connection.id);
+                            }}
+                            size="compact-xs"
                             variant="subtle"
                           >
-                            <IconDotsVertical size={16} />
-                          </ActionIcon>
-                        </Menu.Target>
-                        <Menu.Dropdown
-                          onClick={(event) => {
-                            event.stopPropagation();
-                          }}
-                        >
-                          <Menu.Label>Connection</Menu.Label>
-                          <Menu.Item
-                            leftSection={<IconInfoCircle size={14} />}
-                            closeMenuOnClick={false}
-                          >
-                            <Stack gap={2}>
-                              <Text size="xs">
-                                {connection.isServerManaged
-                                  ? 'Configured on backend'
-                                  : `${connection.host}:${connection.port} / ${connection.database}`}
-                              </Text>
-                              <Text c="dimmed" size="xs">
-                                {connection.testMessage || 'Not tested'}
-                              </Text>
-                              {connection.testStatus === 'success' ? (
-                                <Text c="dimmed" size="xs">
-                                  PostGIS {connection.postgisVersion}
-                                </Text>
-                              ) : null}
-                            </Stack>
-                          </Menu.Item>
-                          <Menu.Divider />
-                          <Menu.Item
-                            color="red"
-                            disabled={connection.isServerManaged}
-                            leftSection={<IconTrash size={14} />}
-                            onClick={() => {
-                              if (connection.isServerManaged) {
-                                return;
-                              }
-                              removeConnection(connection.id);
-                            }}
-                          >
-                            Delete
-                          </Menu.Item>
-                        </Menu.Dropdown>
-                      </Menu>
-                    </Group>
+                            {connection.isActive ? 'Deactivate' : 'Activate'}
+                          </Button>
+                        </Group>
+                      </Stack>
+                    </Paper>
+                  );
+                })}
 
-                    <Group gap="xs" justify="flex-end" wrap="nowrap">
-                      <Button
-                        color="blue"
-                        leftSection={
-                          connection.testStatus === 'testing' ? (
-                            <Loader size={14} />
-                          ) : (
-                            <IconPlugConnected size={14} />
-                          )
-                        }
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void handleTestConnection(connection);
-                        }}
-                        size="compact-xs"
-                        variant={
-                          connection.testStatus === 'success'
-                            ? 'light'
-                            : 'filled'
-                        }
-                      >
-                        {connection.testStatus === 'testing'
-                          ? 'Testing'
-                          : 'Test'}
-                      </Button>
-                    </Group>
+                {connections.length === 0 ? (
+                  <EmptyState
+                    detail="Save first PostGIS connection to start building data sources."
+                    label="No Connections"
+                  />
+                ) : null}
+              </Stack>
+            </ScrollArea>
+          </>
+        ) : null}
 
-                    {connection.testStatus === 'error' ? (
-                      <Text c="red" size="xs">
-                        {connection.testMessage}
-                      </Text>
-                    ) : null}
+        {view === 'layers' ? (
+          <Stack gap="xs" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
+            <Group justify="space-between" wrap="nowrap">
+              <div>
+                <Text fw={700} size="sm">
+                  Map Layers
+                </Text>
+              </div>
+              <Menu position="bottom-end" shadow="md" width={220}>
+                <Menu.Target>
+                  <Button
+                    rightSection={<IconChevronDown size={14} />}
+                    size="compact-sm"
+                    variant="light"
+                  >
+                    Layer Actions
+                  </Button>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item
+                    disabled={!canImportSelectedTable}
+                    leftSection={<IconDatabasePlus size={14} />}
+                    onClick={onImportSelectedTable}
+                  >
+                    Import Layer
+                  </Menu.Item>
+                  <Menu.Item
+                    disabled={!canCreateFlowLayer}
+                    leftSection={<IconRoute size={14} />}
+                    onClick={() => handleOpenMovementLayerModal('flowmap')}
+                  >
+                    Create Flowmap
+                  </Menu.Item>
+                  <Menu.Item
+                    disabled={!canCreateFlowLayer}
+                    leftSection={<IconLayersIntersect size={14} />}
+                    onClick={() => handleOpenMovementLayerModal('arc')}
+                  >
+                    Create Arc
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
+            </Group>
 
-                    {isSelected && connection.testStatus === 'success' ? (
-                      <ConnectionCatalog
-                        catalog={catalog}
-                        connectionId={selectedConnectionId}
-                        opened={catalogOpened}
-                        selectedTableKey={selectedTableKey}
-                        tableDisplayByKey={tableDisplayByKey}
-                        savedViews={savedViews}
-                        onLoadSchemas={onLoadSchemas}
-                        onRemoveSavedView={onRemoveSavedView}
-                        onSelectSavedView={onSelectSavedView}
-                        onSelectTable={onSelectCatalogTable}
-                        onToggle={handleToggleCatalog}
-                        onToggleSchema={onToggleCatalogSchema}
-                        onToggleSchemaExpanded={onToggleCatalogSchemaExpanded}
-                      />
-                    ) : null}
-
-                    <Group justify="flex-end">
-                      <Button
-                        color={connection.isActive ? 'gray' : 'teal'}
-                        leftSection={
-                          connection.isActive ? (
-                            <IconCheck size={14} />
-                          ) : (
-                            <IconPlug size={14} />
-                          )
-                        }
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleConnectionActive(connection.id);
-                        }}
-                        size="compact-xs"
-                        variant="subtle"
-                      >
-                        {connection.isActive ? 'Deactivate' : 'Activate'}
-                      </Button>
-                    </Group>
-                  </Stack>
-                </Paper>
-              );
-            })}
-
-            {connections.length === 0 ? (
-              <EmptyState
-                detail="Save first PostGIS connection to start building data sources."
-                label="No Connections"
-              />
-            ) : null}
-          </Stack>
-        </ScrollArea>
-
-        <Stack gap="xs">
-          <Group justify="space-between" wrap="nowrap">
-            <div>
-              <Text fw={700} size="sm">
-                Map Layers
-              </Text>
-            </div>
-            <Menu position="bottom-end" shadow="md" width={220}>
-              <Menu.Target>
-                <Button
-                  rightSection={<IconChevronDown size={14} />}
-                  size="compact-sm"
-                  variant="light"
-                >
-                  Layer Actions
-                </Button>
-              </Menu.Target>
-              <Menu.Dropdown>
-                <Menu.Item
-                  disabled={!canImportSelectedTable}
-                  leftSection={<IconDatabasePlus size={14} />}
-                  onClick={onImportSelectedTable}
-                >
-                  Import Layer
-                </Menu.Item>
-                <Menu.Item
-                  disabled={!canCreateFlowLayer}
-                  leftSection={<IconRoute size={14} />}
-                  onClick={() => handleOpenMovementLayerModal('flowmap')}
-                >
-                  Create Flowmap
-                </Menu.Item>
-                <Menu.Item
-                  disabled={!canCreateFlowLayer}
-                  leftSection={<IconLayersIntersect size={14} />}
-                  onClick={() => handleOpenMovementLayerModal('arc')}
-                >
-                  Create Arc
-                </Menu.Item>
-              </Menu.Dropdown>
-            </Menu>
-          </Group>
-
-          <Stack gap={4}>
-            {mapLayers.map((layer) => {
-              const source = findLayerSource(mapSources, layer);
-              const sourceTable = source
-                ? (tables.find((table) => table.fullName === source.fullName) ??
-                  null)
-                : null;
-              const isExpanded = expandedLayerId === layer.id;
-              const isSelected = activeLayerId === layer.id;
-
-              if (!source) {
-                return null;
+            <SegmentedControl
+              data={[
+                { label: 'All', value: 'all' },
+                { label: 'Configured', value: 'configured' },
+                { label: 'Previews', value: 'record-preview' },
+              ]}
+              fullWidth
+              onChange={(value) =>
+                setLayerPurposeFilter(value as 'all' | MapLayerPurpose)
               }
+              size="xs"
+              value={layerPurposeFilter}
+            />
 
-              return (
-                <Paper
-                  key={layer.id}
-                  onClick={() => onSelectLayer(layer.id)}
-                  p="xs"
-                  radius="md"
-                  shadow="xs"
-                  style={{
-                    border: isSelected
-                      ? '1px solid var(--mantine-color-blue-4)'
-                      : '1px solid var(--mantine-color-gray-3)',
-                    cursor: 'pointer',
-                    opacity: layer.visible ? 1 : 0.55,
-                  }}
-                >
-                  <Stack gap="xs">
-                    <Group justify="space-between" wrap="nowrap">
-                      <Group gap="xs" wrap="nowrap">
-                        <LayerGlyph
-                          color={
-                            layer.type === 'geojson' || layer.type === 'arc'
-                              ? layer.color
-                              : '#0c8599'
-                          }
-                          icon={layer.icon}
-                          visible={layer.visible}
-                        />
-                        <Stack gap={0}>
-                          <Text fw={600} size="sm">
-                            {layer.name}
-                          </Text>
-                          <Text c="dimmed" size="xs">
-                            {source.type === 'geojson-table'
-                              ? `${source.geometryColumn} • ${source.kind}`
-                              : formatFlowmapSourceColumns(source.columns)}
-                          </Text>
-                        </Stack>
-                      </Group>
+            <ScrollArea
+              offsetScrollbars
+              scrollbarSize={6}
+              style={{ flex: 1, minHeight: 0, width: '100%' }}
+            >
+              <Stack gap={4} pr="xs" style={{ minWidth: 0 }}>
+                {filteredMapLayers.map((layer) => {
+                  const source = findLayerSource(mapSources, layer);
+                  const sourceTable = source
+                    ? (tables.find(
+                        (table) => table.fullName === source.fullName,
+                      ) ?? null)
+                    : null;
+                  const isExpanded = expandedLayerId === layer.id;
+                  const isSelected = activeLayerId === layer.id;
 
-                      <Group gap={4} wrap="nowrap">
-                        <Button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setExpandedLayerId((current) =>
-                              current === layer.id ? null : layer.id,
-                            );
-                          }}
-                          size="compact-xs"
-                          variant="subtle"
-                        >
-                          {isExpanded ? 'Close' : 'Style'}
-                        </Button>
-                        <ActionIcon
-                          aria-label={
-                            layer.visible ? 'Hide layer' : 'Show layer'
-                          }
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            toggleMapLayerVisibility(layer.id);
-                          }}
-                          size="sm"
-                          variant="subtle"
-                        >
-                          {layer.visible ? (
-                            <IconEye size={16} />
-                          ) : (
-                            <IconEyeOff size={16} />
-                          )}
-                        </ActionIcon>
-                        <ActionIcon
-                          aria-label={`Delete ${layer.name}`}
-                          color="red"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (
-                              window.confirm(
-                                `Delete layer "${layer.name}" from map?`,
-                              )
-                            ) {
-                              removeMapLayer(layer.id);
-                            }
-                          }}
-                          size="sm"
-                          variant="subtle"
-                        >
-                          <IconTrash size={16} />
-                        </ActionIcon>
-                      </Group>
-                    </Group>
+                  if (!source) {
+                    return null;
+                  }
 
-                    <Text c="dimmed" size="xs">
-                      {source.schema}.{source.table}
-                    </Text>
+                  return (
+                    <Paper
+                      key={layer.id}
+                      onClick={() => onSelectLayer(layer.id)}
+                      p="xs"
+                      radius="md"
+                      shadow="xs"
+                      style={{
+                        border: isSelected
+                          ? '1px solid var(--mantine-color-blue-4)'
+                          : '1px solid var(--mantine-color-gray-3)',
+                        cursor: 'pointer',
+                        minWidth: 0,
+                        opacity: layer.visible ? 1 : 0.55,
+                        width: '100%',
+                      }}
+                    >
+                      <Stack gap="xs" style={{ minWidth: 0 }}>
+                        <Group justify="space-between" wrap="nowrap">
+                          <Group
+                            gap="xs"
+                            style={{ flex: 1, minWidth: 0 }}
+                            wrap="nowrap"
+                          >
+                            <LayerGlyph
+                              color={
+                                layer.type === 'geojson' || layer.type === 'arc'
+                                  ? layer.color
+                                  : '#0c8599'
+                              }
+                              icon={layer.icon}
+                              visible={layer.visible}
+                            />
+                            <Stack gap={0} style={{ minWidth: 0 }}>
+                              <Text fw={600} size="sm" truncate="end">
+                                {layer.name}
+                              </Text>
+                              <Text c="dimmed" size="xs" truncate="end">
+                                {source.type === 'geojson-table'
+                                  ? `${source.geometryColumn} • ${source.kind}`
+                                  : formatFlowmapSourceColumns(source.columns)}
+                              </Text>
+                            </Stack>
+                          </Group>
 
-                    {isExpanded ? (
-                      <MapLayerEditor
-                        layer={layer}
-                        source={source}
-                        sourceTable={sourceTable}
-                        onUpdateFlowmapLayer={updateFlowmapLayer}
-                        onUpdateFlowmapSource={updateFlowmapSource}
-                        onUpdateArcLayer={updateArcLayer}
-                        onUpdateGeoJsonLayer={updateGeoJsonLayer}
-                        onUpdateGeoJsonSource={updateGeoJsonSource}
-                      />
-                    ) : null}
-                  </Stack>
-                </Paper>
-              );
-            })}
+                          <Group
+                            gap={4}
+                            style={{ flexShrink: 0 }}
+                            wrap="nowrap"
+                          >
+                            <Button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setExpandedLayerId((current) =>
+                                  current === layer.id ? null : layer.id,
+                                );
+                              }}
+                              size="compact-xs"
+                              variant="subtle"
+                            >
+                              {isExpanded ? 'Close' : 'Style'}
+                            </Button>
+                            <ActionIcon
+                              aria-label={
+                                layer.visible ? 'Hide layer' : 'Show layer'
+                              }
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleMapLayerVisibility(layer.id);
+                              }}
+                              size="sm"
+                              variant="subtle"
+                            >
+                              {layer.visible ? (
+                                <IconEye size={16} />
+                              ) : (
+                                <IconEyeOff size={16} />
+                              )}
+                            </ActionIcon>
+                            <ActionIcon
+                              aria-label={`Delete ${layer.name}`}
+                              color="red"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (
+                                  window.confirm(
+                                    `Delete layer "${layer.name}" from map?`,
+                                  )
+                                ) {
+                                  removeMapLayer(layer.id);
+                                }
+                              }}
+                              size="sm"
+                              variant="subtle"
+                            >
+                              <IconTrash size={16} />
+                            </ActionIcon>
+                          </Group>
+                        </Group>
 
-            {mapLayers.length === 0 ? (
-              <Text c="dimmed" size="xs">
-                Select table below, then import geometry or create flow layer.
-              </Text>
-            ) : null}
+                        <Text c="dimmed" size="xs" truncate="end">
+                          {layer.purpose === 'record-preview'
+                            ? 'Record preview'
+                            : 'Configured'}{' '}
+                          • {source.schema}.{source.table}
+                        </Text>
+
+                        {isExpanded ? (
+                          <MapLayerEditor
+                            layer={layer}
+                            source={source}
+                            sourceTable={sourceTable}
+                            onUpdateFlowmapLayer={updateFlowmapLayer}
+                            onUpdateFlowmapSource={updateFlowmapSource}
+                            onUpdateArcLayer={updateArcLayer}
+                            onUpdateGeoJsonLayer={updateGeoJsonLayer}
+                            onUpdateGeoJsonSource={updateGeoJsonSource}
+                          />
+                        ) : null}
+                      </Stack>
+                    </Paper>
+                  );
+                })}
+
+                {mapLayers.length === 0 ? (
+                  <Text c="dimmed" size="xs">
+                    Select table below, then import geometry or create flow
+                    layer.
+                  </Text>
+                ) : filteredMapLayers.length === 0 ? (
+                  <Text c="dimmed" size="xs">
+                    No layers match this filter.
+                  </Text>
+                ) : null}
+              </Stack>
+            </ScrollArea>
           </Stack>
-        </Stack>
+        ) : null}
       </Stack>
     </>
   );
@@ -1256,76 +1460,85 @@ function ConnectionCatalog({
   const expandedSchemaNames = new Set(catalog.expandedSchemaNames);
 
   return (
-    <Paper p="xs" radius="sm" withBorder>
-      <Stack gap="xs">
-        <Group justify="space-between" wrap="nowrap">
-          <Group gap={6} wrap="nowrap">
-            <IconFolder size={15} />
-            <Text fw={600} size="xs">
-              Catalog
-            </Text>
-          </Group>
-          <Group gap={4} wrap="nowrap">
-            <ActionIcon
-              aria-label="Refresh catalog schemas"
-              disabled={catalog.isLoadingSchemas}
-              onClick={(event) => {
-                event.stopPropagation();
-                onLoadSchemas();
-              }}
-              size="sm"
-              variant="subtle"
-            >
-              {catalog.isLoadingSchemas ? (
-                <Loader size={14} />
-              ) : (
-                <IconRefresh size={14} />
-              )}
-            </ActionIcon>
-            <Button
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggle();
-              }}
-              rightSection={
-                opened ? (
-                  <IconChevronDown size={14} />
-                ) : (
-                  <IconChevronRight size={14} />
-                )
-              }
-              size="compact-xs"
-              variant="subtle"
-            >
-              {opened ? 'Hide' : 'Open'}
-            </Button>
-          </Group>
+    <Stack gap="xs">
+      <Group justify="space-between" wrap="nowrap">
+        <Group gap={6} wrap="nowrap">
+          <IconFolder size={15} />
+          <Text fw={600} size="xs">
+            Catalog
+          </Text>
         </Group>
-
-        <Collapse expanded={opened}>
-          <Stack gap="xs">
-            {catalog.error ? (
-              <Alert color="red" title="Catalog failed" variant="light">
-                {catalog.error}
-              </Alert>
-            ) : null}
-
+        <Group gap={4} wrap="nowrap">
+          <ActionIcon
+            aria-label="Refresh catalog schemas"
+            disabled={catalog.isLoadingSchemas}
+            onClick={(event) => {
+              event.stopPropagation();
+              onLoadSchemas();
+            }}
+            size="sm"
+            variant="subtle"
+          >
             {catalog.isLoadingSchemas ? (
-              <Group gap="xs">
-                <Loader size={14} />
-                <Text c="dimmed" size="xs">
-                  Loading schemas...
-                </Text>
-              </Group>
-            ) : null}
+              <Loader size={14} />
+            ) : (
+              <IconRefresh size={14} />
+            )}
+          </ActionIcon>
+          <Button
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle();
+            }}
+            rightSection={
+              opened ? (
+                <IconChevronDown size={14} />
+              ) : (
+                <IconChevronRight size={14} />
+              )
+            }
+            size="compact-xs"
+            variant="subtle"
+          >
+            {opened ? 'Hide' : 'Open'}
+          </Button>
+        </Group>
+      </Group>
 
-            {!catalog.isLoadingSchemas && catalog.schemas.length === 0 ? (
+      <Collapse expanded={opened}>
+        <Stack gap="xs">
+          {catalog.error ? (
+            <Alert color="red" title="Catalog failed" variant="light">
+              {catalog.error}
+            </Alert>
+          ) : null}
+
+          {catalog.isLoadingSchemas ? (
+            <Group gap="xs">
+              <Loader size={14} />
               <Text c="dimmed" size="xs">
-                Open catalog to load schemas.
+                Loading schemas...
               </Text>
-            ) : null}
+            </Group>
+          ) : null}
 
-            {catalog.schemas.map((schema) => {
+          {!catalog.isLoadingSchemas && catalog.schemas.length === 0 ? (
+            <Text c="dimmed" size="xs">
+              Open catalog to load schemas.
+            </Text>
+          ) : null}
+
+          {!catalog.isLoadingSchemas &&
+          catalog.schemas.length > 0 &&
+          catalog.schemas.every((schema) => !schema.visible) ? (
+            <Text c="dimmed" size="xs">
+              All schemas are hidden. Configure schemas from connection options.
+            </Text>
+          ) : null}
+
+          {catalog.schemas
+            .filter((schema) => schema.visible)
+            .map((schema) => {
               const isSelected = selectedSchemaNames.has(schema.name);
               const isExpanded = expandedSchemaNames.has(schema.name);
               const tables = catalog.schemaTablesByName[schema.name] ?? [];
@@ -1357,7 +1570,7 @@ function ConnectionCatalog({
                       checked={isSelected}
                       label={
                         <Text fw={500} size="xs">
-                          {schema.name}
+                          {schema.alias.trim() || schema.name}
                         </Text>
                       }
                       onChange={() => onToggleSchema(schema.name)}
@@ -1471,10 +1684,9 @@ function ConnectionCatalog({
                 </Stack>
               );
             })}
-          </Stack>
-        </Collapse>
-      </Stack>
-    </Paper>
+        </Stack>
+      </Collapse>
+    </Stack>
   );
 }
 
@@ -1493,11 +1705,21 @@ function FlowmapSetupFields({
       label: `${column.name} (${column.type})`,
       value: column.name,
     }));
-  const geometryColumnOptions = (table?.geometryColumns ?? []).map(
-    (column) => ({
-      label: `${column.name} (${column.geometryType})`,
-      value: column.name,
-    }),
+  const geometryColumnOptions = Array.from(
+    new Map(
+      [
+        ...(table?.geometryColumns ?? []).map((column) => ({
+          label: `${column.name} (${column.geometryType})`,
+          value: column.name,
+        })),
+        ...[columns.startGeometry, columns.endGeometry]
+          .filter(Boolean)
+          .map((columnName) => ({
+            label: columnName,
+            value: columnName,
+          })),
+      ].map((option) => [option.value, option]),
+    ).values(),
   );
 
   return (
@@ -1743,10 +1965,19 @@ function MapLayerEditor({
       {layer.type === 'geojson' && source.type === 'geojson-table' ? (
         <>
           <Select
-            data={(sourceTable?.geometryColumns ?? []).map((column) => ({
-              label: `${column.name} (${column.geometryType})`,
-              value: column.name,
-            }))}
+            data={
+              sourceTable?.geometryColumns.length
+                ? sourceTable.geometryColumns.map((column) => ({
+                    label: `${column.name} (${column.geometryType})`,
+                    value: column.name,
+                  }))
+                : [
+                    {
+                      label: `${source.geometryColumn} (${source.geometryType})`,
+                      value: source.geometryColumn,
+                    },
+                  ]
+            }
             label="Geographic column"
             onChange={(value) => {
               const nextGeometryColumn =
@@ -2165,6 +2396,7 @@ function DataInspector({
   isLoadingTableMetadata,
   mapLayers = [],
   mapSources = [],
+  onCreateRelatedArc,
   onLocateFeature,
   onLocateRelatedFeature,
   selectedView,
@@ -2177,6 +2409,12 @@ function DataInspector({
   isLoadingTableMetadata: boolean;
   mapLayers: MapLayer[];
   mapSources: MapSource[];
+  onCreateRelatedArc: (
+    group: RelatedRowsGroup,
+    row: InspectorRow,
+    startGeometryColumn: string,
+    endGeometryColumn: string,
+  ) => void;
   onLocateFeature: (
     target: LocateTarget,
     row: InspectorRow,
@@ -2185,11 +2423,14 @@ function DataInspector({
   onLocateRelatedFeature: (
     group: RelatedRowsGroup,
     row: InspectorRow,
+    geometryColumnName: string,
   ) => Promise<void>;
   selectedView: SavedTableView | null;
   selectedTable: InspectableTable | null;
   tablesError: string;
 }) {
+  const { language } = useI18n();
+  const workspacePanels = useWorkspacePanels();
   const [savedViewOpened, savedViewModal] = useDisclosure(false);
   const [rowsState, setRowsState] = useState<InspectorRowsResponse | null>(
     null,
@@ -2210,6 +2451,12 @@ function DataInspector({
   const [relatedGroups, setRelatedGroups] = useState<RelatedRowsGroup[]>([]);
   const [isLoadingRelatedRows, setIsLoadingRelatedRows] = useState(false);
   const [relatedRowsError, setRelatedRowsError] = useState('');
+  const [relatedRowsRefreshToken, setRelatedRowsRefreshToken] = useState(0);
+  const [inspectedRelatedRecord, setInspectedRelatedRecord] = useState<{
+    group: RelatedRowsGroup;
+    row: InspectorRow;
+  } | null>(null);
+  const [relatedRowsPanelOpened, setRelatedRowsPanelOpened] = useState(false);
   const [selectedGridRowId, setSelectedGridRowId] = useState<string | null>(
     null,
   );
@@ -2865,6 +3112,7 @@ function DataInspector({
   async function handleLocateRelatedRow(
     group: RelatedRowsGroup,
     row: InspectorRow,
+    geometryColumnName: string,
   ) {
     if (!row.rowKey || group.geometryColumns.length === 0) {
       return;
@@ -2875,7 +3123,7 @@ function DataInspector({
     setLocateError('');
 
     try {
-      await onLocateRelatedFeature(group, row);
+      await onLocateRelatedFeature(group, row, geometryColumnName);
     } catch (error) {
       setLocateError(
         error instanceof Error
@@ -2988,8 +3236,17 @@ function DataInspector({
   const selectedGridRow =
     inspectorGridRows.find((gridRow) => gridRow.id === selectedGridRowId) ??
     null;
+  const selectedGridRowLabel =
+    selectedGridRow?.kind === 'record'
+      ? activePrimaryKey
+          .map((columnName) =>
+            formatCellValue(selectedGridRow.values[columnName]),
+          )
+          .join(', ')
+      : '';
 
   useEffect(() => {
+    void relatedRowsRefreshToken;
     if (
       !connection ||
       !selectedTable ||
@@ -3043,7 +3300,7 @@ function DataInspector({
     return () => {
       isActive = false;
     };
-  }, [connection, selectedGridRow, selectedTable]);
+  }, [connection, relatedRowsRefreshToken, selectedGridRow, selectedTable]);
 
   const inspectorColumns = useMemo<MRT_ColumnDef<InspectorGridRow>[]>(
     () =>
@@ -3132,6 +3389,7 @@ function DataInspector({
     enableColumnVirtualization: false,
     enableDensityToggle: true,
     enableEditing: false,
+    enableFullScreenToggle: false,
     enableGlobalFilter: true,
     enablePagination: false,
     enableRowActions: true,
@@ -3145,6 +3403,7 @@ function DataInspector({
       density: 'xs',
     },
     layoutMode: 'grid',
+    localization: language === 'ru' ? MRT_Localization_RU : undefined,
     mantinePaperProps: {
       style: {
         display: 'flex',
@@ -3154,7 +3413,15 @@ function DataInspector({
       },
     },
     mantineTableBodyRowProps: ({ row }) => ({
-      onClick: () => setSelectedGridRowId(row.original.id),
+      onClick: () => {
+        setSelectedGridRowId(row.original.id);
+        setInspectedRelatedRecord(null);
+        setRelatedRowsPanelOpened(row.original.kind === 'record');
+        workspacePanels.focusPanel(recordEditorPanelId);
+        if (row.original.kind === 'record') {
+          workspacePanels.focusPanel(relatedRowsPanelId);
+        }
+      },
       style: {
         background:
           row.original.id === selectedGridRowId
@@ -3261,6 +3528,186 @@ function DataInspector({
       showProgressBars: isLoadingRows,
     },
   });
+
+  useEffect(() => {
+    const tableLabel = selectedTableAlias || selectedTable?.fullName || '';
+    const visibleTableColumns = (rowsState?.columns ?? []).filter(
+      (column) => !tableDisplayConfig.hiddenColumns.includes(column.name),
+    );
+
+    if (connection && selectedTable && selectedGridRow && rowsState) {
+      workspacePanels.registerPanel({
+        id: recordEditorPanelId,
+        floatRect: { height: 776, right: 24, top: 34, width: 360 },
+        icon: 'record',
+        name: `Record · ${tableLabel}${selectedGridRowLabel ? ` #${selectedGridRowLabel}` : ''}`,
+        onClose: () => {
+          setSelectedGridRowId(null);
+          setInspectedRelatedRecord(null);
+          setRelatedRowsPanelOpened(false);
+        },
+        content: (
+          <PanelFrame>
+            <RecordEditorPanel
+              activePrimaryKey={activePrimaryKey}
+              columnLabels={tableDisplayConfig.columnLabels}
+              connection={connection}
+              disabled={isSavingChanges}
+              foreignKeyByColumn={foreignKeyByColumn}
+              hasDirtyChanges={hasDirtyChanges}
+              isSavingChanges={isSavingChanges}
+              onChangeDraft={handleDraftInsertChange}
+              onChangeExisting={handleExistingCellChange}
+              onDiscard={handleDiscardChanges}
+              onSave={() => void handleSaveChanges()}
+              relationConfigByColumn={relationConfigByColumn}
+              relationLabels={relationLabels}
+              recordLabel={selectedGridRowLabel}
+              row={selectedGridRow}
+              selectedTable={selectedTable}
+              tableColumns={visibleTableColumns}
+              tableIsEditable={rowsState.isEditable}
+              tableLabel={tableLabel}
+              touchedRowCount={touchedRowCount}
+            />
+          </PanelFrame>
+        ),
+      });
+    } else {
+      workspacePanels.closePanel(recordEditorPanelId);
+    }
+
+    if (
+      connection &&
+      selectedGridRow?.kind === 'record' &&
+      relatedRowsPanelOpened
+    ) {
+      workspacePanels.registerPanel({
+        id: relatedRowsPanelId,
+        floatRect: { height: 360, right: 404, top: 34, width: 360 },
+        icon: 'related',
+        name: `Related · ${tableLabel}${selectedGridRowLabel ? ` #${selectedGridRowLabel}` : ''}`,
+        onClose: () => {
+          setRelatedRowsPanelOpened(false);
+          setInspectedRelatedRecord(null);
+        },
+        content: (
+          <PanelFrame>
+            <RelatedRowsPanelView
+              connectionId={connection.id}
+              error={relatedRowsError}
+              groups={relatedGroups}
+              isLoading={isLoadingRelatedRows}
+              onInspectRow={(group, relatedRow) => {
+                setInspectedRelatedRecord({ group, row: relatedRow });
+                workspacePanels.focusPanel(relatedRecordPanelId);
+              }}
+              recordLabel={selectedGridRowLabel}
+              tableLabel={tableLabel}
+            />
+          </PanelFrame>
+        ),
+      });
+    } else {
+      workspacePanels.closePanel(relatedRowsPanelId);
+    }
+
+    if (connection && inspectedRelatedRecord) {
+      const relatedDisplayConfig =
+        tableDisplayByKey[
+          tableDisplayKeyFromParts(
+            connection.id,
+            inspectedRelatedRecord.group.schema,
+            inspectedRelatedRecord.group.table,
+          )
+        ];
+      const relatedTableLabel =
+        relatedDisplayConfig?.tableAlias?.trim() ||
+        inspectedRelatedRecord.group.label;
+      const relatedRecordKey = inspectedRelatedRecord.group.primaryKey
+        .map((columnName) =>
+          formatCellValue(inspectedRelatedRecord.row.values[columnName]),
+        )
+        .join(', ');
+
+      workspacePanels.registerPanel({
+        id: relatedRecordPanelId,
+        floatRect: { height: 837, right: 404, top: 34, width: 420 },
+        icon: 'record',
+        name: `${relatedTableLabel}${relatedRecordKey ? ` #${relatedRecordKey}` : ''}`,
+        onClose: () => setInspectedRelatedRecord(null),
+        content: (
+          <PanelFrame>
+            <RelatedRecordPanel
+              connection={connection}
+              group={inspectedRelatedRecord.group}
+              key={`${inspectedRelatedRecord.group.schema}.${inspectedRelatedRecord.group.table}:${serializeRowKey(inspectedRelatedRecord.row.rowKey, inspectedRelatedRecord.group.primaryKey)}`}
+              onCreateArc={(startGeometryColumn, endGeometryColumn) =>
+                onCreateRelatedArc(
+                  inspectedRelatedRecord.group,
+                  inspectedRelatedRecord.row,
+                  startGeometryColumn,
+                  endGeometryColumn,
+                )
+              }
+              onLocateRow={(geometryColumnName) =>
+                void handleLocateRelatedRow(
+                  inspectedRelatedRecord.group,
+                  inspectedRelatedRecord.row,
+                  geometryColumnName,
+                )
+              }
+              onSaved={(values) => {
+                const savedRowToken = serializeRowKey(
+                  inspectedRelatedRecord.row.rowKey,
+                  inspectedRelatedRecord.group.primaryKey,
+                );
+                setInspectedRelatedRecord((current) => {
+                  if (!current) {
+                    return current;
+                  }
+
+                  return {
+                    ...current,
+                    group: {
+                      ...current.group,
+                      rows: current.group.rows.map((candidate) =>
+                        serializeRowKey(
+                          candidate.rowKey,
+                          current.group.primaryKey,
+                        ) === savedRowToken
+                          ? { ...candidate, values }
+                          : candidate,
+                      ),
+                    },
+                    row: { ...current.row, values },
+                  };
+                });
+                refreshGeoJsonSourcesForTable({
+                  connectionId: connection.id,
+                  schema: inspectedRelatedRecord.group.schema,
+                  table: inspectedRelatedRecord.group.table,
+                });
+                setRelatedRowsRefreshToken((value) => value + 1);
+              }}
+              row={inspectedRelatedRecord.row}
+            />
+          </PanelFrame>
+        ),
+      });
+    } else {
+      workspacePanels.closePanel(relatedRecordPanelId);
+    }
+  });
+
+  useEffect(
+    () => () => {
+      workspacePanels.closePanel(recordEditorPanelId);
+      workspacePanels.closePanel(relatedRowsPanelId);
+      workspacePanels.closePanel(relatedRecordPanelId);
+    },
+    [workspacePanels],
+  );
 
   if (!connection) {
     return (
@@ -3543,148 +3990,188 @@ function DataInspector({
               </Alert>
             ) : null}
 
-            {tableDisplayKeyValue && rowsState.columns.length > 0 ? (
-              <Menu
-                closeOnItemClick={false}
-                position="bottom-start"
-                shadow="md"
-              >
-                <Menu.Target>
-                  <Button size="compact-sm" variant="default">
-                    Display
-                  </Button>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  <ScrollArea h={360} type="auto">
-                    <Stack gap="xs" p="xs" w={360}>
-                      <TextInput
-                        label="Table alias"
-                        onChange={(event) => {
-                          handleTableDisplayConfigChange({
-                            ...tableDisplayConfig,
-                            tableAlias: event.currentTarget.value,
-                          });
-                        }}
-                        placeholder={selectedTable.name}
-                        size="xs"
-                        value={tableDisplayConfig.tableAlias ?? ''}
-                      />
-                      {rowsState.columns.map((column) => {
-                        const isHidden =
-                          tableDisplayConfig.hiddenColumns.includes(
-                            column.name,
+            <Group justify="space-between" wrap="nowrap">
+              {tableDisplayKeyValue && rowsState.columns.length > 0 ? (
+                <Menu
+                  closeOnItemClick={false}
+                  position="bottom-start"
+                  shadow="md"
+                >
+                  <Menu.Target>
+                    <Button size="compact-sm" variant="default">
+                      Display
+                    </Button>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    <ScrollArea h={360} type="auto">
+                      <Stack gap="xs" p="xs" w={360}>
+                        <TextInput
+                          label="Table alias"
+                          onChange={(event) => {
+                            handleTableDisplayConfigChange({
+                              ...tableDisplayConfig,
+                              tableAlias: event.currentTarget.value,
+                            });
+                          }}
+                          placeholder={selectedTable.name}
+                          size="xs"
+                          value={tableDisplayConfig.tableAlias ?? ''}
+                        />
+                        {rowsState.columns.map((column) => {
+                          const isHidden =
+                            tableDisplayConfig.hiddenColumns.includes(
+                              column.name,
+                            );
+                          const currentLabel =
+                            tableDisplayConfig.columnLabels[column.name] ?? '';
+
+                          return (
+                            <Stack gap={4} key={column.name}>
+                              <Checkbox
+                                checked={!isHidden}
+                                label={column.name}
+                                onChange={(event) => {
+                                  if (!tableDisplayKeyValue) {
+                                    return;
+                                  }
+
+                                  const nextHidden = event.currentTarget.checked
+                                    ? tableDisplayConfig.hiddenColumns.filter(
+                                        (columnName) =>
+                                          columnName !== column.name,
+                                      )
+                                    : Array.from(
+                                        new Set([
+                                          ...tableDisplayConfig.hiddenColumns,
+                                          column.name,
+                                        ]),
+                                      );
+                                  handleTableDisplayConfigChange({
+                                    ...tableDisplayConfig,
+                                    hiddenColumns: nextHidden,
+                                  });
+                                }}
+                                size="xs"
+                              />
+                              <TextInput
+                                onChange={(event) => {
+                                  if (!tableDisplayKeyValue) {
+                                    return;
+                                  }
+
+                                  const nextLabels = {
+                                    ...tableDisplayConfig.columnLabels,
+                                  };
+                                  const nextValue = event.currentTarget.value;
+                                  if (nextValue.trim() === '') {
+                                    delete nextLabels[column.name];
+                                  } else {
+                                    nextLabels[column.name] = nextValue;
+                                  }
+
+                                  handleTableDisplayConfigChange({
+                                    ...tableDisplayConfig,
+                                    columnLabels: nextLabels,
+                                  });
+                                }}
+                                placeholder="Readable label"
+                                size="xs"
+                                value={currentLabel}
+                              />
+                            </Stack>
                           );
-                        const currentLabel =
-                          tableDisplayConfig.columnLabels[column.name] ?? '';
+                        })}
 
-                        return (
-                          <Stack gap={4} key={column.name}>
-                            <Checkbox
-                              checked={!isHidden}
-                              label={column.name}
-                              onChange={(event) => {
-                                if (!tableDisplayKeyValue) {
-                                  return;
-                                }
+                        {connection && selectedTable.foreignKeys.length > 0 ? (
+                          <Stack gap="xs" mt="xs">
+                            <Text fw={600} size="xs">
+                              Relation values
+                            </Text>
+                            {selectedTable.foreignKeys.map((foreignKey) => {
+                              const relationColumns =
+                                relationConfigByColumn.get(
+                                  foreignKey.columnName,
+                                ) ?? [];
+                              const columnLabel =
+                                tableDisplayConfig.columnLabels[
+                                  foreignKey.columnName
+                                ]?.trim() || foreignKey.columnName;
 
-                                const nextHidden = event.currentTarget.checked
-                                  ? tableDisplayConfig.hiddenColumns.filter(
-                                      (columnName) =>
-                                        columnName !== column.name,
-                                    )
-                                  : Array.from(
-                                      new Set([
-                                        ...tableDisplayConfig.hiddenColumns,
-                                        column.name,
-                                      ]),
+                              return (
+                                <Select
+                                  allowDeselect={false}
+                                  aria-label={`Relation label for ${foreignKey.columnName}`}
+                                  data={foreignKey.labelColumns.map(
+                                    (labelColumn) => ({
+                                      label: labelColumn,
+                                      value: labelColumn,
+                                    }),
+                                  )}
+                                  disabled={
+                                    foreignKey.labelColumns.length === 0
+                                  }
+                                  key={foreignKey.columnName}
+                                  label={columnLabel}
+                                  onChange={(value) => {
+                                    if (!value) {
+                                      return;
+                                    }
+
+                                    setRelationLabels((currentLabels) => {
+                                      const nextLabels = { ...currentLabels };
+                                      delete nextLabels[foreignKey.columnName];
+                                      return nextLabels;
+                                    });
+                                    setRelationDisplayConfig(
+                                      relationDisplayKey(
+                                        connection.id,
+                                        selectedTable,
+                                        foreignKey,
+                                      ),
+                                      { labelColumns: [value] },
                                     );
-                                handleTableDisplayConfigChange({
-                                  ...tableDisplayConfig,
-                                  hiddenColumns: nextHidden,
-                                });
-                              }}
-                              size="xs"
-                            />
-                            <TextInput
-                              onChange={(event) => {
-                                if (!tableDisplayKeyValue) {
-                                  return;
-                                }
-
-                                const nextLabels = {
-                                  ...tableDisplayConfig.columnLabels,
-                                };
-                                const nextValue = event.currentTarget.value;
-                                if (nextValue.trim() === '') {
-                                  delete nextLabels[column.name];
-                                } else {
-                                  nextLabels[column.name] = nextValue;
-                                }
-
-                                handleTableDisplayConfigChange({
-                                  ...tableDisplayConfig,
-                                  columnLabels: nextLabels,
-                                });
-                              }}
-                              placeholder="Readable label"
-                              size="xs"
-                              value={currentLabel}
-                            />
+                                  }}
+                                  placeholder="Raw id"
+                                  size="xs"
+                                  value={relationColumns[0] ?? null}
+                                />
+                              );
+                            })}
                           </Stack>
-                        );
-                      })}
-                    </Stack>
-                  </ScrollArea>
-                </Menu.Dropdown>
-              </Menu>
-            ) : null}
+                        ) : null}
+                      </Stack>
+                    </ScrollArea>
+                  </Menu.Dropdown>
+                </Menu>
+              ) : null}
 
-            {connection &&
-            selectedTable &&
-            selectedTable.foreignKeys.length > 0 ? (
-              <Group gap="xs">
-                {selectedTable.foreignKeys.map((foreignKey) => {
-                  const relationColumns =
-                    relationConfigByColumn.get(foreignKey.columnName) ?? [];
-
-                  return (
-                    <Select
-                      allowDeselect={false}
-                      aria-label={`Relation label for ${foreignKey.columnName}`}
-                      data={foreignKey.labelColumns.map((labelColumn) => ({
-                        label: `${foreignKey.columnName}: ${labelColumn}`,
-                        value: labelColumn,
-                      }))}
-                      disabled={foreignKey.labelColumns.length === 0}
-                      key={foreignKey.columnName}
-                      onChange={(value) => {
-                        if (!value) {
-                          return;
-                        }
-
-                        setRelationLabels((currentLabels) => {
-                          const nextLabels = { ...currentLabels };
-                          delete nextLabels[foreignKey.columnName];
-                          return nextLabels;
-                        });
-                        setRelationDisplayConfig(
-                          relationDisplayKey(
-                            connection.id,
-                            selectedTable,
-                            foreignKey,
-                          ),
-                          { labelColumns: [value] },
-                        );
-                      }}
-                      placeholder={`${foreignKey.columnName}: raw id`}
-                      size="xs"
-                      value={relationColumns[0] ?? null}
-                      w={220}
-                    />
-                  );
-                })}
+              <Group gap="xs" wrap="nowrap">
+                <Button
+                  disabled={isLoadingRows || rowsState.offset === 0}
+                  onClick={() =>
+                    void handlePageChange(
+                      Math.max(rowsState.offset - pageSize, 0),
+                    )
+                  }
+                  size="compact-sm"
+                  variant="light"
+                >
+                  Previous
+                </Button>
+                <Text c="dimmed" size="xs">
+                  offset {rowsState.offset}
+                </Text>
+                <Button
+                  disabled={isLoadingRows || !rowsState.hasMore}
+                  onClick={() =>
+                    void handlePageChange(rowsState.offset + pageSize)
+                  }
+                  size="compact-sm"
+                >
+                  Next
+                </Button>
               </Group>
-            ) : null}
+            </Group>
 
             {rowsState.rows.length === 0 && draftInserts.length === 0 ? (
               <EmptyState
@@ -3698,68 +4185,10 @@ function DataInspector({
                 }
               />
             ) : (
-              <Flex gap="sm" style={{ flex: 1, minHeight: 0 }}>
-                <Box
-                  style={{
-                    flex: 1,
-                    minHeight: 0,
-                    minWidth: 0,
-                  }}
-                >
-                  <MantineReactTable table={inspectorTable} />
-                </Box>
-                {connection && selectedTable && selectedGridRow ? (
-                  <RecordEditorPanel
-                    activePrimaryKey={activePrimaryKey}
-                    connection={connection}
-                    disabled={isSavingChanges}
-                    foreignKeyByColumn={foreignKeyByColumn}
-                    isLoadingRelatedRows={isLoadingRelatedRows}
-                    onChangeDraft={handleDraftInsertChange}
-                    onChangeExisting={handleExistingCellChange}
-                    onClose={() => setSelectedGridRowId(null)}
-                    onLocateRelatedRow={(group, relatedRow) =>
-                      void handleLocateRelatedRow(group, relatedRow)
-                    }
-                    relationConfigByColumn={relationConfigByColumn}
-                    relationLabels={relationLabels}
-                    relatedGroups={relatedGroups}
-                    relatedRowsError={relatedRowsError}
-                    row={selectedGridRow}
-                    selectedTable={selectedTable}
-                    tableColumns={rowsState.columns}
-                    tableIsEditable={rowsState.isEditable}
-                  />
-                ) : null}
-              </Flex>
+              <Box style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
+                <MantineReactTable table={inspectorTable} />
+              </Box>
             )}
-
-            <Group justify="space-between">
-              <Button
-                disabled={isLoadingRows || rowsState.offset === 0}
-                onClick={() =>
-                  void handlePageChange(
-                    Math.max(rowsState.offset - pageSize, 0),
-                  )
-                }
-                size="compact-sm"
-                variant="light"
-              >
-                Previous
-              </Button>
-              <Text c="dimmed" size="xs">
-                offset {rowsState.offset}
-              </Text>
-              <Button
-                disabled={isLoadingRows || !rowsState.hasMore}
-                onClick={() =>
-                  void handlePageChange(rowsState.offset + pageSize)
-                }
-                size="compact-sm"
-              >
-                Next
-              </Button>
-            </Group>
           </>
         ) : null}
 
@@ -4723,28 +5152,33 @@ function relationValueKey(value: unknown) {
 
 function RecordEditorPanel({
   activePrimaryKey,
+  columnLabels,
   connection,
   disabled,
   foreignKeyByColumn,
-  isLoadingRelatedRows,
+  hasDirtyChanges,
+  isSavingChanges,
   onChangeDraft,
   onChangeExisting,
-  onClose,
-  onLocateRelatedRow,
+  onDiscard,
+  onSave,
   relationConfigByColumn,
   relationLabels,
-  relatedGroups,
-  relatedRowsError,
+  recordLabel,
   row,
   selectedTable,
   tableColumns,
   tableIsEditable,
+  tableLabel,
+  touchedRowCount,
 }: {
   activePrimaryKey: string[];
+  columnLabels: Record<string, string>;
   connection: DatabaseConnection;
   disabled: boolean;
   foreignKeyByColumn: Map<string, InspectorForeignKey>;
-  isLoadingRelatedRows: boolean;
+  hasDirtyChanges: boolean;
+  isSavingChanges: boolean;
   onChangeDraft: (
     draftId: string,
     column: InspectorColumn,
@@ -4755,47 +5189,33 @@ function RecordEditorPanel({
     column: InspectorColumn,
     nextValue: unknown,
   ) => void;
-  onClose: () => void;
-  onLocateRelatedRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
+  onDiscard: () => void;
+  onSave: () => void;
   relationConfigByColumn: Map<string, string[]>;
   relationLabels: Record<string, Record<string, RelationOption>>;
-  relatedGroups: RelatedRowsGroup[];
-  relatedRowsError: string;
+  recordLabel: string;
   row: InspectorGridRow;
   selectedTable: InspectableTable;
   tableColumns: InspectorColumn[];
   tableIsEditable: boolean;
+  tableLabel: string;
+  touchedRowCount: number;
 }) {
   return (
-    <Paper
-      p="sm"
-      radius="md"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: 0,
-        width: 340,
-      }}
-      withBorder
+    <Stack
+      aria-label="Record editor"
+      gap="xs"
+      h="100%"
+      style={{ minHeight: 0 }}
     >
-      <Group justify="space-between" mb="xs" wrap="nowrap">
-        <div>
-          <Text fw={700} size="sm">
-            Record
-          </Text>
-          <Text c="dimmed" size="xs">
-            {row.kind === 'draft' ? 'New row' : 'Selected row'}
-          </Text>
-        </div>
-        <ActionIcon
-          aria-label="Close record editor"
-          onClick={onClose}
-          size="sm"
-          variant="subtle"
-        >
-          <IconX size={14} />
-        </ActionIcon>
-      </Group>
+      <Text c="dimmed" size="xs" truncate="end">
+        {tableLabel} ·{' '}
+        {row.kind === 'draft'
+          ? 'New row'
+          : recordLabel
+            ? `#${recordLabel}`
+            : 'Selected row'}
+      </Text>
 
       {row.isDeleted ? (
         <Alert color="red" mb="xs" variant="light">
@@ -4811,6 +5231,8 @@ function RecordEditorPanel({
         <Stack gap="xs">
           {tableColumns.map((column) => {
             const foreignKey = foreignKeyByColumn.get(column.name);
+            const columnLabel =
+              columnLabels[column.name]?.trim() || column.name;
             const value = row.values[column.name];
             const relationOption =
               foreignKey && value !== null && value !== undefined
@@ -4830,7 +5252,7 @@ function RecordEditorPanel({
               <Stack gap={4} key={column.name}>
                 <Group gap={4} wrap="nowrap">
                   <Text fw={600} size="xs">
-                    {column.name}
+                    {columnLabel}
                   </Text>
                   {isPrimaryKey ? (
                     <Badge color="blue" size="xs" variant="light">
@@ -4897,34 +5319,104 @@ function RecordEditorPanel({
               </Stack>
             );
           })}
-          <RelatedRowsPanel
-            groups={relatedGroups}
-            isLoading={isLoadingRelatedRows}
-            onLocateRow={onLocateRelatedRow}
-            error={relatedRowsError}
-          />
         </Stack>
       </ScrollArea>
-    </Paper>
+
+      <Group justify="space-between" mt="xs" wrap="nowrap">
+        <Text c="dimmed" size="xs">
+          {touchedRowCount} pending
+        </Text>
+        <Group gap={6} wrap="nowrap">
+          <Button
+            disabled={!hasDirtyChanges || isSavingChanges}
+            leftSection={<IconRestore size={14} />}
+            onClick={onDiscard}
+            size="compact-sm"
+            variant="default"
+          >
+            Discard
+          </Button>
+          <Button
+            disabled={!hasDirtyChanges || isSavingChanges}
+            leftSection={
+              isSavingChanges ? (
+                <Loader size={14} />
+              ) : (
+                <IconDeviceFloppy size={14} />
+              )
+            }
+            onClick={onSave}
+            size="compact-sm"
+          >
+            Save
+          </Button>
+        </Group>
+      </Group>
+    </Stack>
+  );
+}
+
+function RelatedRowsPanelView({
+  connectionId,
+  error,
+  groups,
+  isLoading,
+  onInspectRow,
+  recordLabel,
+  tableLabel,
+}: {
+  connectionId: string;
+  error: string;
+  groups: RelatedRowsGroup[];
+  isLoading: boolean;
+  onInspectRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
+  recordLabel: string;
+  tableLabel: string;
+}) {
+  return (
+    <Stack aria-label="Related data" gap="xs" h="100%" style={{ minHeight: 0 }}>
+      <Text c="dimmed" size="xs" truncate="end">
+        {tableLabel}
+        {recordLabel ? ` · #${recordLabel}` : ''}
+      </Text>
+      <ScrollArea
+        offsetScrollbars
+        scrollbarSize={8}
+        style={{ flex: 1, minHeight: 0 }}
+      >
+        <RelatedRowsPanel
+          connectionId={connectionId}
+          error={error}
+          groups={groups}
+          isLoading={isLoading}
+          onInspectRow={onInspectRow}
+        />
+      </ScrollArea>
+    </Stack>
   );
 }
 
 function RelatedRowsPanel({
+  connectionId,
   error,
   groups,
   isLoading,
-  onLocateRow,
+  onInspectRow,
 }: {
+  connectionId: string;
   error: string;
   groups: RelatedRowsGroup[];
   isLoading: boolean;
-  onLocateRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
+  onInspectRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
 }) {
+  const tableDisplayByKey = useConnectionStore(
+    (state) => state.tableDisplayByKey,
+  );
   const groupsWithRows = groups.filter((group) => group.rows.length > 0);
 
   if (isLoading) {
     return (
-      <Group gap={6} mt="sm">
+      <Group gap={6}>
         <Loader size={12} />
         <Text c="dimmed" size="xs">
           Loading related records
@@ -4935,84 +5427,675 @@ function RelatedRowsPanel({
 
   if (error) {
     return (
-      <Alert color="orange" mt="sm" variant="light">
+      <Alert color="orange" variant="light">
         {error}
       </Alert>
     );
   }
 
-  if (groups.length === 0) {
-    return null;
-  }
-
   return (
-    <Stack gap="xs" mt="sm">
-      <Text fw={700} size="xs">
-        Related data
-      </Text>
+    <Stack gap="xs" pr="xs">
       {groupsWithRows.length === 0 ? (
         <Text c="dimmed" size="xs">
           No related records.
         </Text>
       ) : null}
-      {groupsWithRows.map((group) => (
-        <Stack
-          gap={6}
-          key={`${group.schema}.${group.table}.${group.targetColumn}`}
-        >
-          <Group justify="space-between" wrap="nowrap">
-            <Text fw={600} size="xs">
-              {group.label}
-            </Text>
-            <Badge color="gray" size="xs" variant="light">
-              {group.rows.length}
-            </Badge>
-          </Group>
-          {group.rows.slice(0, 5).map((relatedRow, index) => {
-            const titleColumn =
-              group.columns.find((column) =>
-                /^(name|title|label|display_name)$/i.test(column.name),
-              )?.name ?? group.primaryKey[0];
-            const title =
-              (titleColumn ? relatedRow.values[titleColumn] : null) ??
-              `${group.table} #${index + 1}`;
-            const hasGeometry = group.geometryColumns.length > 0;
+      {groupsWithRows.map((group) => {
+        const displayConfig =
+          tableDisplayByKey[
+            tableDisplayKeyFromParts(connectionId, group.schema, group.table)
+          ];
+        const tableLabel = displayConfig?.tableAlias?.trim() || group.label;
+        const geometryColumnNames = new Set(
+          group.geometryColumns.map((column) => column.name),
+        );
+        const previewColumns = group.columns
+          .filter(
+            (column) =>
+              !geometryColumnNames.has(column.name) &&
+              column.name !== group.targetColumn &&
+              !group.primaryKey.includes(column.name),
+          )
+          .slice(0, 2);
 
-            return (
-              <Paper
-                key={
-                  relatedRow.rowKey
-                    ? serializeRowKey(relatedRow.rowKey, group.primaryKey)
-                    : `${group.table}:${index}`
-                }
-                p="xs"
-                radius="sm"
-                withBorder
-              >
-                <Group justify="space-between" wrap="nowrap">
+        return (
+          <Stack
+            gap={6}
+            key={`${group.schema}.${group.table}.${group.targetColumn}`}
+          >
+            <Group justify="space-between" wrap="nowrap">
+              <Stack gap={0} style={{ minWidth: 0 }}>
+                <Text fw={600} lineClamp={1} size="xs">
+                  {tableLabel}
+                </Text>
+                <Text c="dimmed" lineClamp={1} size="xs">
+                  {group.schema}.{group.table}
+                </Text>
+              </Stack>
+              <Badge color="gray" size="xs" variant="light">
+                {group.rows.length}
+              </Badge>
+            </Group>
+            {group.rows.slice(0, 5).map((relatedRow, index) => {
+              const titleColumn =
+                group.columns.find((column) =>
+                  /^(name|title|label|display_name)$/i.test(column.name),
+                )?.name ?? group.primaryKey[0];
+              const title =
+                (titleColumn ? relatedRow.values[titleColumn] : null) ??
+                `${group.table} #${index + 1}`;
+              const hasGeometry = group.geometryColumns.length > 0;
+
+              return (
+                <Paper
+                  aria-label={`Inspect ${tableLabel} related row ${formatCellValue(title)}`}
+                  component="button"
+                  key={
+                    relatedRow.rowKey
+                      ? serializeRowKey(relatedRow.rowKey, group.primaryKey)
+                      : `${group.table}:${index}`
+                  }
+                  onClick={() => onInspectRow(group, relatedRow)}
+                  p="xs"
+                  radius="sm"
+                  style={{
+                    color: 'inherit',
+                    cursor: 'pointer',
+                    display: 'block',
+                    font: 'inherit',
+                    textAlign: 'left',
+                    width: '100%',
+                  }}
+                  type="button"
+                  withBorder
+                >
                   <Stack gap={1} style={{ minWidth: 0 }}>
-                    <Text lineClamp={1} size="xs">
+                    <Text fw={600} lineClamp={1} size="xs">
                       {formatCellValue(title)}
                     </Text>
-                    <Text c="dimmed" lineClamp={1} size="xs">
-                      {group.schema}.{group.table}
+                    {previewColumns.map((column) => (
+                      <Text
+                        c="dimmed"
+                        key={column.name}
+                        lineClamp={1}
+                        size="xs"
+                      >
+                        {displayConfig?.columnLabels[column.name]?.trim() ||
+                          column.name}
+                        : {formatCellValue(relatedRow.values[column.name])}
+                      </Text>
+                    ))}
+                    {hasGeometry ? (
+                      <Text c="dimmed" lineClamp={1} size="xs">
+                        Geo:{' '}
+                        {group.geometryColumns
+                          .map((column) => column.name)
+                          .join(', ')}
+                      </Text>
+                    ) : null}
+                  </Stack>
+                </Paper>
+              );
+            })}
+          </Stack>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function RelatedRecordPanel({
+  connection,
+  group,
+  onCreateArc,
+  onLocateRow,
+  onSaved,
+  row,
+}: {
+  connection: DatabaseConnection;
+  group: RelatedRowsGroup;
+  onCreateArc: (startGeometryColumn: string, endGeometryColumn: string) => void;
+  onLocateRow: (geometryColumnName: string) => void;
+  onSaved: (values: Record<string, unknown>) => void;
+  row: InspectorRow;
+}) {
+  const tableDisplayByKey = useConnectionStore(
+    (state) => state.tableDisplayByKey,
+  );
+  const relationDisplayByKey = useConnectionStore(
+    (state) => state.relationDisplayByKey,
+  );
+  const [tableMetadata, setTableMetadata] = useState<InspectableTable | null>(
+    null,
+  );
+  const [isLoadingTableMetadata, setIsLoadingTableMetadata] = useState(true);
+  const [tableMetadataError, setTableMetadataError] = useState('');
+  const [relatedRelationLabels, setRelatedRelationLabels] = useState<
+    Record<string, Record<string, RelationOption>>
+  >({});
+  const displayConfig =
+    tableDisplayByKey[
+      tableDisplayKeyFromParts(connection.id, group.schema, group.table)
+    ];
+  const tableLabel = displayConfig?.tableAlias?.trim() || group.label;
+  const tableColumns = tableMetadata?.columns ?? group.columns;
+  const tableGeometryColumns =
+    tableMetadata?.geometryColumns ?? group.geometryColumns;
+  const tablePrimaryKey = tableMetadata?.primaryKey ?? group.primaryKey;
+  const tableIsEditable = tableMetadata?.isEditable ?? group.isEditable;
+  const geometryColumnNames = new Set(
+    tableGeometryColumns.map((column) => column.name),
+  );
+  const visibleColumns = tableColumns.filter(
+    (column) =>
+      !geometryColumnNames.has(column.name) &&
+      !displayConfig?.hiddenColumns.includes(column.name),
+  );
+  const recordKey = tablePrimaryKey
+    .map((columnName) => formatCellValue(row.values[columnName]))
+    .join(', ');
+  const pointGeometryColumns = useMemo(
+    () =>
+      tableGeometryColumns.filter((column) =>
+        /^point$/i.test(column.geometryType),
+      ),
+    [tableGeometryColumns],
+  );
+  const initialArcStart =
+    pointGeometryColumns.find((column) =>
+      /(departure|start|origin|from)/i.test(column.name),
+    )?.name ??
+    pointGeometryColumns[0]?.name ??
+    '';
+  const initialArcEnd =
+    pointGeometryColumns.find(
+      (column) =>
+        column.name !== initialArcStart &&
+        /(destination|end|target|to)/i.test(column.name),
+    )?.name ??
+    pointGeometryColumns.find((column) => column.name !== initialArcStart)
+      ?.name ??
+    '';
+  const [arcStartGeometry, setArcStartGeometry] = useState(initialArcStart);
+  const [arcEndGeometry, setArcEndGeometry] = useState(initialArcEnd);
+  const arcStartPoint = getFlowmapRowPoint(
+    row.values,
+    'geometry',
+    '',
+    '',
+    arcStartGeometry,
+  );
+  const arcEndPoint = getFlowmapRowPoint(
+    row.values,
+    'geometry',
+    '',
+    '',
+    arcEndGeometry,
+  );
+  const pointGeometryOptions = pointGeometryColumns.map((column) => ({
+    label:
+      displayConfig?.columnLabels[column.name]?.trim() ||
+      `${column.name} (${column.geometryType})`,
+    value: column.name,
+  }));
+  const [draftValues, setDraftValues] = useState(row.values);
+  const [draftChanges, setDraftChanges] = useState<Record<string, unknown>>({});
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [saveMessage, setSaveMessage] = useState('');
+  const canEditRow = tableIsEditable && Boolean(row.rowKey);
+  const hasChanges = Object.keys(draftChanges).length > 0;
+  const foreignKeyByColumn = useMemo(
+    () =>
+      new Map(
+        (tableMetadata?.foreignKeys ?? []).map((foreignKey) => [
+          foreignKey.columnName,
+          foreignKey,
+        ]),
+      ),
+    [tableMetadata?.foreignKeys],
+  );
+  const relationConfigByColumn = useMemo(() => {
+    if (!tableMetadata) {
+      return new Map<string, string[]>();
+    }
+
+    return new Map(
+      tableMetadata.foreignKeys.map((foreignKey) => {
+        const key = relationDisplayKey(
+          connection.id,
+          tableMetadata,
+          foreignKey,
+        );
+        const configuredColumns = relationDisplayByKey[key]?.labelColumns;
+        return [
+          foreignKey.columnName,
+          configuredColumns && configuredColumns.length > 0
+            ? configuredColumns
+            : foreignKey.defaultLabelColumn
+              ? [foreignKey.defaultLabelColumn]
+              : [],
+        ] as const;
+      }),
+    );
+  }, [connection.id, relationDisplayByKey, tableMetadata]);
+
+  useEffect(() => {
+    let isActive = true;
+    setTableMetadata(null);
+    setTableMetadataError('');
+    setIsLoadingTableMetadata(true);
+
+    void fetchTableMetadata(connection, group.schema, group.table)
+      .then((metadata) => {
+        if (isActive) {
+          setTableMetadata(metadata);
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setTableMetadataError(
+            error instanceof Error
+              ? error.message
+              : 'Failed to load table metadata.',
+          );
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoadingTableMetadata(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [connection, group.schema, group.table]);
+
+  useEffect(() => {
+    if (!tableMetadata || tableMetadata.foreignKeys.length === 0) {
+      setRelatedRelationLabels({});
+      return;
+    }
+
+    let isActive = true;
+
+    void Promise.all(
+      tableMetadata.foreignKeys.map(async (foreignKey) => {
+        const value = row.values[foreignKey.columnName];
+        if (value === null || value === undefined) {
+          return [foreignKey.columnName, {}] as const;
+        }
+
+        const options = await fetchRelationLabels(connection, {
+          schema: tableMetadata.schema,
+          table: tableMetadata.name,
+          column: foreignKey.columnName,
+          labelColumns: relationConfigByColumn.get(foreignKey.columnName) ?? [],
+          values: [value],
+        });
+
+        return [
+          foreignKey.columnName,
+          Object.fromEntries(
+            options.map((option) => [relationValueKey(option.value), option]),
+          ),
+        ] as const;
+      }),
+    )
+      .then((entries) => {
+        if (isActive) {
+          setRelatedRelationLabels(Object.fromEntries(entries));
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setRelatedRelationLabels({});
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [connection, relationConfigByColumn, row.values, tableMetadata]);
+
+  useEffect(() => {
+    const pointColumnNames = new Set(
+      pointGeometryColumns.map((column) => column.name),
+    );
+    if (!pointColumnNames.has(arcStartGeometry)) {
+      setArcStartGeometry(initialArcStart);
+    }
+    if (!pointColumnNames.has(arcEndGeometry)) {
+      setArcEndGeometry(initialArcEnd);
+    }
+  }, [
+    arcEndGeometry,
+    arcStartGeometry,
+    initialArcEnd,
+    initialArcStart,
+    pointGeometryColumns,
+  ]);
+
+  function handleFieldChange(column: InspectorColumn, nextValue: unknown) {
+    const normalizedValue = normalizeEditorValue(column.type, nextValue);
+    setDraftValues((current) => ({
+      ...current,
+      [column.name]: normalizedValue,
+    }));
+    setDraftChanges((current) => {
+      const nextChanges = { ...current };
+      if (areEditorValuesEqual(row.values[column.name], normalizedValue)) {
+        delete nextChanges[column.name];
+      } else {
+        nextChanges[column.name] = normalizedValue;
+      }
+      return nextChanges;
+    });
+    setSaveError('');
+    setSaveMessage('');
+  }
+
+  function handleDiscard() {
+    setDraftValues(row.values);
+    setDraftChanges({});
+    setSaveError('');
+    setSaveMessage('');
+  }
+
+  async function handleSave() {
+    if (!row.rowKey || !hasChanges || isSaving) {
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveError('');
+    setSaveMessage('');
+    try {
+      await commitInspectorRows(connection, {
+        schema: group.schema,
+        table: group.table,
+        operations: [
+          {
+            type: 'update',
+            rowKey: row.rowKey,
+            changes: draftChanges,
+          },
+        ],
+      });
+      const savedValues = { ...row.values, ...draftChanges };
+      setDraftValues(savedValues);
+      setDraftChanges({});
+      setSaveMessage('Saved.');
+      onSaved(savedValues);
+    } catch (error) {
+      setSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to save related record.',
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <Stack
+      aria-label={`${tableLabel} record inspector`}
+      gap="xs"
+      h="100%"
+      style={{ minHeight: 0 }}
+    >
+      <Text c="dimmed" size="xs" truncate="end">
+        {group.schema}.{group.table}
+        {recordKey ? ` · #${recordKey}` : ''}
+      </Text>
+      <Tabs
+        defaultValue="fields"
+        style={{
+          display: 'flex',
+          flex: 1,
+          flexDirection: 'column',
+          minHeight: 0,
+        }}
+      >
+        <Tabs.List grow>
+          <Tabs.Tab leftSection={<IconTable size={14} />} value="fields">
+            Fields
+          </Tabs.Tab>
+          <Tabs.Tab leftSection={<IconMapPin size={14} />} value="map">
+            Map
+          </Tabs.Tab>
+        </Tabs.List>
+
+        <Tabs.Panel pt="sm" style={{ flex: 1, minHeight: 0 }} value="fields">
+          <Stack gap="xs" h="100%" style={{ minHeight: 0 }}>
+            {tableMetadataError ? (
+              <Alert color="orange" variant="light">
+                {tableMetadataError}
+              </Alert>
+            ) : null}
+            <ScrollArea offsetScrollbars style={{ flex: 1, minHeight: 0 }}>
+              <Stack gap="xs" pr="xs">
+                {isLoadingTableMetadata ? <Loader size="xs" /> : null}
+                {visibleColumns.map((column) => {
+                  const foreignKey = foreignKeyByColumn.get(column.name);
+                  const value = draftValues[column.name];
+                  const relationOption =
+                    foreignKey && value !== null && value !== undefined
+                      ? relatedRelationLabels[column.name]?.[
+                          relationValueKey(value)
+                        ]
+                      : undefined;
+                  const isPrimaryKey = tablePrimaryKey.includes(column.name);
+                  const canEditColumn =
+                    canEditRow &&
+                    !isPrimaryKey &&
+                    isEditableColumnType(column.type);
+
+                  return (
+                    <Stack gap={3} key={column.name}>
+                      <Group gap={4} wrap="nowrap">
+                        <Text c="dimmed" fw={600} size="xs">
+                          {displayConfig?.columnLabels[column.name]?.trim() ||
+                            column.name}
+                        </Text>
+                        {isPrimaryKey ? (
+                          <Badge color="blue" size="xs" variant="light">
+                            PK
+                          </Badge>
+                        ) : null}
+                        {foreignKey ? (
+                          <Badge color="grape" size="xs" variant="light">
+                            FK
+                          </Badge>
+                        ) : null}
+                      </Group>
+                      {canEditColumn ? (
+                        foreignKey && tableMetadata ? (
+                          <RelationCellEditor
+                            connection={connection}
+                            disabled={isSaving}
+                            foreignKey={foreignKey}
+                            initialOption={relationOption}
+                            labelColumns={
+                              relationConfigByColumn.get(column.name) ?? []
+                            }
+                            onChange={(nextValue) =>
+                              handleFieldChange(column, nextValue)
+                            }
+                            selectedTable={tableMetadata}
+                            value={value}
+                          />
+                        ) : (
+                          renderEditableCell({
+                            column,
+                            disabled: isSaving,
+                            onChange: (nextValue) =>
+                              handleFieldChange(column, nextValue),
+                            value,
+                          })
+                        )
+                      ) : (
+                        <Box
+                          style={{
+                            borderBottom:
+                              '1px solid var(--mantine-color-default-border)',
+                            overflowWrap: 'anywhere',
+                            paddingBottom: 6,
+                          }}
+                        >
+                          <RelationCellValue
+                            isDeleted={false}
+                            option={relationOption}
+                            value={value}
+                          />
+                        </Box>
+                      )}
+                    </Stack>
+                  );
+                })}
+              </Stack>
+            </ScrollArea>
+            {saveError ? (
+              <Alert color="red" variant="light">
+                {saveError}
+              </Alert>
+            ) : null}
+            <Group justify="space-between" wrap="nowrap">
+              <Text c={saveMessage ? 'green' : 'dimmed'} size="xs">
+                {saveMessage ||
+                  (hasChanges
+                    ? `${Object.keys(draftChanges).length} pending`
+                    : canEditRow
+                      ? 'No changes'
+                      : 'Read only')}
+              </Text>
+              {canEditRow ? (
+                <Group gap="xs" wrap="nowrap">
+                  <Button
+                    disabled={!hasChanges || isSaving}
+                    leftSection={<IconRestore size={14} />}
+                    onClick={handleDiscard}
+                    size="compact-sm"
+                    variant="default"
+                  >
+                    Discard
+                  </Button>
+                  <Button
+                    disabled={!hasChanges || isSaving}
+                    leftSection={
+                      isSaving ? (
+                        <Loader size={14} />
+                      ) : (
+                        <IconDeviceFloppy size={14} />
+                      )
+                    }
+                    onClick={() => void handleSave()}
+                    size="compact-sm"
+                  >
+                    Save
+                  </Button>
+                </Group>
+              ) : null}
+            </Group>
+          </Stack>
+        </Tabs.Panel>
+
+        <Tabs.Panel pt="sm" value="map">
+          <Stack gap="xs">
+            {tableGeometryColumns.length === 0 ? (
+              <Text c="dimmed" size="xs">
+                No geographic columns.
+              </Text>
+            ) : (
+              tableGeometryColumns.map((geometryColumn) => (
+                <Group
+                  justify="space-between"
+                  key={geometryColumn.name}
+                  wrap="nowrap"
+                >
+                  <Stack gap={0} style={{ minWidth: 0 }}>
+                    <Text fw={600} lineClamp={1} size="xs">
+                      {displayConfig?.columnLabels[
+                        geometryColumn.name
+                      ]?.trim() || geometryColumn.name}
+                    </Text>
+                    <Text c="dimmed" size="xs">
+                      {geometryColumn.geometryType} · SRID {geometryColumn.srid}
                     </Text>
                   </Stack>
-                  <ActionIcon
-                    aria-label={`Locate ${group.table} related row`}
-                    disabled={!hasGeometry || !relatedRow.rowKey}
-                    onClick={() => onLocateRow(group, relatedRow)}
-                    size="sm"
-                    variant="subtle"
+                  <Button
+                    disabled={!row.rowKey}
+                    leftSection={<IconMapPin size={14} />}
+                    onClick={() => onLocateRow(geometryColumn.name)}
+                    size="compact-xs"
+                    variant="light"
                   >
-                    <IconMapPin size={14} />
-                  </ActionIcon>
+                    Show
+                  </Button>
                 </Group>
-              </Paper>
-            );
-          })}
-        </Stack>
-      ))}
+              ))
+            )}
+            {pointGeometryColumns.length >= 2 ? (
+              <Stack
+                gap="xs"
+                pt="xs"
+                style={{
+                  borderTop: '1px solid var(--mantine-color-default-border)',
+                }}
+              >
+                <Group justify="space-between" wrap="nowrap">
+                  <Stack gap={0}>
+                    <Text fw={600} size="xs">
+                      Arc
+                    </Text>
+                    <Text c="dimmed" size="xs">
+                      {arcStartGeometry} → {arcEndGeometry}
+                    </Text>
+                  </Stack>
+                  <Button
+                    disabled={
+                      !row.rowKey ||
+                      !arcStartGeometry ||
+                      !arcEndGeometry ||
+                      arcStartGeometry === arcEndGeometry ||
+                      !arcStartPoint ||
+                      !arcEndPoint
+                    }
+                    leftSection={<IconRoute size={14} />}
+                    onClick={() =>
+                      onCreateArc(arcStartGeometry, arcEndGeometry)
+                    }
+                    size="compact-xs"
+                    variant="light"
+                  >
+                    Show arc
+                  </Button>
+                </Group>
+                <Group grow wrap="nowrap">
+                  <Select
+                    allowDeselect={false}
+                    data={pointGeometryOptions}
+                    label="From"
+                    onChange={(value) => setArcStartGeometry(value ?? '')}
+                    size="xs"
+                    value={arcStartGeometry}
+                  />
+                  <Select
+                    allowDeselect={false}
+                    data={pointGeometryOptions}
+                    label="To"
+                    onChange={(value) => setArcEndGeometry(value ?? '')}
+                    size="xs"
+                    value={arcEndGeometry}
+                  />
+                </Group>
+              </Stack>
+            ) : null}
+          </Stack>
+        </Tabs.Panel>
+      </Tabs>
     </Stack>
   );
 }
@@ -5465,6 +6548,52 @@ function AnalysisWorkspacePanel({
   );
 }
 
+function AppSettings({
+  basemapId,
+  onBasemapChange,
+}: {
+  basemapId: BasemapId;
+  onBasemapChange: (basemapId: BasemapId) => void;
+}) {
+  return (
+    <Menu
+      closeOnItemClick={false}
+      position="bottom-end"
+      shadow="md"
+      width={190}
+    >
+      <Menu.Target>
+        <ActionIcon aria-label="Application settings" variant="default">
+          <IconSettings size={16} />
+        </ActionIcon>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Map settings</Menu.Label>
+        <Box px="xs" pb="xs">
+          <Select
+            allowDeselect={false}
+            aria-label="Basemap"
+            data={basemapOptions}
+            onChange={(value) => {
+              if (value) {
+                onBasemapChange(value as BasemapId);
+              }
+            }}
+            size="xs"
+            value={basemapId}
+          />
+        </Box>
+        <Menu.Divider />
+        <Menu.Label>Display</Menu.Label>
+        <Group justify="space-between" px="xs" pb="xs" wrap="nowrap">
+          <LanguageSwitcher />
+          <ColorSchemeToggle />
+        </Group>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
 export function App() {
   const connections = useConnectionStore((state) => state.connections);
   const mapSources = useConnectionStore((state) => state.mapSources);
@@ -5653,6 +6782,23 @@ export function App() {
     try {
       const nextSchemas = await fetchInspectableSchemas(selectedConnection);
       setSchemas(nextSchemas);
+      const visibleSchemaNames = new Set(
+        nextSchemas
+          .filter((schema) => schema.visible)
+          .map((schema) => schema.name),
+      );
+      setSelectedSchemaNames((current) =>
+        current.filter((name) => visibleSchemaNames.has(name)),
+      );
+      setExpandedSchemaNames((current) =>
+        current.filter((name) => visibleSchemaNames.has(name)),
+      );
+      if (
+        selectedSourceTableKey &&
+        !visibleSchemaNames.has(selectedSourceTableKey.split('.')[0])
+      ) {
+        handleSelectTable(null);
+      }
     } catch (error) {
       setCatalogError(
         error instanceof Error ? error.message : 'Failed to load schemas.',
@@ -6151,6 +7297,7 @@ export function App() {
   async function handleLocateRelatedFeature(
     group: RelatedRowsGroup,
     row: InspectorRow,
+    geometryColumnName: string,
   ) {
     if (
       !selectedConnection ||
@@ -6160,35 +7307,51 @@ export function App() {
       return;
     }
 
-    const geometryColumn = group.geometryColumns[0];
-    const existingLayer = selectedConnectionMapLayers.find(
-      (layer): layer is GeoJsonMapLayer => {
-        if (layer.type !== 'geojson') {
-          return false;
-        }
-
-        const source = findLayerSource(mapSources, layer);
-        return (
-          source?.type === 'geojson-table' &&
-          source.schema === group.schema &&
-          source.table === group.table &&
-          source.geometryColumn === geometryColumn.name
-        );
-      },
+    const geometryColumn = group.geometryColumns.find(
+      (column) => column.name === geometryColumnName,
     );
-
-    if (!existingLayer && selectedConnectionId) {
-      addGeoJsonLayer({
-        connectionId: selectedConnectionId,
-        schema: group.schema,
-        table: group.table,
-        fullName: `${group.schema}.${group.table}`,
-        kind: 'table',
-        name: group.label,
-        geometryColumn: geometryColumn.name,
-        geometryType: geometryColumn.geometryType,
-      });
+    if (!geometryColumn || !selectedConnectionId) {
+      return;
     }
+
+    const tableLabel =
+      tableDisplayByKey[
+        tableDisplayKeyFromParts(
+          selectedConnectionId,
+          group.schema,
+          group.table,
+        )
+      ]?.tableAlias?.trim() || group.label;
+
+    addGeoJsonLayer({
+      connectionId: selectedConnectionId,
+      schema: group.schema,
+      table: group.table,
+      fullName: `${group.schema}.${group.table}`,
+      kind: 'table',
+      name: `${tableLabel}: ${geometryColumn.name}`,
+      geometryColumn: geometryColumn.name,
+      geometryType: geometryColumn.geometryType,
+      purpose: 'record-preview',
+    });
+
+    const currentMapState = useConnectionStore.getState();
+    const source = currentMapState.mapSources.find(
+      (candidate): candidate is GeoJsonTableSource =>
+        candidate.type === 'geojson-table' &&
+        candidate.connectionId === selectedConnectionId &&
+        candidate.schema === group.schema &&
+        candidate.table === group.table &&
+        candidate.geometryColumn === geometryColumn.name &&
+        !candidate.sourceViewId &&
+        !candidate.filter,
+    );
+    const layer = source
+      ? currentMapState.mapLayers.find(
+          (candidate): candidate is GeoJsonMapLayer =>
+            candidate.type === 'geojson' && candidate.sourceId === source.id,
+        )
+      : null;
 
     const result = await locateGeoJsonFeature(selectedConnection, {
       schema: group.schema,
@@ -6197,27 +7360,126 @@ export function App() {
       rowKey: row.rowKey,
     });
 
-    if (existingLayer) {
-      const source = findLayerSource(mapSources, existingLayer);
-      if (source?.type === 'geojson-table') {
-        setMapSelection(
-          buildLocatedFeatureSelection(result, {
-            kind: 'geojson',
-            layer: existingLayer,
-            source,
-          }),
-        );
-        setActiveLayerId(existingLayer.id);
-      }
+    if (source && layer) {
+      setMapSelection(
+        buildLocatedFeatureSelection(result, {
+          kind: 'geojson',
+          layer,
+          source,
+        }),
+      );
+      setActiveLayerId(layer.id);
     }
 
-    setRightPaneTab('data');
+    setRightPaneTab('layer');
     if (result.bounds) {
       setLocateFeatureBounds({
         token: Date.now(),
         bounds: result.bounds,
       });
     }
+  }
+
+  function handleCreateRelatedArc(
+    group: RelatedRowsGroup,
+    row: InspectorRow,
+    startGeometryColumn: string,
+    endGeometryColumn: string,
+  ) {
+    if (!selectedConnectionId || !row.rowKey) {
+      return;
+    }
+
+    const start = getFlowmapRowPoint(
+      row.values,
+      'geometry',
+      '',
+      '',
+      startGeometryColumn,
+    );
+    const end = getFlowmapRowPoint(
+      row.values,
+      'geometry',
+      '',
+      '',
+      endGeometryColumn,
+    );
+    if (!start || !end) {
+      return;
+    }
+
+    const rowRef = {
+      primaryKey: group.primaryKey,
+      rowKey: row.rowKey,
+    };
+    const columns: FlowmapTableSource['columns'] = {
+      startMode: 'geometry',
+      startLon: '',
+      startLat: '',
+      startGeometry: startGeometryColumn,
+      endMode: 'geometry',
+      endLon: '',
+      endLat: '',
+      endGeometry: endGeometryColumn,
+      magnitude: '',
+      defaultMagnitude: 1,
+    };
+    const tableLabel =
+      tableDisplayByKey[
+        tableDisplayKeyFromParts(
+          selectedConnectionId,
+          group.schema,
+          group.table,
+        )
+      ]?.tableAlias?.trim() || group.label;
+    const recordKey = group.primaryKey
+      .map((columnName) => formatCellValue(row.values[columnName]))
+      .join(', ');
+
+    addArcLayer({
+      connectionId: selectedConnectionId,
+      schema: group.schema,
+      table: group.table,
+      fullName: `${group.schema}.${group.table}`,
+      kind: 'table',
+      name: `${tableLabel}${recordKey ? ` #${recordKey}` : ''}: ${startGeometryColumn} → ${endGeometryColumn}`,
+      columns,
+      rowRef,
+      purpose: 'record-preview',
+    });
+
+    const currentMapState = useConnectionStore.getState();
+    const source = currentMapState.mapSources.find(
+      (candidate): candidate is FlowmapTableSource =>
+        candidate.type === 'flowmap-table' &&
+        candidate.connectionId === selectedConnectionId &&
+        candidate.schema === group.schema &&
+        candidate.table === group.table &&
+        JSON.stringify(candidate.columns) === JSON.stringify(columns) &&
+        JSON.stringify(candidate.rowRef) === JSON.stringify(rowRef),
+    );
+    const layer = source
+      ? currentMapState.mapLayers.find(
+          (candidate): candidate is ArcMapLayer =>
+            candidate.type === 'arc' && candidate.sourceId === source.id,
+        )
+      : null;
+    if (!source || !layer) {
+      return;
+    }
+
+    const selection = buildLocatedFlowmapSelection(row, group.primaryKey, {
+      kind: 'flowmap',
+      layer,
+      source,
+    });
+    setMapSelection(selection);
+    setActiveLayerId(layer.id);
+    setRightPaneTab('layer');
+    setLocateFeatureBounds({
+      token: Date.now(),
+      bounds: boundsFromPoints([start, end]),
+    });
   }
 
   function handleFeatureCreated(source: GeoJsonTableSource) {
@@ -6254,159 +7516,100 @@ export function App() {
     handleSelectTable(tableKey);
   }
 
+  const connectionManagerProps = {
+    activeLayerId,
+    catalog,
+    mapLayers: selectedConnectionMapLayers,
+    mapSources,
+    onLoadSchemas: () => void loadCatalogSchemas(),
+    onImportSelectedTable: handleImportSelectedTable,
+    onCreateFlowLayer: handleCreateFlowLayer,
+    onRemoveSavedView: handleRemoveSavedView,
+    onSelectLayer: handleSelectLayer,
+    onSelectCatalogTable: handleSelectTable,
+    onSelectSavedView: handleSelectSavedView,
+    onToggleCatalogSchema: handleToggleCatalogSchema,
+    onToggleCatalogSchemaExpanded: handleToggleCatalogSchemaExpanded,
+    savedViews: selectedConnectionSavedViews,
+    selectedInspectableTable,
+    selectedTableKey,
+    tables: metadataTables,
+  };
+
   return (
-    <Flex
-      direction="column"
-      h="100dvh"
-      style={{
-        overflow: 'hidden',
-      }}
-    >
-      <Paper
-        px="lg"
-        py="sm"
-        radius={0}
-        shadow="xs"
-        style={{
-          borderBottom: '1px solid var(--mantine-color-default-border)',
-        }}
-      >
-        <Flex align="center" justify="space-between">
-          <div>
-            <Title order={3}>Geopanel</Title>
-          </div>
-          <Group gap="sm" wrap="nowrap">
-            <Select
-              allowDeselect={false}
-              aria-label="Basemap"
-              data={basemapOptions}
-              onChange={(value) => {
-                if (!value) {
-                  return;
-                }
-
-                setSelectedBasemap(value as BasemapId);
-              }}
-              size="xs"
-              style={{ width: 132 }}
-              value={selectedBasemapId ?? defaultBasemapId}
+    <WorkspaceLayout
+      panels={{
+        sources: (
+          <PanelFrame>
+            <ConnectionManager {...connectionManagerProps} view="sources" />
+          </PanelFrame>
+        ),
+        layers: (
+          <PanelFrame>
+            <ConnectionManager {...connectionManagerProps} view="layers" />
+          </PanelFrame>
+        ),
+        map: (
+          <PanelFrame padding={0}>
+            <MapPane
+              activeLayerId={activeLayerId}
+              basemapId={selectedBasemapId ?? defaultBasemapId}
+              connection={selectedConnection}
+              locateFeatureBounds={locateFeatureBounds}
+              mapSelection={mapSelection}
+              onFeatureCreated={handleFeatureCreated}
+              onSelectMapObject={handleSelectMapObject}
+              sources={mapSources}
+              tables={metadataTables}
+              visibleLayers={selectedVisibleMapLayers}
             />
-            <LanguageSwitcher />
-            <ColorSchemeToggle />
-          </Group>
-        </Flex>
-      </Paper>
-
-      <Box
-        style={{
-          flex: 1,
-          minHeight: 0,
-        }}
-      >
-        <Split
-          style={{
-            height: '100%',
-            width: '100%',
-          }}
-        >
-          <Split.Pane initialWidth={280} maxWidth={480} minWidth={0}>
-            <PanelFrame title="Data & Layers">
-              <ConnectionManager
-                activeLayerId={activeLayerId}
-                catalog={catalog}
-                mapLayers={selectedConnectionMapLayers}
-                mapSources={mapSources}
-                onLoadSchemas={() => void loadCatalogSchemas()}
-                onImportSelectedTable={handleImportSelectedTable}
-                onCreateFlowLayer={handleCreateFlowLayer}
-                onRemoveSavedView={handleRemoveSavedView}
-                onSelectLayer={handleSelectLayer}
-                onSelectCatalogTable={handleSelectTable}
-                onSelectSavedView={handleSelectSavedView}
-                onToggleCatalogSchema={handleToggleCatalogSchema}
-                onToggleCatalogSchemaExpanded={
-                  handleToggleCatalogSchemaExpanded
-                }
-                savedViews={selectedConnectionSavedViews}
-                selectedInspectableTable={selectedInspectableTable}
-                selectedTableKey={selectedTableKey}
-                tables={metadataTables}
-              />
-            </PanelFrame>
-          </Split.Pane>
-
-          <Split.Resizer />
-
-          <Split.Pane grow minWidth={0}>
-            <Split
-              orientation="horizontal"
-              style={{
-                height: '100%',
-              }}
-            >
-              <Split.Pane grow minHeight={0}>
-                <PanelFrame>
-                  <MapPane
-                    activeLayerId={activeLayerId}
-                    basemapId={selectedBasemapId ?? defaultBasemapId}
-                    connection={selectedConnection}
-                    locateFeatureBounds={locateFeatureBounds}
-                    mapSelection={mapSelection}
-                    onFeatureCreated={handleFeatureCreated}
-                    onSelectMapObject={handleSelectMapObject}
-                    sources={mapSources}
-                    tables={metadataTables}
-                    visibleLayers={selectedVisibleMapLayers}
-                  />
-                </PanelFrame>
-              </Split.Pane>
-
-              <Split.Resizer />
-
-              <Split.Pane initialHeight={260} minHeight={0}>
-                <PanelFrame>
-                  <DataInspector
-                    connection={selectedConnection}
-                    featureCreateRefreshToken={featureCreateRefreshToken}
-                    isLoadingTableMetadata={isLoadingTableMetadata}
-                    isLoadingTables={
-                      isLoadingSchemas ||
-                      Object.values(loadingSchemaTablesByName).some(Boolean)
-                    }
-                    key={`${selectedConnectionId ?? 'none'}:${selectedTableKey ?? 'none'}`}
-                    mapLayers={selectedVisibleMapLayers}
-                    mapSources={mapSources}
-                    onLocateFeature={handleLocateFeature}
-                    onLocateRelatedFeature={handleLocateRelatedFeature}
-                    selectedView={selectedSavedView}
-                    selectedTable={selectedInspectableTable}
-                    tablesError={catalogError}
-                  />
-                </PanelFrame>
-              </Split.Pane>
-            </Split>
-          </Split.Pane>
-
-          <Split.Resizer />
-
-          <Split.Pane initialWidth={340} maxWidth={520} minWidth={0}>
-            <PanelFrame title="Workspace">
-              <RightPaneTabs
-                activeLayer={activeLayer}
-                activeSource={activeLayerSource}
-                connection={selectedConnection}
-                geoJsonSpatialFilterTargets={geoJsonSpatialFilterTargets}
-                mapSelection={mapSelection}
-                onApplySpatialFilter={handleApplySpatialFilter}
-                onChangeTab={setRightPaneTab}
-                onClearSpatialFilter={handleClearSpatialFilter}
-                onOpenTable={handleOpenTable}
-                selectedTab={rightPaneTab}
-              />
-            </PanelFrame>
-          </Split.Pane>
-        </Split>
-      </Box>
-    </Flex>
+          </PanelFrame>
+        ),
+        table: (
+          <PanelFrame>
+            <DataInspector
+              connection={selectedConnection}
+              featureCreateRefreshToken={featureCreateRefreshToken}
+              isLoadingTableMetadata={isLoadingTableMetadata}
+              isLoadingTables={
+                isLoadingSchemas ||
+                Object.values(loadingSchemaTablesByName).some(Boolean)
+              }
+              key={`${selectedConnectionId ?? 'none'}:${selectedTableKey ?? 'none'}`}
+              mapLayers={selectedVisibleMapLayers}
+              mapSources={mapSources}
+              onCreateRelatedArc={handleCreateRelatedArc}
+              onLocateFeature={handleLocateFeature}
+              onLocateRelatedFeature={handleLocateRelatedFeature}
+              selectedView={selectedSavedView}
+              selectedTable={selectedInspectableTable}
+              tablesError={catalogError}
+            />
+          </PanelFrame>
+        ),
+        workspace: (
+          <PanelFrame>
+            <RightPaneTabs
+              activeLayer={activeLayer}
+              activeSource={activeLayerSource}
+              connection={selectedConnection}
+              geoJsonSpatialFilterTargets={geoJsonSpatialFilterTargets}
+              mapSelection={mapSelection}
+              onApplySpatialFilter={handleApplySpatialFilter}
+              onChangeTab={setRightPaneTab}
+              onClearSpatialFilter={handleClearSpatialFilter}
+              onOpenTable={handleOpenTable}
+              selectedTab={rightPaneTab}
+            />
+          </PanelFrame>
+        ),
+      }}
+      toolbar={
+        <AppSettings
+          basemapId={selectedBasemapId ?? defaultBasemapId}
+          onBasemapChange={setSelectedBasemap}
+        />
+      }
+    />
   );
 }

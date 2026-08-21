@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${GEOPANEL_ENV_FILE:-$ROOT_DIR/.env.dev}"
+RUN_DIR="$ROOT_DIR/.dev-run"
+BACKEND_PID_FILE="$RUN_DIR/backend.pid"
+FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+BACKEND_LOG="$RUN_DIR/backend.log"
+FRONTEND_LOG="$RUN_DIR/frontend.log"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/start-project [start|start-bg|stop|restart|status|logs]
+
+Commands:
+  start    Start backend/frontend in foreground; Ctrl-C stops both.
+  start-bg Start backend on :18080 and frontend on :5173 in background.
+  stop     Stop processes started by this script.
+  restart  Stop, then start.
+  status   Show process and health status.
+  logs     Follow backend and frontend logs.
+EOF
+}
+
+env_value() {
+  local key="$1"
+  grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2-
+}
+
+is_running() {
+  local pid_file="$1"
+  [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null
+}
+
+is_port_free() {
+  local port="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    ! ss -ltn | awk '{print $4}' | grep -Eq "[:.]${port}$"
+    return
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+
+  return 0
+}
+
+require_port() {
+  local port="$1"
+  local name="$2"
+
+  if ! is_port_free "$port"; then
+    printf '%s port %s is busy. Stop that process or run scripts/start-project stop.\n' "$name" "$port" >&2
+    exit 1
+  fi
+}
+
+ensure_env() {
+  if [[ ! -f "$ENV_FILE" ]]; then
+    printf 'Missing env file: %s\n' "$ENV_FILE" >&2
+    exit 1
+  fi
+}
+
+database_url() {
+  local value password
+
+  value="$(env_value GEOPANEL_DATABASE_URL)"
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+    return
+  fi
+
+  password="$(env_value GEOPANEL_DATABASE_PASSWORD)"
+  if [[ -z "$password" ]]; then
+    printf 'Set GEOPANEL_DATABASE_URL or GEOPANEL_DATABASE_PASSWORD in %s\n' "$ENV_FILE" >&2
+    exit 1
+  fi
+
+  printf 'postgres://backend:%s@46.8.220.233:8487/backend?sslmode=disable\n' "$password"
+}
+
+start_backend() {
+  if is_running "$BACKEND_PID_FILE"; then
+    return
+  fi
+
+  require_port 18080 backend
+
+  (
+    cd "$ROOT_DIR/backend"
+    API_ADDR=:18080 \
+      API_DB_TIMEOUT="${API_DB_TIMEOUT:-45s}" \
+      GEOPANEL_DATABASE_URL="$(database_url)" \
+      GEOPANEL_DATABASE_ID="${GEOPANEL_DATABASE_ID:-$(env_value GEOPANEL_DATABASE_ID)}" \
+      GEOPANEL_DATABASE_NAME="${GEOPANEL_DATABASE_NAME:-$(env_value GEOPANEL_DATABASE_NAME)}" \
+      nohup go run ./cmd/api >"$BACKEND_LOG" 2>&1 &
+    echo $! >"$BACKEND_PID_FILE"
+  )
+}
+
+start_frontend() {
+  if is_running "$FRONTEND_PID_FILE"; then
+    return
+  fi
+
+  require_port 5173 frontend
+
+  (
+    cd "$ROOT_DIR/frontend"
+    VITE_API_PROXY_TARGET=http://127.0.0.1:18080 \
+      nohup bun run dev --host --port 5173 >"$FRONTEND_LOG" 2>&1 &
+    echo $! >"$FRONTEND_PID_FILE"
+  )
+}
+
+wait_for_health() {
+  local url="$1"
+  local label="$2"
+
+  for _ in $(seq 1 40); do
+    if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+      printf '%s ready: %s\n' "$label" "$url"
+      return
+    fi
+    sleep 0.5
+  done
+
+  printf '%s not ready yet. Check logs: scripts/start-project logs\n' "$label" >&2
+}
+
+start_bg() {
+  ensure_env
+  mkdir -p "$RUN_DIR"
+  start_backend
+  start_frontend
+  wait_for_health http://127.0.0.1:18080/api/v1/health backend
+  wait_for_health http://localhost:5173/api/v1/health frontend
+  printf 'App: http://localhost:5173/\n'
+}
+
+start() {
+  ensure_env
+  mkdir -p "$RUN_DIR"
+  require_port 18080 backend
+  require_port 5173 frontend
+
+  (
+    cd "$ROOT_DIR/backend"
+    API_ADDR=:18080 \
+      API_DB_TIMEOUT="${API_DB_TIMEOUT:-45s}" \
+      GEOPANEL_DATABASE_URL="$(database_url)" \
+      GEOPANEL_DATABASE_ID="${GEOPANEL_DATABASE_ID:-$(env_value GEOPANEL_DATABASE_ID)}" \
+      GEOPANEL_DATABASE_NAME="${GEOPANEL_DATABASE_NAME:-$(env_value GEOPANEL_DATABASE_NAME)}" \
+      go run ./cmd/api
+  ) >"$BACKEND_LOG" 2>&1 &
+  local backend_pid=$!
+  echo "$backend_pid" >"$BACKEND_PID_FILE"
+
+  (
+    cd "$ROOT_DIR/frontend"
+    VITE_API_PROXY_TARGET=http://127.0.0.1:18080 \
+      bun run dev --host --port 5173
+  ) >"$FRONTEND_LOG" 2>&1 &
+  local frontend_pid=$!
+  echo "$frontend_pid" >"$FRONTEND_PID_FILE"
+
+  cleanup() {
+    kill "$frontend_pid" "$backend_pid" 2>/dev/null || true
+    rm -f "$FRONTEND_PID_FILE" "$BACKEND_PID_FILE"
+  }
+  trap cleanup INT TERM EXIT
+
+  wait_for_health http://127.0.0.1:18080/api/v1/health backend
+  wait_for_health http://localhost:5173/api/v1/health frontend
+  printf 'App: http://localhost:5173/\n'
+  printf 'Logs: %s %s\n' "$BACKEND_LOG" "$FRONTEND_LOG"
+  wait
+}
+
+stop_one() {
+  local pid_file="$1"
+  if ! is_running "$pid_file"; then
+    rm -f "$pid_file"
+    return
+  fi
+
+  kill "$(cat "$pid_file")"
+  rm -f "$pid_file"
+}
+
+stop() {
+  stop_one "$FRONTEND_PID_FILE"
+  stop_one "$BACKEND_PID_FILE"
+}
+
+status() {
+  if is_running "$BACKEND_PID_FILE"; then
+    printf 'backend running pid=%s\n' "$(cat "$BACKEND_PID_FILE")"
+  else
+    printf 'backend stopped\n'
+  fi
+
+  if is_running "$FRONTEND_PID_FILE"; then
+    printf 'frontend running pid=%s\n' "$(cat "$FRONTEND_PID_FILE")"
+  else
+    printf 'frontend stopped\n'
+  fi
+
+  curl -fsS --max-time 2 http://127.0.0.1:18080/api/v1/health >/dev/null 2>&1 &&
+    printf 'backend health ok\n' || printf 'backend health failed\n'
+  curl -fsS --max-time 2 http://localhost:5173/api/v1/health >/dev/null 2>&1 &&
+    printf 'frontend proxy ok\n' || printf 'frontend proxy failed\n'
+}
+
+logs() {
+  mkdir -p "$RUN_DIR"
+  touch "$BACKEND_LOG" "$FRONTEND_LOG"
+  tail -f "$BACKEND_LOG" "$FRONTEND_LOG"
+}
+
+cmd="${1:-start}"
+case "$cmd" in
+  start)
+    start
+    ;;
+  start-bg)
+    start_bg
+    ;;
+  stop)
+    stop
+    ;;
+  restart)
+    stop
+    start
+    ;;
+  status)
+    status
+    ;;
+  logs)
+    logs
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

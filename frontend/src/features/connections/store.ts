@@ -76,9 +76,12 @@ export interface FlowmapTableSource {
     defaultMagnitude: number;
   };
   spatialFilter?: LayerSpatialFilter | null;
+  rowRef?: RowReference | null;
 }
 
 export type MapSource = GeoJsonTableSource | FlowmapTableSource;
+
+export type MapLayerPurpose = 'configured' | 'record-preview';
 
 interface BaseMapLayer {
   id: string;
@@ -87,6 +90,7 @@ interface BaseMapLayer {
   name: string;
   visible: boolean;
   icon: LayerGlyphIcon;
+  purpose: MapLayerPurpose;
 }
 
 export interface GeoJsonMapLayer extends BaseMapLayer {
@@ -199,6 +203,7 @@ interface ConnectionStoreState {
     geometryType: string;
     filter?: TableFilterDefinition | null;
     sourceViewId?: string | null;
+    purpose?: MapLayerPurpose;
   }) => void;
   refreshGeoJsonSourcesForTable: (payload: {
     connectionId: string;
@@ -213,6 +218,8 @@ interface ConnectionStoreState {
     kind: string;
     name: string;
     columns: FlowmapTableSource['columns'];
+    rowRef?: RowReference | null;
+    purpose?: MapLayerPurpose;
   }) => void;
   addArcLayer: (payload: {
     connectionId: string;
@@ -222,6 +229,8 @@ interface ConnectionStoreState {
     kind: string;
     name: string;
     columns: FlowmapTableSource['columns'];
+    rowRef?: RowReference | null;
+    purpose?: MapLayerPurpose;
   }) => void;
   removeMapLayer: (layerId: string) => void;
   toggleMapLayerVisibility: (layerId: string) => void;
@@ -453,6 +462,7 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
         defaultMagnitude: columns.defaultMagnitude ?? 1,
       },
       spatialFilter: source.spatialFilter ?? null,
+      rowRef: source.rowRef ?? null,
     };
   }
 
@@ -469,6 +479,7 @@ function normalizeMapLayer(layer: Partial<MapLayer>, index: number): MapLayer {
       name: layer.name ?? 'Flow layer',
       visible: layer.visible ?? true,
       icon: layer.icon ?? 'flow',
+      purpose: layer.purpose ?? 'configured',
       style: layer.style ?? createDefaultFlowmapStyle(),
     };
   }
@@ -484,6 +495,7 @@ function normalizeMapLayer(layer: Partial<MapLayer>, index: number): MapLayer {
       name: arcLayer.name ?? 'Arc layer',
       visible: arcLayer.visible ?? true,
       icon: arcLayer.icon ?? 'flow',
+      purpose: arcLayer.purpose ?? 'configured',
       color: arcLayer.color ?? getDefaultLayerColor(index),
       width: arcLayer.width ?? 3,
     };
@@ -499,6 +511,7 @@ function normalizeMapLayer(layer: Partial<MapLayer>, index: number): MapLayer {
     name: geoJsonLayer.name ?? 'Layer',
     visible: geoJsonLayer.visible ?? true,
     icon: geoJsonLayer.icon ?? getDefaultLayerIcon(''),
+    purpose: geoJsonLayer.purpose ?? 'configured',
     color: geoJsonLayer.color ?? getDefaultLayerColor(index),
     opacity: geoJsonLayer.opacity ?? 80,
   };
@@ -556,6 +569,7 @@ function findFlowmapSource(
     schema: string;
     table: string;
     columns: FlowmapTableSource['columns'];
+    rowRef?: RowReference | null;
   },
 ) {
   return sources.find(
@@ -564,7 +578,9 @@ function findFlowmapSource(
       source.connectionId === payload.connectionId &&
       source.schema === payload.schema &&
       source.table === payload.table &&
-      JSON.stringify(source.columns) === JSON.stringify(payload.columns),
+      JSON.stringify(source.columns) === JSON.stringify(payload.columns) &&
+      JSON.stringify(source.rowRef ?? null) ===
+        JSON.stringify(payload.rowRef ?? null),
   );
 }
 
@@ -610,6 +626,7 @@ function migrateLegacyLayers(
       name: legacyLayer.name,
       visible: legacyLayer.visible,
       icon: legacyLayer.icon,
+      purpose: 'configured',
       color: legacyLayer.color,
       opacity: legacyLayer.opacity,
     });
@@ -903,6 +920,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 name: payload.name,
                 visible: true,
                 icon: getDefaultLayerIcon(payload.geometryType),
+                purpose: payload.purpose ?? 'configured',
                 color: getDefaultLayerColor(state.mapLayers.length),
                 opacity: 80,
               },
@@ -936,6 +954,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               kind: payload.kind,
               columns: payload.columns,
               spatialFilter: null,
+              rowRef: payload.rowRef ?? null,
             };
             nextSources.push(source);
           }
@@ -970,6 +989,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 name: payload.name,
                 visible: true,
                 icon: 'flow',
+                purpose: payload.purpose ?? 'configured',
                 style: createDefaultFlowmapStyle(),
               },
             ],
@@ -991,6 +1011,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               kind: payload.kind,
               columns: payload.columns,
               spatialFilter: null,
+              rowRef: payload.rowRef ?? null,
             };
             nextSources.push(source);
           }
@@ -1025,6 +1046,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 name: payload.name,
                 visible: true,
                 icon: 'flow',
+                purpose: payload.purpose ?? 'configured',
                 color: getDefaultLayerColor(state.mapLayers.length),
                 width: 3,
               },

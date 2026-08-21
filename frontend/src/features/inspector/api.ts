@@ -20,6 +20,8 @@ export interface InspectableTable {
 
 export interface InspectableSchema {
   name: string;
+  alias: string;
+  visible: boolean;
 }
 
 export interface InspectableTableSummary {
@@ -81,6 +83,7 @@ export interface RelatedRowsGroup {
   sourceColumn: string;
   targetColumn: string;
   primaryKey: string[];
+  isEditable: boolean;
   columns: InspectorColumn[];
   geometryColumns: InspectorGeometryColumn[];
   rows: InspectorRow[];
@@ -173,7 +176,39 @@ export async function fetchInspectableSchemas(connection: DatabaseConnection) {
     'Failed to load database schemas.',
   );
 
-  return payload.schemas;
+  return payload.schemas.map((schema) => ({
+    ...schema,
+    alias: schema.alias ?? '',
+    visible: schema.visible ?? true,
+  }));
+}
+
+export async function saveSchemaDisplayConfigs(
+  connection: DatabaseConnection,
+  configs: InspectableSchema[],
+) {
+  const response = await fetch(
+    '/api/v1/database-connections/schema-display-configs/save',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...connectionPayload(connection),
+        configs: configs.map((schema) => ({
+          schema: schema.name,
+          alias: schema.alias,
+          visible: schema.visible,
+        })),
+      }),
+    },
+  );
+
+  await decodePayload<{ configs: unknown[] }>(
+    response,
+    'Failed to save schema display settings.',
+  );
 }
 
 export async function fetchInspectableSchemaTables(

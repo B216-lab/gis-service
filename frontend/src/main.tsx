@@ -1,5 +1,6 @@
 import '@mantine/core/styles.css';
-import '@gfazioli/mantine-split-pane/styles.css';
+import '@mantine/dates/styles.css';
+import 'flexlayout-react/style/combined.css';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   ColorSchemeScript,
