@@ -346,8 +346,12 @@ export function WorkspaceLayout({
   const focusPanel = useCallback(
     (panelId: string) => {
       const tabId = dynamicPanelTabId(panelId);
-      if (model.getNodeById(tabId)) {
+      const tabNode = model.getNodeById(tabId) as TabNode | undefined;
+      if (tabNode) {
         model.doAction(Actions.selectTab(tabId));
+        if (tabNode.isPoppedOut()) {
+          model.doAction(Actions.movePopoutToFront(tabNode.getLayoutId()));
+        }
       }
     },
     [model],

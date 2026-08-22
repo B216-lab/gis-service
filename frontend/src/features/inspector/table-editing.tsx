@@ -1,4 +1,9 @@
-import { Checkbox, NumberInput, TextInput } from '@mantine/core';
+import {
+  Checkbox,
+  getDefaultZIndex,
+  NumberInput,
+  TextInput,
+} from '@mantine/core';
 import { DatePickerInput, DateTimePicker } from '@mantine/dates';
 
 import type {
@@ -39,6 +44,7 @@ export function renderEditableCell({
         clearable
         disabled={disabled}
         onChange={onChange}
+        popoverProps={{ zIndex: getDefaultZIndex('max') }}
         size="xs"
         value={formatDateEditorValue(value)}
         valueFormat="YYYY-MM-DD"
@@ -55,6 +61,7 @@ export function renderEditableCell({
         onChange={(nextValue) =>
           onChange(formatTimestampChange(column.type, nextValue, value))
         }
+        popoverProps={{ zIndex: getDefaultZIndex('max') }}
         size="xs"
         value={formatTimestampEditorValue(value)}
         valueFormat="YYYY-MM-DD HH:mm:ss"
@@ -81,11 +88,6 @@ export function renderEditableCell({
         disabled={disabled}
         onChange={onChange}
         size="xs"
-        styles={{
-          input: {
-            textAlign: 'right',
-          },
-        }}
         value={formatNumericEditorValue(value)}
       />
     );

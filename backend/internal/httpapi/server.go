@@ -1088,6 +1088,16 @@ func handleServiceError(
 		return
 	}
 
+	if errors.Is(err, postgres.ErrConstraintViolation) {
+		writeError(
+			writer,
+			http.StatusConflict,
+			"database_constraint_violation",
+			err.Error(),
+		)
+		return
+	}
+
 	if errors.Is(err, postgres.ErrConnectionFailed) {
 		writeError(
 			writer,

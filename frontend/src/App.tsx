@@ -8,6 +8,7 @@ import {
   Checkbox,
   Collapse,
   Group,
+  getDefaultZIndex,
   Loader,
   Menu,
   Modal,
@@ -37,6 +38,7 @@ import {
   IconDotsVertical,
   IconEye,
   IconEyeOff,
+  IconFocusCentered,
   IconFolder,
   IconInfoCircle,
   IconLayersIntersect,
@@ -156,6 +158,8 @@ import {
   renderEditableCell,
 } from './features/inspector/table-editing';
 import {
+  fetchFlowmapSourceData,
+  fetchGeoJsonSourceExtent,
   type GeoBounds,
   type LocateFeatureResponse,
   locateGeoJsonFeature,
@@ -171,8 +175,36 @@ import type { MapSelection } from './features/map/selection';
 
 const pageSize = 100;
 const recordEditorPanelId = 'record-editor';
-const relatedRowsPanelId = 'related-rows';
-const relatedRecordPanelId = 'related-record';
+
+interface InspectedRelatedRecord {
+  panelId: string;
+  group: RelatedRowsGroup;
+  row: InspectorRow;
+}
+
+function createRelatedRecordPanelId(
+  connectionId: string,
+  group: RelatedRowsGroup,
+  row: InspectorRow,
+) {
+  const rowIdentity =
+    serializeRowKey(row.rowKey, group.primaryKey) ||
+    JSON.stringify(
+      Object.entries(row.values).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    );
+
+  return [
+    'related-record',
+    connectionId,
+    group.schema,
+    group.table,
+    rowIdentity,
+  ]
+    .map(encodeURIComponent)
+    .join(':');
+}
 
 type SchemaTablesByName = Record<string, InspectableTableSummary[]>;
 type LoadingSchemaTablesByName = Record<string, boolean>;
@@ -286,6 +318,7 @@ function ConnectionManager({
   onLoadSchemas,
   onImportSelectedTable,
   onCreateFlowLayer,
+  onLocateLayer,
   onSelectLayer,
   onSelectCatalogTable,
   onSelectSavedView,
@@ -318,6 +351,7 @@ function ConnectionManager({
     magnitude: string;
     defaultMagnitude: number;
   }) => void;
+  onLocateLayer: (layerId: string) => Promise<void>;
   onSelectLayer: (layerId: string) => void;
   onSelectCatalogTable: (tableKey: string) => void;
   onSelectSavedView: (viewId: string) => void;
@@ -344,6 +378,8 @@ function ConnectionManager({
   const [movementLayerKind, setMovementLayerKind] =
     useState<MovementLayerKind>('flowmap');
   const [flowLayerError, setFlowLayerError] = useState('');
+  const [locatingLayerId, setLocatingLayerId] = useState<string | null>(null);
+  const [layerLocateError, setLayerLocateError] = useState('');
   const [schemaConfigConnection, setSchemaConfigConnection] =
     useState<DatabaseConnection | null>(null);
   const [schemaConfigs, setSchemaConfigs] = useState<InspectableSchema[]>([]);
@@ -470,6 +506,20 @@ function ConnectionManager({
     setFlowLayerForm(currentFlowLayerDefaults);
     setFlowLayerError('');
     flowLayerModal.open();
+  }
+
+  async function handleLocateLayer(layerId: string) {
+    setLocatingLayerId(layerId);
+    setLayerLocateError('');
+    try {
+      await onLocateLayer(layerId);
+    } catch (error) {
+      setLayerLocateError(
+        error instanceof Error ? error.message : 'Failed to locate layer.',
+      );
+    } finally {
+      setLocatingLayerId(null);
+    }
   }
 
   function handleCloseFlowLayerModal() {
@@ -1264,6 +1314,12 @@ function ConnectionManager({
               value={layerPurposeFilter}
             />
 
+            {layerLocateError ? (
+              <Alert color="orange" variant="light">
+                {layerLocateError}
+              </Alert>
+            ) : null}
+
             <ScrollArea
               offsetScrollbars
               scrollbarSize={6}
@@ -1334,6 +1390,26 @@ function ConnectionManager({
                             style={{ flexShrink: 0 }}
                             wrap="nowrap"
                           >
+                            <ActionIcon
+                              aria-label={`Zoom to ${layer.name}`}
+                              disabled={
+                                locatingLayerId !== null &&
+                                locatingLayerId !== layer.id
+                              }
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handleLocateLayer(layer.id);
+                              }}
+                              size="sm"
+                              title="Zoom to layer"
+                              variant="subtle"
+                            >
+                              {locatingLayerId === layer.id ? (
+                                <Loader size={14} />
+                              ) : (
+                                <IconFocusCentered size={16} />
+                              )}
+                            </ActionIcon>
                             <Button
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -1344,7 +1420,7 @@ function ConnectionManager({
                               size="compact-xs"
                               variant="subtle"
                             >
-                              {isExpanded ? 'Close' : 'Style'}
+                              {isExpanded ? 'Close' : 'Settings'}
                             </Button>
                             <ActionIcon
                               aria-label={
@@ -1947,445 +2023,466 @@ function MapLayerEditor({
   }
 
   return (
-    <Stack
-      gap="xs"
+    <Tabs
+      defaultValue="setup"
       pt="xs"
       style={{
         borderTop: '1px solid var(--mantine-color-gray-2)',
       }}
     >
-      <TextInput
-        label="Layer name"
-        onBlur={commitLayerName}
-        onChange={(event) => setDraftName(event.currentTarget.value)}
-        size="xs"
-        value={draftName}
-      />
+      <Tabs.List grow>
+        <Tabs.Tab value="setup">Setup</Tabs.Tab>
+        <Tabs.Tab value="style">Style</Tabs.Tab>
+        <Tabs.Tab value="tooltip">Tooltip</Tabs.Tab>
+      </Tabs.List>
 
-      {layer.type === 'geojson' && source.type === 'geojson-table' ? (
-        <>
-          <Select
-            data={
-              sourceTable?.geometryColumns.length
-                ? sourceTable.geometryColumns.map((column) => ({
-                    label: `${column.name} (${column.geometryType})`,
-                    value: column.name,
-                  }))
-                : [
-                    {
-                      label: `${source.geometryColumn} (${source.geometryType})`,
-                      value: source.geometryColumn,
-                    },
-                  ]
-            }
-            label="Geographic column"
-            onChange={(value) => {
-              const nextGeometryColumn =
-                sourceTable?.geometryColumns.find(
-                  (column) => column.name === value,
-                ) ?? null;
-
-              startTransition(() => {
-                onUpdateGeoJsonSource(source.id, {
-                  geometryColumn: value ?? source.geometryColumn,
-                  geometryType:
-                    nextGeometryColumn?.geometryType ?? source.geometryType,
-                });
-              });
-            }}
+      <Tabs.Panel pt="xs" value="setup">
+        <Stack gap="xs">
+          <TextInput
+            label="Layer name"
+            onBlur={commitLayerName}
+            onChange={(event) => setDraftName(event.currentTarget.value)}
             size="xs"
-            value={source.geometryColumn}
+            value={draftName}
           />
 
-          <Group align="end" grow>
-            <Box>
-              <Text c="dimmed" fw={500} mb={4} size="xs">
-                Color
+          {layer.type === 'geojson' && source.type === 'geojson-table' ? (
+            <Select
+              data={
+                sourceTable?.geometryColumns.length
+                  ? sourceTable.geometryColumns.map((column) => ({
+                      label: `${column.name} (${column.geometryType})`,
+                      value: column.name,
+                    }))
+                  : [
+                      {
+                        label: `${source.geometryColumn} (${source.geometryType})`,
+                        value: source.geometryColumn,
+                      },
+                    ]
+              }
+              label="Geographic column"
+              onChange={(value) => {
+                const nextGeometryColumn =
+                  sourceTable?.geometryColumns.find(
+                    (column) => column.name === value,
+                  ) ?? null;
+
+                startTransition(() => {
+                  onUpdateGeoJsonSource(source.id, {
+                    geometryColumn: value ?? source.geometryColumn,
+                    geometryType:
+                      nextGeometryColumn?.geometryType ?? source.geometryType,
+                  });
+                });
+              }}
+              size="xs"
+              value={source.geometryColumn}
+            />
+          ) : null}
+
+          {(layer.type === 'flowmap' || layer.type === 'arc') &&
+          source.type === 'flowmap-table' ? (
+            <>
+              <Text c="dimmed" fw={700} size="xs" tt="uppercase">
+                Data setup
               </Text>
-              <input
-                aria-label={`Choose color for ${layer.name}`}
-                onBlur={() => {
-                  if (draftColor === layer.color) {
+              <FlowmapSetupFields
+                columns={source.columns}
+                onChange={(patch) =>
+                  startTransition(() => {
+                    onUpdateFlowmapSource(source.id, patch);
+                  })
+                }
+                table={sourceTable}
+              />
+            </>
+          ) : null}
+        </Stack>
+      </Tabs.Panel>
+
+      <Tabs.Panel pt="xs" value="style">
+        <Stack gap="xs">
+          {layer.type === 'geojson' ? (
+            <>
+              <Group align="end" grow>
+                <Box>
+                  <Text c="dimmed" fw={500} mb={4} size="xs">
+                    Color
+                  </Text>
+                  <input
+                    aria-label={`Choose color for ${layer.name}`}
+                    onBlur={() => {
+                      if (draftColor === layer.color) {
+                        return;
+                      }
+
+                      startTransition(() => {
+                        onUpdateGeoJsonLayer(layer.id, {
+                          color: draftColor,
+                        });
+                      });
+                    }}
+                    onChange={(event) =>
+                      setDraftColor(event.currentTarget.value)
+                    }
+                    style={{
+                      width: '100%',
+                      height: 36,
+                      border: '1px solid var(--mantine-color-gray-4)',
+                      borderRadius: 8,
+                      background: 'transparent',
+                      padding: 4,
+                    }}
+                    type="color"
+                    value={draftColor}
+                  />
+                </Box>
+
+                <Select
+                  data={[
+                    { label: 'Circle', value: 'circle' },
+                    { label: 'Square', value: 'square' },
+                    { label: 'Diamond', value: 'diamond' },
+                    { label: 'Line', value: 'line' },
+                  ]}
+                  label="List icon"
+                  onChange={(value) => {
+                    if (!value) {
+                      return;
+                    }
+
+                    startTransition(() => {
+                      onUpdateGeoJsonLayer(layer.id, {
+                        icon: value as LayerGlyphIcon,
+                      });
+                    });
+                  }}
+                  size="xs"
+                  value={layer.icon}
+                />
+              </Group>
+
+              <Stack gap={4}>
+                <Group justify="space-between">
+                  <Text c="dimmed" fw={500} size="xs">
+                    Opacity
+                  </Text>
+                  <Text c="dimmed" size="xs">
+                    {draftOpacity}%
+                  </Text>
+                </Group>
+                <Slider
+                  max={100}
+                  min={0}
+                  onChange={setDraftOpacity}
+                  onChangeEnd={(value) =>
+                    startTransition(() => {
+                      onUpdateGeoJsonLayer(layer.id, {
+                        opacity: value,
+                      });
+                    })
+                  }
+                  size="sm"
+                  value={draftOpacity}
+                />
+              </Stack>
+            </>
+          ) : null}
+
+          {layer.type === 'arc' ? (
+            <>
+              <Group align="end" grow>
+                <Box>
+                  <Text c="dimmed" fw={500} mb={4} size="xs">
+                    Color
+                  </Text>
+                  <input
+                    aria-label={`Choose color for ${layer.name}`}
+                    onBlur={() => {
+                      if (draftColor === layer.color) {
+                        return;
+                      }
+
+                      startTransition(() => {
+                        onUpdateArcLayer(layer.id, {
+                          color: draftColor,
+                        });
+                      });
+                    }}
+                    onChange={(event) =>
+                      setDraftColor(event.currentTarget.value)
+                    }
+                    style={{
+                      width: '100%',
+                      height: 36,
+                      border: '1px solid var(--mantine-color-gray-4)',
+                      borderRadius: 8,
+                      background: 'transparent',
+                      padding: 4,
+                    }}
+                    type="color"
+                    value={draftColor}
+                  />
+                </Box>
+
+                <Select
+                  data={[
+                    { label: 'Flow', value: 'flow' },
+                    { label: 'Line', value: 'line' },
+                  ]}
+                  label="List icon"
+                  onChange={(value) => {
+                    if (!value) {
+                      return;
+                    }
+
+                    startTransition(() => {
+                      onUpdateArcLayer(layer.id, {
+                        icon: value as LayerGlyphIcon,
+                      });
+                    });
+                  }}
+                  size="xs"
+                  value={layer.icon}
+                />
+              </Group>
+
+              <Stack gap={4}>
+                <Group justify="space-between">
+                  <Text c="dimmed" fw={500} size="xs">
+                    Width
+                  </Text>
+                  <Text c="dimmed" size="xs">
+                    {draftArcWidth}px
+                  </Text>
+                </Group>
+                <Slider
+                  max={12}
+                  min={1}
+                  onChange={setDraftArcWidth}
+                  onChangeEnd={(value) =>
+                    startTransition(() => {
+                      onUpdateArcLayer(layer.id, {
+                        width: value,
+                      });
+                    })
+                  }
+                  size="sm"
+                  value={draftArcWidth}
+                />
+              </Stack>
+            </>
+          ) : null}
+
+          {layer.type === 'flowmap' ? (
+            <>
+              <Select
+                data={[
+                  { label: 'Curved', value: 'curved' },
+                  { label: 'Straight', value: 'straight' },
+                  {
+                    label: 'Animated straight',
+                    value: 'animated-straight',
+                  },
+                ]}
+                label="Render mode"
+                onChange={(value) => {
+                  if (!value) {
                     return;
                   }
 
                   startTransition(() => {
-                    onUpdateGeoJsonLayer(layer.id, {
-                      color: draftColor,
+                    onUpdateFlowmapLayer(layer.id, {
+                      style: {
+                        flowLinesRenderingMode:
+                          value as FlowmapMapLayer['style']['flowLinesRenderingMode'],
+                      },
                     });
                   });
                 }}
-                onChange={(event) => setDraftColor(event.currentTarget.value)}
-                style={{
-                  width: '100%',
-                  height: 36,
-                  border: '1px solid var(--mantine-color-gray-4)',
-                  borderRadius: 8,
-                  background: 'transparent',
-                  padding: 4,
-                }}
-                type="color"
-                value={draftColor}
+                size="xs"
+                value={layer.style.flowLinesRenderingMode}
               />
-            </Box>
 
-            <Select
-              data={[
-                { label: 'Circle', value: 'circle' },
-                { label: 'Square', value: 'square' },
-                { label: 'Diamond', value: 'diamond' },
-                { label: 'Line', value: 'line' },
-              ]}
-              label="List icon"
-              onChange={(value) => {
-                if (!value) {
-                  return;
-                }
-
-                startTransition(() => {
-                  onUpdateGeoJsonLayer(layer.id, {
-                    icon: value as LayerGlyphIcon,
-                  });
-                });
-              }}
-              size="xs"
-              value={layer.icon}
-            />
-          </Group>
-
-          <Stack gap={4}>
-            <Group justify="space-between">
-              <Text c="dimmed" fw={500} size="xs">
-                Opacity
-              </Text>
-              <Text c="dimmed" size="xs">
-                {draftOpacity}%
-              </Text>
-            </Group>
-            <Slider
-              max={100}
-              min={0}
-              onChange={setDraftOpacity}
-              onChangeEnd={(value) =>
-                startTransition(() => {
-                  onUpdateGeoJsonLayer(layer.id, {
-                    opacity: value,
-                  });
-                })
-              }
-              size="sm"
-              value={draftOpacity}
-            />
-          </Stack>
-        </>
-      ) : null}
-
-      {(layer.type === 'flowmap' || layer.type === 'arc') &&
-      source.type === 'flowmap-table' ? (
-        <>
-          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-            Data setup
-          </Text>
-          <FlowmapSetupFields
-            columns={source.columns}
-            onChange={(patch) =>
-              startTransition(() => {
-                onUpdateFlowmapSource(source.id, patch);
-              })
-            }
-            table={sourceTable}
-          />
-        </>
-      ) : null}
-
-      {layer.type === 'arc' ? (
-        <>
-          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-            Visuals
-          </Text>
-          <Group align="end" grow>
-            <Box>
-              <Text c="dimmed" fw={500} mb={4} size="xs">
-                Color
-              </Text>
-              <input
-                aria-label={`Choose color for ${layer.name}`}
-                onBlur={() => {
-                  if (draftColor === layer.color) {
-                    return;
+              <Stack gap={4}>
+                <Group justify="space-between">
+                  <Text c="dimmed" fw={500} size="xs">
+                    Thickness scale
+                  </Text>
+                  <Text c="dimmed" size="xs">
+                    {draftThicknessScale.toFixed(1)}
+                  </Text>
+                </Group>
+                <Slider
+                  max={10}
+                  min={1}
+                  onChange={setDraftThicknessScale}
+                  onChangeEnd={(value) =>
+                    startTransition(() => {
+                      onUpdateFlowmapLayer(layer.id, {
+                        style: {
+                          flowLineThicknessScale: value,
+                        },
+                      });
+                    })
                   }
+                  step={0.5}
+                  value={draftThicknessScale}
+                />
+              </Stack>
 
-                  startTransition(() => {
-                    onUpdateArcLayer(layer.id, {
-                      color: draftColor,
+              <Group grow>
+                <Select
+                  data={[
+                    { label: 'Teal', value: 'Teal' },
+                    { label: 'Blue', value: 'Blue' },
+                    { label: 'Red', value: 'Red' },
+                    { label: 'Purp', value: 'Purp' },
+                  ]}
+                  label="Color scheme"
+                  onChange={(value) => {
+                    if (!value) {
+                      return;
+                    }
+
+                    startTransition(() => {
+                      onUpdateFlowmapLayer(layer.id, {
+                        style: {
+                          colorScheme: value,
+                        },
+                      });
                     });
-                  });
-                }}
-                onChange={(event) => setDraftColor(event.currentTarget.value)}
-                style={{
-                  width: '100%',
-                  height: 36,
-                  border: '1px solid var(--mantine-color-gray-4)',
-                  borderRadius: 8,
-                  background: 'transparent',
-                  padding: 4,
-                }}
-                type="color"
-                value={draftColor}
+                  }}
+                  size="xs"
+                  value={layer.style.colorScheme}
+                />
+                <Select
+                  data={[
+                    { label: 'Flow', value: 'flow' },
+                    { label: 'Line', value: 'line' },
+                    { label: 'Diamond', value: 'diamond' },
+                  ]}
+                  label="List icon"
+                  onChange={(value) => {
+                    if (!value) {
+                      return;
+                    }
+
+                    startTransition(() => {
+                      onUpdateFlowmapLayer(layer.id, {
+                        icon: value as LayerGlyphIcon,
+                      });
+                    });
+                  }}
+                  size="xs"
+                  value={layer.icon}
+                />
+              </Group>
+
+              <Checkbox
+                checked={layer.style.locationsEnabled}
+                label="Show locations"
+                onChange={(event) =>
+                  startTransition(() => {
+                    onUpdateFlowmapLayer(layer.id, {
+                      style: {
+                        locationsEnabled: event.currentTarget.checked,
+                      },
+                    });
+                  })
+                }
               />
-            </Box>
-
-            <Select
-              data={[
-                { label: 'Flow', value: 'flow' },
-                { label: 'Line', value: 'line' },
-              ]}
-              label="List icon"
-              onChange={(value) => {
-                if (!value) {
-                  return;
+              <Checkbox
+                checked={layer.style.locationTotalsEnabled}
+                label="Show totals"
+                onChange={(event) =>
+                  startTransition(() => {
+                    onUpdateFlowmapLayer(layer.id, {
+                      style: {
+                        locationTotalsEnabled: event.currentTarget.checked,
+                      },
+                    });
+                  })
                 }
-
-                startTransition(() => {
-                  onUpdateArcLayer(layer.id, {
-                    icon: value as LayerGlyphIcon,
-                  });
-                });
-              }}
-              size="xs"
-              value={layer.icon}
-            />
-          </Group>
-
-          <Stack gap={4}>
-            <Group justify="space-between">
-              <Text c="dimmed" fw={500} size="xs">
-                Width
-              </Text>
-              <Text c="dimmed" size="xs">
-                {draftArcWidth}px
-              </Text>
-            </Group>
-            <Slider
-              max={12}
-              min={1}
-              onChange={setDraftArcWidth}
-              onChangeEnd={(value) =>
-                startTransition(() => {
-                  onUpdateArcLayer(layer.id, {
-                    width: value,
-                  });
-                })
-              }
-              size="sm"
-              value={draftArcWidth}
-            />
-          </Stack>
-        </>
-      ) : null}
-
-      {layer.type === 'flowmap' ? (
-        <>
-          <Text c="dimmed" fw={700} size="xs" tt="uppercase">
-            Visuals
-          </Text>
-          <Select
-            data={[
-              { label: 'Curved', value: 'curved' },
-              { label: 'Straight', value: 'straight' },
-              {
-                label: 'Animated straight',
-                value: 'animated-straight',
-              },
-            ]}
-            label="Render mode"
-            onChange={(value) => {
-              if (!value) {
-                return;
-              }
-
-              startTransition(() => {
-                onUpdateFlowmapLayer(layer.id, {
-                  style: {
-                    flowLinesRenderingMode:
-                      value as FlowmapMapLayer['style']['flowLinesRenderingMode'],
-                  },
-                });
-              });
-            }}
-            size="xs"
-            value={layer.style.flowLinesRenderingMode}
-          />
-
-          <Stack gap={4}>
-            <Group justify="space-between">
-              <Text c="dimmed" fw={500} size="xs">
-                Thickness scale
-              </Text>
-              <Text c="dimmed" size="xs">
-                {draftThicknessScale.toFixed(1)}
-              </Text>
-            </Group>
-            <Slider
-              max={10}
-              min={1}
-              onChange={setDraftThicknessScale}
-              onChangeEnd={(value) =>
-                startTransition(() => {
-                  onUpdateFlowmapLayer(layer.id, {
-                    style: {
-                      flowLineThicknessScale: value,
-                    },
-                  });
-                })
-              }
-              step={0.5}
-              value={draftThicknessScale}
-            />
-          </Stack>
-
-          <Group grow>
-            <Select
-              data={[
-                { label: 'Teal', value: 'Teal' },
-                { label: 'Blue', value: 'Blue' },
-                { label: 'Red', value: 'Red' },
-                { label: 'Purp', value: 'Purp' },
-              ]}
-              label="Color scheme"
-              onChange={(value) => {
-                if (!value) {
-                  return;
+              />
+              <Checkbox
+                checked={layer.style.locationLabelsEnabled}
+                label="Show labels"
+                onChange={(event) =>
+                  startTransition(() => {
+                    onUpdateFlowmapLayer(layer.id, {
+                      style: {
+                        locationLabelsEnabled: event.currentTarget.checked,
+                      },
+                    });
+                  })
                 }
-
-                startTransition(() => {
-                  onUpdateFlowmapLayer(layer.id, {
-                    style: {
-                      colorScheme: value,
-                    },
-                  });
-                });
-              }}
-              size="xs"
-              value={layer.style.colorScheme}
-            />
-            <Select
-              data={[
-                { label: 'Flow', value: 'flow' },
-                { label: 'Line', value: 'line' },
-                { label: 'Diamond', value: 'diamond' },
-              ]}
-              label="List icon"
-              onChange={(value) => {
-                if (!value) {
-                  return;
+              />
+              <Checkbox
+                checked={layer.style.clusteringEnabled}
+                label="Enable clustering"
+                onChange={(event) =>
+                  startTransition(() => {
+                    onUpdateFlowmapLayer(layer.id, {
+                      style: {
+                        clusteringEnabled: event.currentTarget.checked,
+                      },
+                    });
+                  })
                 }
+              />
+              <Checkbox
+                checked={layer.style.darkMode}
+                label="Dark mode palette"
+                onChange={(event) =>
+                  startTransition(() => {
+                    onUpdateFlowmapLayer(layer.id, {
+                      style: {
+                        darkMode: event.currentTarget.checked,
+                      },
+                    });
+                  })
+                }
+              />
+              <Stack gap={4}>
+                <Group justify="space-between">
+                  <Text c="dimmed" fw={500} size="xs">
+                    Top flows
+                  </Text>
+                  <Text c="dimmed" size="xs">
+                    {draftTopFlows}
+                  </Text>
+                </Group>
+                <Slider
+                  max={2000}
+                  min={50}
+                  onChange={setDraftTopFlows}
+                  onChangeEnd={(value) =>
+                    startTransition(() => {
+                      onUpdateFlowmapLayer(layer.id, {
+                        style: {
+                          maxTopFlowsDisplayNum: value,
+                        },
+                      });
+                    })
+                  }
+                  step={50}
+                  value={draftTopFlows}
+                />
+              </Stack>
+            </>
+          ) : null}
+        </Stack>
+      </Tabs.Panel>
 
-                startTransition(() => {
-                  onUpdateFlowmapLayer(layer.id, {
-                    icon: value as LayerGlyphIcon,
-                  });
-                });
-              }}
-              size="xs"
-              value={layer.icon}
-            />
-          </Group>
-
-          <Checkbox
-            checked={layer.style.locationsEnabled}
-            label="Show locations"
-            onChange={(event) =>
-              startTransition(() => {
-                onUpdateFlowmapLayer(layer.id, {
-                  style: {
-                    locationsEnabled: event.currentTarget.checked,
-                  },
-                });
-              })
-            }
-          />
-          <Checkbox
-            checked={layer.style.locationTotalsEnabled}
-            label="Show totals"
-            onChange={(event) =>
-              startTransition(() => {
-                onUpdateFlowmapLayer(layer.id, {
-                  style: {
-                    locationTotalsEnabled: event.currentTarget.checked,
-                  },
-                });
-              })
-            }
-          />
-          <Checkbox
-            checked={layer.style.locationLabelsEnabled}
-            label="Show labels"
-            onChange={(event) =>
-              startTransition(() => {
-                onUpdateFlowmapLayer(layer.id, {
-                  style: {
-                    locationLabelsEnabled: event.currentTarget.checked,
-                  },
-                });
-              })
-            }
-          />
-          <Checkbox
-            checked={layer.style.clusteringEnabled}
-            label="Enable clustering"
-            onChange={(event) =>
-              startTransition(() => {
-                onUpdateFlowmapLayer(layer.id, {
-                  style: {
-                    clusteringEnabled: event.currentTarget.checked,
-                  },
-                });
-              })
-            }
-          />
-          <Checkbox
-            checked={layer.style.darkMode}
-            label="Dark mode palette"
-            onChange={(event) =>
-              startTransition(() => {
-                onUpdateFlowmapLayer(layer.id, {
-                  style: {
-                    darkMode: event.currentTarget.checked,
-                  },
-                });
-              })
-            }
-          />
-          <Stack gap={4}>
-            <Group justify="space-between">
-              <Text c="dimmed" fw={500} size="xs">
-                Top flows
-              </Text>
-              <Text c="dimmed" size="xs">
-                {draftTopFlows}
-              </Text>
-            </Group>
-            <Slider
-              max={2000}
-              min={50}
-              onChange={setDraftTopFlows}
-              onChangeEnd={(value) =>
-                startTransition(() => {
-                  onUpdateFlowmapLayer(layer.id, {
-                    style: {
-                      maxTopFlowsDisplayNum: value,
-                    },
-                  });
-                })
-              }
-              step={50}
-              value={draftTopFlows}
-            />
-          </Stack>
-        </>
-      ) : null}
-    </Stack>
+      <Tabs.Panel pt="xs" value="tooltip">
+        <Alert color="blue" title="Tooltip configuration" variant="light">
+          Field selection, labels, order, and value formatting will be
+          configured here.
+        </Alert>
+      </Tabs.Panel>
+    </Tabs>
   );
 }
 
@@ -2452,11 +2549,11 @@ function DataInspector({
   const [isLoadingRelatedRows, setIsLoadingRelatedRows] = useState(false);
   const [relatedRowsError, setRelatedRowsError] = useState('');
   const [relatedRowsRefreshToken, setRelatedRowsRefreshToken] = useState(0);
-  const [inspectedRelatedRecord, setInspectedRelatedRecord] = useState<{
-    group: RelatedRowsGroup;
-    row: InspectorRow;
-  } | null>(null);
-  const [relatedRowsPanelOpened, setRelatedRowsPanelOpened] = useState(false);
+  const [inspectedRelatedRecords, setInspectedRelatedRecords] = useState<
+    Record<string, InspectedRelatedRecord>
+  >({});
+  const inspectedRelatedPanelIdsRef = useRef<string[]>([]);
+  inspectedRelatedPanelIdsRef.current = Object.keys(inspectedRelatedRecords);
   const [selectedGridRowId, setSelectedGridRowId] = useState<string | null>(
     null,
   );
@@ -2481,8 +2578,8 @@ function DataInspector({
   const removeSavedTableView = useConnectionStore(
     (state) => state.removeSavedTableView,
   );
-  const refreshGeoJsonSourcesForTable = useConnectionStore(
-    (state) => state.refreshGeoJsonSourcesForTable,
+  const refreshMapSourcesForConnection = useConnectionStore(
+    (state) => state.refreshMapSourcesForConnection,
   );
   const relationDisplayByKey = useConnectionStore(
     (state) => state.relationDisplayByKey,
@@ -3038,11 +3135,7 @@ function DataInspector({
       setSaveMessage(
         `Saved ${payload.applied} change${payload.applied === 1 ? '' : 's'}.`,
       );
-      refreshGeoJsonSourcesForTable({
-        connectionId: connection.id,
-        schema: selectedTable.schema,
-        table: selectedTable.name,
-      });
+      refreshMapSourcesForConnection(connection.id);
       startTransition(() => {
         setRowsRefreshToken((value) => value + 1);
       });
@@ -3132,6 +3225,27 @@ function DataInspector({
       );
     } finally {
       setLocatingRowToken(null);
+    }
+  }
+
+  function handleInspectRelatedRecord(
+    group: RelatedRowsGroup,
+    row: InspectorRow,
+  ) {
+    if (!connection) {
+      return;
+    }
+
+    const panelId = createRelatedRecordPanelId(connection.id, group, row);
+    const isAlreadyOpen = Boolean(inspectedRelatedRecords[panelId]);
+
+    setInspectedRelatedRecords((current) => ({
+      ...current,
+      [panelId]: { panelId, group, row },
+    }));
+
+    if (isAlreadyOpen) {
+      workspacePanels.focusPanel(panelId);
     }
   }
 
@@ -3415,12 +3529,7 @@ function DataInspector({
     mantineTableBodyRowProps: ({ row }) => ({
       onClick: () => {
         setSelectedGridRowId(row.original.id);
-        setInspectedRelatedRecord(null);
-        setRelatedRowsPanelOpened(row.original.kind === 'record');
         workspacePanels.focusPanel(recordEditorPanelId);
-        if (row.original.kind === 'record') {
-          workspacePanels.focusPanel(relatedRowsPanelId);
-        }
       },
       style: {
         background:
@@ -3541,11 +3650,7 @@ function DataInspector({
         floatRect: { height: 776, right: 24, top: 34, width: 360 },
         icon: 'record',
         name: `Record · ${tableLabel}${selectedGridRowLabel ? ` #${selectedGridRowLabel}` : ''}`,
-        onClose: () => {
-          setSelectedGridRowId(null);
-          setInspectedRelatedRecord(null);
-          setRelatedRowsPanelOpened(false);
-        },
+        onClose: () => setSelectedGridRowId(null),
         content: (
           <PanelFrame>
             <RecordEditorPanel
@@ -3556,10 +3661,14 @@ function DataInspector({
               foreignKeyByColumn={foreignKeyByColumn}
               hasDirtyChanges={hasDirtyChanges}
               isSavingChanges={isSavingChanges}
+              isLoadingRelatedRows={isLoadingRelatedRows}
               onChangeDraft={handleDraftInsertChange}
               onChangeExisting={handleExistingCellChange}
               onDiscard={handleDiscardChanges}
+              onInspectRelatedRow={handleInspectRelatedRecord}
               onSave={() => void handleSaveChanges()}
+              relatedGroups={relatedGroups}
+              relatedRowsError={relatedRowsError}
               relationConfigByColumn={relationConfigByColumn}
               relationLabels={relationLabels}
               recordLabel={selectedGridRowLabel}
@@ -3577,134 +3686,127 @@ function DataInspector({
       workspacePanels.closePanel(recordEditorPanelId);
     }
 
-    if (
-      connection &&
-      selectedGridRow?.kind === 'record' &&
-      relatedRowsPanelOpened
-    ) {
-      workspacePanels.registerPanel({
-        id: relatedRowsPanelId,
-        floatRect: { height: 360, right: 404, top: 34, width: 360 },
-        icon: 'related',
-        name: `Related · ${tableLabel}${selectedGridRowLabel ? ` #${selectedGridRowLabel}` : ''}`,
-        onClose: () => {
-          setRelatedRowsPanelOpened(false);
-          setInspectedRelatedRecord(null);
-        },
-        content: (
-          <PanelFrame>
-            <RelatedRowsPanelView
-              connectionId={connection.id}
-              error={relatedRowsError}
-              groups={relatedGroups}
-              isLoading={isLoadingRelatedRows}
-              onInspectRow={(group, relatedRow) => {
-                setInspectedRelatedRecord({ group, row: relatedRow });
-                workspacePanels.focusPanel(relatedRecordPanelId);
-              }}
-              recordLabel={selectedGridRowLabel}
-              tableLabel={tableLabel}
-            />
-          </PanelFrame>
-        ),
-      });
-    } else {
-      workspacePanels.closePanel(relatedRowsPanelId);
-    }
+    if (connection) {
+      Object.values(inspectedRelatedRecords).forEach(
+        (inspectedRelatedRecord, index) => {
+          const relatedDisplayConfig =
+            tableDisplayByKey[
+              tableDisplayKeyFromParts(
+                connection.id,
+                inspectedRelatedRecord.group.schema,
+                inspectedRelatedRecord.group.table,
+              )
+            ];
+          const relatedTableLabel =
+            relatedDisplayConfig?.tableAlias?.trim() ||
+            inspectedRelatedRecord.group.label;
+          const relatedRecordKey = inspectedRelatedRecord.group.primaryKey
+            .map((columnName) =>
+              formatCellValue(inspectedRelatedRecord.row.values[columnName]),
+            )
+            .join(', ');
 
-    if (connection && inspectedRelatedRecord) {
-      const relatedDisplayConfig =
-        tableDisplayByKey[
-          tableDisplayKeyFromParts(
-            connection.id,
-            inspectedRelatedRecord.group.schema,
-            inspectedRelatedRecord.group.table,
-          )
-        ];
-      const relatedTableLabel =
-        relatedDisplayConfig?.tableAlias?.trim() ||
-        inspectedRelatedRecord.group.label;
-      const relatedRecordKey = inspectedRelatedRecord.group.primaryKey
-        .map((columnName) =>
-          formatCellValue(inspectedRelatedRecord.row.values[columnName]),
-        )
-        .join(', ');
-
-      workspacePanels.registerPanel({
-        id: relatedRecordPanelId,
-        floatRect: { height: 837, right: 404, top: 34, width: 420 },
-        icon: 'record',
-        name: `${relatedTableLabel}${relatedRecordKey ? ` #${relatedRecordKey}` : ''}`,
-        onClose: () => setInspectedRelatedRecord(null),
-        content: (
-          <PanelFrame>
-            <RelatedRecordPanel
-              connection={connection}
-              group={inspectedRelatedRecord.group}
-              key={`${inspectedRelatedRecord.group.schema}.${inspectedRelatedRecord.group.table}:${serializeRowKey(inspectedRelatedRecord.row.rowKey, inspectedRelatedRecord.group.primaryKey)}`}
-              onCreateArc={(startGeometryColumn, endGeometryColumn) =>
-                onCreateRelatedArc(
-                  inspectedRelatedRecord.group,
-                  inspectedRelatedRecord.row,
-                  startGeometryColumn,
-                  endGeometryColumn,
-                )
-              }
-              onLocateRow={(geometryColumnName) =>
-                void handleLocateRelatedRow(
-                  inspectedRelatedRecord.group,
-                  inspectedRelatedRecord.row,
-                  geometryColumnName,
-                )
-              }
-              onSaved={(values) => {
-                const savedRowToken = serializeRowKey(
-                  inspectedRelatedRecord.row.rowKey,
-                  inspectedRelatedRecord.group.primaryKey,
-                );
-                setInspectedRelatedRecord((current) => {
-                  if (!current) {
-                    return current;
+          workspacePanels.registerPanel({
+            id: inspectedRelatedRecord.panelId,
+            floatRect: {
+              height: 837,
+              right: 404 + (index % 5) * 28,
+              top: 34 + (index % 5) * 28,
+              width: 420,
+            },
+            icon: 'record',
+            name: `${relatedTableLabel}${relatedRecordKey ? ` #${relatedRecordKey}` : ''}`,
+            onClose: () =>
+              setInspectedRelatedRecords((current) => {
+                const next = { ...current };
+                delete next[inspectedRelatedRecord.panelId];
+                return next;
+              }),
+            content: (
+              <PanelFrame>
+                <RelatedRecordPanel
+                  connection={connection}
+                  group={inspectedRelatedRecord.group}
+                  key={`${inspectedRelatedRecord.group.schema}.${inspectedRelatedRecord.group.table}:${serializeRowKey(inspectedRelatedRecord.row.rowKey, inspectedRelatedRecord.group.primaryKey)}`}
+                  onCreateArc={(startGeometryColumn, endGeometryColumn) =>
+                    onCreateRelatedArc(
+                      inspectedRelatedRecord.group,
+                      inspectedRelatedRecord.row,
+                      startGeometryColumn,
+                      endGeometryColumn,
+                    )
                   }
+                  onLocateRow={(geometryColumnName) =>
+                    void handleLocateRelatedRow(
+                      inspectedRelatedRecord.group,
+                      inspectedRelatedRecord.row,
+                      geometryColumnName,
+                    )
+                  }
+                  onInspectRelatedRow={handleInspectRelatedRecord}
+                  onDeleted={() => {
+                    workspacePanels.closePanel(inspectedRelatedRecord.panelId);
+                    setInspectedRelatedRecords((current) => {
+                      const next = { ...current };
+                      delete next[inspectedRelatedRecord.panelId];
+                      return next;
+                    });
+                    setRelatedRowsRefreshToken((value) => value + 1);
+                    startTransition(() => {
+                      setRowsRefreshToken((value) => value + 1);
+                    });
+                    refreshMapSourcesForConnection(connection.id);
+                  }}
+                  onSaved={(values) => {
+                    const savedRowToken = serializeRowKey(
+                      inspectedRelatedRecord.row.rowKey,
+                      inspectedRelatedRecord.group.primaryKey,
+                    );
+                    setInspectedRelatedRecords((current) => {
+                      const currentRecord =
+                        current[inspectedRelatedRecord.panelId];
+                      if (!currentRecord) {
+                        return current;
+                      }
 
-                  return {
-                    ...current,
-                    group: {
-                      ...current.group,
-                      rows: current.group.rows.map((candidate) =>
-                        serializeRowKey(
-                          candidate.rowKey,
-                          current.group.primaryKey,
-                        ) === savedRowToken
-                          ? { ...candidate, values }
-                          : candidate,
-                      ),
-                    },
-                    row: { ...current.row, values },
-                  };
-                });
-                refreshGeoJsonSourcesForTable({
-                  connectionId: connection.id,
-                  schema: inspectedRelatedRecord.group.schema,
-                  table: inspectedRelatedRecord.group.table,
-                });
-                setRelatedRowsRefreshToken((value) => value + 1);
-              }}
-              row={inspectedRelatedRecord.row}
-            />
-          </PanelFrame>
-        ),
-      });
-    } else {
-      workspacePanels.closePanel(relatedRecordPanelId);
+                      return {
+                        ...current,
+                        [inspectedRelatedRecord.panelId]: {
+                          ...currentRecord,
+                          group: {
+                            ...currentRecord.group,
+                            rows: currentRecord.group.rows.map((candidate) =>
+                              serializeRowKey(
+                                candidate.rowKey,
+                                currentRecord.group.primaryKey,
+                              ) === savedRowToken
+                                ? { ...candidate, values }
+                                : candidate,
+                            ),
+                          },
+                          row: { ...currentRecord.row, values },
+                        },
+                      };
+                    });
+                    refreshMapSourcesForConnection(connection.id);
+                    setRelatedRowsRefreshToken((value) => value + 1);
+                  }}
+                  row={inspectedRelatedRecord.row}
+                />
+              </PanelFrame>
+            ),
+          });
+        },
+      );
     }
   });
 
   useEffect(
     () => () => {
       workspacePanels.closePanel(recordEditorPanelId);
-      workspacePanels.closePanel(relatedRowsPanelId);
-      workspacePanels.closePanel(relatedRecordPanelId);
+      for (const panelId of inspectedRelatedPanelIdsRef.current) {
+        workspacePanels.closePanel(panelId);
+      }
     },
     [workspacePanels],
   );
@@ -5158,10 +5260,14 @@ function RecordEditorPanel({
   foreignKeyByColumn,
   hasDirtyChanges,
   isSavingChanges,
+  isLoadingRelatedRows,
   onChangeDraft,
   onChangeExisting,
   onDiscard,
+  onInspectRelatedRow,
   onSave,
+  relatedGroups,
+  relatedRowsError,
   relationConfigByColumn,
   relationLabels,
   recordLabel,
@@ -5179,6 +5285,7 @@ function RecordEditorPanel({
   foreignKeyByColumn: Map<string, InspectorForeignKey>;
   hasDirtyChanges: boolean;
   isSavingChanges: boolean;
+  isLoadingRelatedRows: boolean;
   onChangeDraft: (
     draftId: string,
     column: InspectorColumn,
@@ -5190,7 +5297,10 @@ function RecordEditorPanel({
     nextValue: unknown,
   ) => void;
   onDiscard: () => void;
+  onInspectRelatedRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
   onSave: () => void;
+  relatedGroups: RelatedRowsGroup[];
+  relatedRowsError: string;
   relationConfigByColumn: Map<string, string[]>;
   relationLabels: Record<string, Record<string, RelationOption>>;
   recordLabel: string;
@@ -5319,6 +5429,26 @@ function RecordEditorPanel({
               </Stack>
             );
           })}
+          {row.kind === 'record' ? (
+            <Stack
+              gap="xs"
+              pt="sm"
+              style={{
+                borderTop: '1px solid var(--mantine-color-default-border)',
+              }}
+            >
+              <Text fw={700} size="sm">
+                Related data
+              </Text>
+              <RelatedRowsPanel
+                connectionId={connection.id}
+                error={relatedRowsError}
+                groups={relatedGroups}
+                isLoading={isLoadingRelatedRows}
+                onInspectRow={onInspectRelatedRow}
+              />
+            </Stack>
+          ) : null}
         </Stack>
       </ScrollArea>
 
@@ -5352,46 +5482,6 @@ function RecordEditorPanel({
           </Button>
         </Group>
       </Group>
-    </Stack>
-  );
-}
-
-function RelatedRowsPanelView({
-  connectionId,
-  error,
-  groups,
-  isLoading,
-  onInspectRow,
-  recordLabel,
-  tableLabel,
-}: {
-  connectionId: string;
-  error: string;
-  groups: RelatedRowsGroup[];
-  isLoading: boolean;
-  onInspectRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
-  recordLabel: string;
-  tableLabel: string;
-}) {
-  return (
-    <Stack aria-label="Related data" gap="xs" h="100%" style={{ minHeight: 0 }}>
-      <Text c="dimmed" size="xs" truncate="end">
-        {tableLabel}
-        {recordLabel ? ` · #${recordLabel}` : ''}
-      </Text>
-      <ScrollArea
-        offsetScrollbars
-        scrollbarSize={8}
-        style={{ flex: 1, minHeight: 0 }}
-      >
-        <RelatedRowsPanel
-          connectionId={connectionId}
-          error={error}
-          groups={groups}
-          isLoading={isLoading}
-          onInspectRow={onInspectRow}
-        />
-      </ScrollArea>
     </Stack>
   );
 }
@@ -5461,7 +5551,7 @@ function RelatedRowsPanel({
         return (
           <Stack
             gap={6}
-            key={`${group.schema}.${group.table}.${group.targetColumn}`}
+            key={`${group.schema}.${group.table}.${group.sourceColumn}.${group.targetColumn}`}
           >
             <Group justify="space-between" wrap="nowrap">
               <Stack gap={0} style={{ minWidth: 0 }}>
@@ -5548,6 +5638,8 @@ function RelatedRecordPanel({
   connection,
   group,
   onCreateArc,
+  onDeleted,
+  onInspectRelatedRow,
   onLocateRow,
   onSaved,
   row,
@@ -5555,6 +5647,8 @@ function RelatedRecordPanel({
   connection: DatabaseConnection;
   group: RelatedRowsGroup;
   onCreateArc: (startGeometryColumn: string, endGeometryColumn: string) => void;
+  onDeleted: () => void;
+  onInspectRelatedRow: (group: RelatedRowsGroup, row: InspectorRow) => void;
   onLocateRow: (geometryColumnName: string) => void;
   onSaved: (values: Record<string, unknown>) => void;
   row: InspectorRow;
@@ -5573,6 +5667,10 @@ function RelatedRecordPanel({
   const [relatedRelationLabels, setRelatedRelationLabels] = useState<
     Record<string, Record<string, RelationOption>>
   >({});
+  const [relatedGroups, setRelatedGroups] = useState<RelatedRowsGroup[]>([]);
+  const [isLoadingRelatedRows, setIsLoadingRelatedRows] = useState(false);
+  const [relatedRowsError, setRelatedRowsError] = useState('');
+  const [relatedRowsRefreshToken, setRelatedRowsRefreshToken] = useState(0);
   const displayConfig =
     tableDisplayByKey[
       tableDisplayKeyFromParts(connection.id, group.schema, group.table)
@@ -5641,6 +5739,9 @@ function RelatedRecordPanel({
   const [draftValues, setDraftValues] = useState(row.values);
   const [draftChanges, setDraftChanges] = useState<Record<string, unknown>>({});
   const [isSaving, setIsSaving] = useState(false);
+  const [deleteOpened, setDeleteOpened] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saveMessage, setSaveMessage] = useState('');
   const canEditRow = tableIsEditable && Boolean(row.rowKey);
@@ -5760,6 +5861,58 @@ function RelatedRecordPanel({
   }, [connection, relationConfigByColumn, row.values, tableMetadata]);
 
   useEffect(() => {
+    void relatedRowsRefreshToken;
+    if (!row.rowKey) {
+      setRelatedGroups([]);
+      setRelatedRowsError('');
+      setIsLoadingRelatedRows(false);
+      return;
+    }
+
+    const activeRowKey = row.rowKey;
+    let isActive = true;
+    setIsLoadingRelatedRows(true);
+    setRelatedRowsError('');
+
+    void fetchRelatedRows(connection, {
+      schema: group.schema,
+      table: group.table,
+      rowKey: activeRowKey,
+      limit: 20,
+    })
+      .then((payload) => {
+        if (isActive) {
+          setRelatedGroups(payload.groups);
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setRelatedGroups([]);
+          setRelatedRowsError(
+            error instanceof Error
+              ? error.message
+              : 'Failed to load related rows.',
+          );
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoadingRelatedRows(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    connection,
+    group.schema,
+    group.table,
+    relatedRowsRefreshToken,
+    row.rowKey,
+  ]);
+
+  useEffect(() => {
     const pointColumnNames = new Set(
       pointGeometryColumns.map((column) => column.name),
     );
@@ -5828,6 +5981,7 @@ function RelatedRecordPanel({
       setDraftChanges({});
       setSaveMessage('Saved.');
       onSaved(savedValues);
+      setRelatedRowsRefreshToken((value) => value + 1);
     } catch (error) {
       setSaveError(
         error instanceof Error
@@ -5839,6 +5993,35 @@ function RelatedRecordPanel({
     }
   }
 
+  async function handleDelete() {
+    if (!row.rowKey || isDeleting) {
+      return;
+    }
+
+    setIsDeleting(true);
+    setDeleteError('');
+    try {
+      await commitInspectorRows(connection, {
+        schema: group.schema,
+        table: group.table,
+        operations: [
+          {
+            type: 'delete',
+            rowKey: row.rowKey,
+          },
+        ],
+      });
+      setDeleteOpened(false);
+      onDeleted();
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : 'Failed to delete record.',
+      );
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   return (
     <Stack
       aria-label={`${tableLabel} record inspector`}
@@ -5846,6 +6029,58 @@ function RelatedRecordPanel({
       h="100%"
       style={{ minHeight: 0 }}
     >
+      <Modal
+        centered
+        closeOnClickOutside={!isDeleting}
+        closeOnEscape={!isDeleting}
+        onClose={() => {
+          if (!isDeleting) {
+            setDeleteOpened(false);
+            setDeleteError('');
+          }
+        }}
+        opened={deleteOpened}
+        title="Delete record?"
+        zIndex={getDefaultZIndex('max')}
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            {group.schema}.{group.table}
+            {recordKey ? ` · #${recordKey}` : ''}
+          </Text>
+          <Alert color="yellow" variant="light">
+            Database foreign-key rules will decide whether linked rows are
+            restricted, cascaded, or updated.
+          </Alert>
+          {deleteError ? (
+            <Alert color="red" title="Deletion failed" variant="light">
+              {deleteError}
+            </Alert>
+          ) : null}
+          <Group justify="flex-end">
+            <Button
+              disabled={isDeleting}
+              onClick={() => {
+                setDeleteOpened(false);
+                setDeleteError('');
+              }}
+              variant="default"
+            >
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              leftSection={
+                isDeleting ? <Loader size={14} /> : <IconTrash size={14} />
+              }
+              loading={isDeleting}
+              onClick={() => void handleDelete()}
+            >
+              Delete
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
       <Text c="dimmed" size="xs" truncate="end">
         {group.schema}.{group.table}
         {recordKey ? ` · #${recordKey}` : ''}
@@ -5955,6 +6190,28 @@ function RelatedRecordPanel({
                     </Stack>
                   );
                 })}
+                {row.rowKey ? (
+                  <Stack
+                    gap="xs"
+                    mt="xs"
+                    pt="sm"
+                    style={{
+                      borderTop:
+                        '1px solid var(--mantine-color-default-border)',
+                    }}
+                  >
+                    <Text fw={600} size="sm">
+                      Related data
+                    </Text>
+                    <RelatedRowsPanel
+                      connectionId={connection.id}
+                      error={relatedRowsError}
+                      groups={relatedGroups}
+                      isLoading={isLoadingRelatedRows}
+                      onInspectRow={onInspectRelatedRow}
+                    />
+                  </Stack>
+                ) : null}
               </Stack>
             </ScrollArea>
             {saveError ? (
@@ -5973,6 +6230,19 @@ function RelatedRecordPanel({
               </Text>
               {canEditRow ? (
                 <Group gap="xs" wrap="nowrap">
+                  <Button
+                    color="red"
+                    disabled={isSaving || isDeleting}
+                    leftSection={<IconTrash size={14} />}
+                    onClick={() => {
+                      setDeleteError('');
+                      setDeleteOpened(true);
+                    }}
+                    size="compact-sm"
+                    variant="subtle"
+                  >
+                    Delete
+                  </Button>
                   <Button
                     disabled={!hasChanges || isSaving}
                     leftSection={<IconRestore size={14} />}
@@ -6174,6 +6444,29 @@ function RelationCellEditor({
     value === null || value === undefined ? null : relationValueKey(value);
 
   useEffect(() => {
+    if (!initialOption) {
+      return;
+    }
+
+    const initialValue = relationValueKey(initialOption.value);
+    setOptions((currentOptions) => {
+      const existingOption = currentOptions.find(
+        (option) => relationValueKey(option.value) === initialValue,
+      );
+      if (existingOption?.label === initialOption.label) {
+        return currentOptions;
+      }
+
+      return [
+        initialOption,
+        ...currentOptions.filter(
+          (option) => relationValueKey(option.value) !== initialValue,
+        ),
+      ];
+    });
+  }, [initialOption]);
+
+  useEffect(() => {
     if (!shouldLoadOptions) {
       return;
     }
@@ -6259,6 +6552,7 @@ function RelationCellEditor({
   return (
     <Select
       clearable
+      comboboxProps={{ zIndex: getDefaultZIndex('max') }}
       data={data}
       disabled={disabled}
       nothingFoundMessage={isLoadingOptions ? 'Loading...' : 'No records'}
@@ -6290,7 +6584,6 @@ function RelationCellEditor({
       }}
       placeholder="Select related record"
       searchable
-      searchValue={search}
       size="xs"
       styles={{
         input: {
@@ -6608,6 +6901,12 @@ export function App() {
   const selectedConnectionId = useConnectionStore(
     (state) => state.selectedConnectionId,
   );
+  const selectedSchemaNamesByConnectionId = useConnectionStore(
+    (state) => state.selectedSchemaNamesByConnectionId,
+  );
+  const setSelectedSchemaNames = useConnectionStore(
+    (state) => state.setSelectedSchemaNames,
+  );
   const selectedTableByConnectionId = useConnectionStore(
     (state) => state.selectedTableByConnectionId,
   );
@@ -6617,6 +6916,9 @@ export function App() {
   const addGeoJsonLayer = useConnectionStore((state) => state.addGeoJsonLayer);
   const addFlowmapLayer = useConnectionStore((state) => state.addFlowmapLayer);
   const addArcLayer = useConnectionStore((state) => state.addArcLayer);
+  const toggleMapLayerVisibility = useConnectionStore(
+    (state) => state.toggleMapLayerVisibility,
+  );
   const tableDisplayByKey = useConnectionStore(
     (state) => state.tableDisplayByKey,
   );
@@ -6629,8 +6931,8 @@ export function App() {
   const updateFlowmapSpatialFilter = useConnectionStore(
     (state) => state.updateFlowmapSpatialFilter,
   );
-  const refreshGeoJsonSourcesForTable = useConnectionStore(
-    (state) => state.refreshGeoJsonSourcesForTable,
+  const refreshMapSourcesForConnection = useConnectionStore(
+    (state) => state.refreshMapSourcesForConnection,
   );
   const removeSavedTableView = useConnectionStore(
     (state) => state.removeSavedTableView,
@@ -6644,7 +6946,6 @@ export function App() {
   const [tableMetadataByKey, setTableMetadataByKey] = useState<
     Record<string, InspectableTable>
   >({});
-  const [selectedSchemaNames, setSelectedSchemaNames] = useState<string[]>([]);
   const [expandedSchemaNames, setExpandedSchemaNames] = useState<string[]>([]);
   const [isLoadingSchemas, setIsLoadingSchemas] = useState(false);
   const [loadingSchemaTablesByName, setLoadingSchemaTablesByName] =
@@ -6657,6 +6958,7 @@ export function App() {
     useState<LocateFeatureBoundsState | null>(null);
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('layer');
   const [featureCreateRefreshToken, setFeatureCreateRefreshToken] = useState(0);
+  const restoredCatalogSelectionRef = useRef<string | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -6687,6 +6989,9 @@ export function App() {
   const selectedConnection =
     connections.find((connection) => connection.id === selectedConnectionId) ??
     null;
+  const selectedSchemaNames = selectedConnectionId
+    ? (selectedSchemaNamesByConnectionId[selectedConnectionId] ?? [])
+    : [];
   const selectedTableKey = selectedConnectionId
     ? (selectedTableByConnectionId[selectedConnectionId] ?? null)
     : null;
@@ -6754,6 +7059,20 @@ export function App() {
     },
     [selectedConnectionId, setSelectedTable],
   );
+  const updateSelectedSchemaNames = useCallback(
+    (update: (current: string[]) => string[]) => {
+      if (!selectedConnectionId) {
+        return;
+      }
+
+      const current =
+        useConnectionStore.getState().selectedSchemaNamesByConnectionId[
+          selectedConnectionId
+        ] ?? [];
+      setSelectedSchemaNames(selectedConnectionId, update(current));
+    },
+    [selectedConnectionId, setSelectedSchemaNames],
+  );
 
   function handleSelectSavedView(viewId: string) {
     handleSelectTable(createSavedViewSelectionKey(viewId));
@@ -6771,7 +7090,44 @@ export function App() {
     removeSavedTableView(viewId);
   }
 
-  async function loadCatalogSchemas() {
+  const loadSchemaTables = useCallback(
+    async (schemaName: string, force = false) => {
+      if (!selectedConnection || (!force && schemaTablesByName[schemaName])) {
+        return;
+      }
+
+      setLoadingSchemaTablesByName((current) => ({
+        ...current,
+        [schemaName]: true,
+      }));
+      setCatalogError('');
+
+      try {
+        const nextTables = await fetchInspectableSchemaTables(
+          selectedConnection,
+          schemaName,
+        );
+        setSchemaTablesByName((current) => ({
+          ...current,
+          [schemaName]: nextTables,
+        }));
+      } catch (error) {
+        setCatalogError(
+          error instanceof Error
+            ? error.message
+            : `Failed to load tables for ${schemaName}.`,
+        );
+      } finally {
+        setLoadingSchemaTablesByName((current) => ({
+          ...current,
+          [schemaName]: false,
+        }));
+      }
+    },
+    [schemaTablesByName, selectedConnection],
+  );
+
+  const loadCatalogSchemas = useCallback(async () => {
     if (!selectedConnection || selectedConnection.testStatus !== 'success') {
       return;
     }
@@ -6787,17 +7143,36 @@ export function App() {
           .filter((schema) => schema.visible)
           .map((schema) => schema.name),
       );
-      setSelectedSchemaNames((current) =>
-        current.filter((name) => visibleSchemaNames.has(name)),
-      );
+      const selectedTableSchema = selectedSourceTableKey?.split('.')[0] ?? null;
+      updateSelectedSchemaNames((current) => {
+        const next = current.filter((name) => visibleSchemaNames.has(name));
+        if (
+          selectedTableSchema &&
+          visibleSchemaNames.has(selectedTableSchema) &&
+          !next.includes(selectedTableSchema)
+        ) {
+          next.push(selectedTableSchema);
+        }
+        return next;
+      });
       setExpandedSchemaNames((current) =>
-        current.filter((name) => visibleSchemaNames.has(name)),
+        Array.from(
+          new Set([
+            ...current.filter((name) => visibleSchemaNames.has(name)),
+            ...(selectedTableSchema &&
+            visibleSchemaNames.has(selectedTableSchema)
+              ? [selectedTableSchema]
+              : []),
+          ]),
+        ),
       );
       if (
         selectedSourceTableKey &&
         !visibleSchemaNames.has(selectedSourceTableKey.split('.')[0])
       ) {
         handleSelectTable(null);
+      } else if (selectedTableSchema) {
+        await loadSchemaTables(selectedTableSchema, true);
       }
     } catch (error) {
       setCatalogError(
@@ -6806,44 +7181,16 @@ export function App() {
     } finally {
       setIsLoadingSchemas(false);
     }
-  }
-
-  async function loadSchemaTables(schemaName: string) {
-    if (!selectedConnection || schemaTablesByName[schemaName]) {
-      return;
-    }
-
-    setLoadingSchemaTablesByName((current) => ({
-      ...current,
-      [schemaName]: true,
-    }));
-    setCatalogError('');
-
-    try {
-      const nextTables = await fetchInspectableSchemaTables(
-        selectedConnection,
-        schemaName,
-      );
-      setSchemaTablesByName((current) => ({
-        ...current,
-        [schemaName]: nextTables,
-      }));
-    } catch (error) {
-      setCatalogError(
-        error instanceof Error
-          ? error.message
-          : `Failed to load tables for ${schemaName}.`,
-      );
-    } finally {
-      setLoadingSchemaTablesByName((current) => ({
-        ...current,
-        [schemaName]: false,
-      }));
-    }
-  }
+  }, [
+    handleSelectTable,
+    loadSchemaTables,
+    selectedConnection,
+    selectedSourceTableKey,
+    updateSelectedSchemaNames,
+  ]);
 
   function handleToggleCatalogSchema(schemaName: string) {
-    setSelectedSchemaNames((current) => {
+    updateSelectedSchemaNames((current) => {
       if (current.includes(schemaName)) {
         if (
           selectedSourceTableKey?.startsWith(`${schemaName}.`) ||
@@ -6957,10 +7304,77 @@ export function App() {
       mapLayers.filter((layer) => layer.connectionId === selectedConnectionId),
     [mapLayers, selectedConnectionId],
   );
+  const recordPreviewSourceValidationKey = useMemo(() => {
+    const sourceIds = new Set(
+      selectedConnectionMapLayers
+        .filter((layer) => layer.purpose === 'record-preview')
+        .map((layer) => layer.sourceId),
+    );
+
+    return JSON.stringify(
+      mapSources
+        .filter(
+          (source): source is FlowmapTableSource =>
+            source.type === 'flowmap-table' &&
+            Boolean(source.rowRef) &&
+            sourceIds.has(source.id),
+        )
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    );
+  }, [mapSources, selectedConnectionMapLayers]);
   const selectedVisibleMapLayers = useMemo(
     () => selectedConnectionMapLayers.filter((layer) => layer.visible),
     [selectedConnectionMapLayers],
   );
+
+  useEffect(() => {
+    if (
+      !selectedConnection ||
+      selectedConnection.testStatus !== 'success' ||
+      recordPreviewSourceValidationKey === '[]'
+    ) {
+      return;
+    }
+
+    const previewSources = JSON.parse(
+      recordPreviewSourceValidationKey,
+    ) as FlowmapTableSource[];
+    const activeConnection = selectedConnection;
+    const abortController = new AbortController();
+
+    async function removeEmptyRecordPreviews() {
+      await Promise.all(
+        previewSources.map(async (source) => {
+          try {
+            const data = await fetchFlowmapSourceData(
+              activeConnection,
+              source,
+              abortController.signal,
+            );
+            if (data.flowCount > 0 || abortController.signal.aborted) {
+              return;
+            }
+
+            const state = useConnectionStore.getState();
+            const emptyPreviewLayers = state.mapLayers.filter(
+              (layer) =>
+                layer.sourceId === source.id &&
+                layer.purpose === 'record-preview',
+            );
+            for (const layer of emptyPreviewLayers) {
+              state.removeMapLayer(layer.id);
+            }
+          } catch {
+            // Keep previews on transient errors; only a successful empty query removes them.
+          }
+        }),
+      );
+    }
+
+    void removeEmptyRecordPreviews();
+
+    return () => abortController.abort();
+  }, [recordPreviewSourceValidationKey, selectedConnection]);
   const activeLayer =
     selectedConnectionMapLayers.find((layer) => layer.id === activeLayerId) ??
     null;
@@ -7043,7 +7457,6 @@ export function App() {
     setSchemas([]);
     setSchemaTablesByName({});
     setTableMetadataByKey({});
-    setSelectedSchemaNames([]);
     setExpandedSchemaNames([]);
     setIsLoadingSchemas(false);
     setLoadingSchemaTablesByName({});
@@ -7053,6 +7466,25 @@ export function App() {
     setMapSelection(null);
     setRightPaneTab('layer');
   }, [selectedConnectionId]);
+
+  useEffect(() => {
+    if (
+      !selectedConnection ||
+      selectedConnection.testStatus !== 'success' ||
+      !selectedSourceTableKey
+    ) {
+      restoredCatalogSelectionRef.current = null;
+      return;
+    }
+
+    const restoreKey = `${selectedConnection.id}:${selectedSourceTableKey}`;
+    if (restoredCatalogSelectionRef.current === restoreKey) {
+      return;
+    }
+
+    restoredCatalogSelectionRef.current = restoreKey;
+    void loadCatalogSchemas();
+  }, [loadCatalogSchemas, selectedConnection, selectedSourceTableKey]);
 
   useEffect(() => {
     if (!activeLayerId && selectedConnectionMapLayers.length > 0) {
@@ -7090,7 +7522,6 @@ export function App() {
       setSchemas([]);
       setSchemaTablesByName({});
       setTableMetadataByKey({});
-      setSelectedSchemaNames([]);
       setExpandedSchemaNames([]);
       setIsLoadingSchemas(false);
       setLoadingSchemaTablesByName({});
@@ -7219,6 +7650,48 @@ export function App() {
   function handleSelectLayer(layerId: string) {
     setActiveLayerId(layerId);
     setRightPaneTab('layer');
+  }
+
+  async function handleLocateLayer(layerId: string) {
+    const layer = mapLayers.find((candidate) => candidate.id === layerId);
+    const source = layer
+      ? mapSources.find((candidate) => candidate.id === layer.sourceId)
+      : null;
+    const connection = layer
+      ? connections.find((candidate) => candidate.id === layer.connectionId)
+      : null;
+
+    if (!layer || !source || !connection) {
+      throw new Error('Layer source is unavailable.');
+    }
+
+    setActiveLayerId(layer.id);
+    setRightPaneTab('layer');
+
+    if (!layer.visible) {
+      toggleMapLayerVisibility(layer.id);
+    }
+
+    let bounds: GeoBounds | null;
+    if (source.type === 'geojson-table') {
+      const response = await fetchGeoJsonSourceExtent(connection, source);
+      bounds = response.bounds;
+    } else {
+      const response = await fetchFlowmapSourceData(connection, source);
+      const points: [number, number][] = response.locations
+        .filter(
+          (location) =>
+            Number.isFinite(location.lon) && Number.isFinite(location.lat),
+        )
+        .map((location) => [location.lon, location.lat]);
+      bounds = points.length > 0 ? boundsFromPoints(points) : null;
+    }
+
+    if (!bounds) {
+      throw new Error('Layer has no mappable features.');
+    }
+
+    setLocateFeatureBounds({ token: Date.now(), bounds });
   }
 
   function handleSelectMapObject(selection: MapSelection | null) {
@@ -7483,11 +7956,7 @@ export function App() {
   }
 
   function handleFeatureCreated(source: GeoJsonTableSource) {
-    refreshGeoJsonSourcesForTable({
-      connectionId: source.connectionId,
-      schema: source.schema,
-      table: source.table,
-    });
+    refreshMapSourcesForConnection(source.connectionId);
 
     setFeatureCreateRefreshToken((value) => value + 1);
   }
@@ -7500,7 +7969,7 @@ export function App() {
     }
 
     if (!selectedSchemaNames.includes(schemaName)) {
-      setSelectedSchemaNames((current) =>
+      updateSelectedSchemaNames((current) =>
         current.includes(schemaName) ? current : [...current, schemaName],
       );
     }
@@ -7524,6 +7993,7 @@ export function App() {
     onLoadSchemas: () => void loadCatalogSchemas(),
     onImportSelectedTable: handleImportSelectedTable,
     onCreateFlowLayer: handleCreateFlowLayer,
+    onLocateLayer: handleLocateLayer,
     onRemoveSavedView: handleRemoveSavedView,
     onSelectLayer: handleSelectLayer,
     onSelectCatalogTable: handleSelectTable,

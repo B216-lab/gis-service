@@ -1092,7 +1092,6 @@ export function MapPane({
       removeUnusedVectorSources(new Set());
       loadingVectorSourceIdsRef.current.clear();
       setIsLoadingVectorTiles(false);
-      onSelectMapObjectRef.current(null);
       return;
     }
 

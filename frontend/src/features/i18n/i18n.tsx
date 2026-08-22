@@ -91,6 +91,11 @@ const translations: Record<string, string> = {
   'Connection test passed.': 'Подключение успешно проверено.',
   'Not tested': 'Не проверено',
   Delete: 'Удалить',
+  'Delete record?': 'Удалить запись?',
+  'Deletion failed': 'Не удалось удалить запись',
+  'Failed to delete record.': 'Не удалось удалить запись.',
+  'Database foreign-key rules will decide whether linked rows are restricted, cascaded, or updated.':
+    'Правила внешних ключей базы данных определят, будут связанные записи защищены от удаления, удалены каскадно или обновлены.',
   Connected: 'Подключено',
   Failed: 'Ошибка',
   Testing: 'Проверка',
@@ -115,9 +120,20 @@ const translations: Record<string, string> = {
   'Create Flowmap': 'Создать карту потоков',
   'Create Arc': 'Создать дуги',
   Close: 'Закрыть',
+  Settings: 'Настройки',
+  Setup: 'Данные',
   Style: 'Стиль',
+  Tooltip: 'Подсказка',
+  'Tooltip configuration': 'Настройка подсказки',
+  'Field selection, labels, order, and value formatting will be configured here.':
+    'Здесь будут настраиваться поля, подписи, порядок и формат значений.',
+  'Zoom to layer': 'Показать слой на карте',
   'Hide layer': 'Скрыть слой',
   'Show layer': 'Показать слой',
+  'Layer source is unavailable.': 'Источник слоя недоступен.',
+  'Layer has no mappable features.':
+    'В слое нет объектов для отображения на карте.',
+  'Failed to locate layer.': 'Не удалось найти слой.',
   'Select table below, then import geometry or create flow layer.':
     'Выберите таблицу ниже, затем импортируйте геометрию или создайте слой потоков.',
   Catalog: 'Каталог',
@@ -431,6 +447,7 @@ function translateText(value: string) {
     .replace(/^(.+)\s+record inspector$/g, 'Запись $1')
     .replace(/^Delete\s+(?!layer\s+"|saved view\s+")(.+)$/g, 'Удалить $1')
     .replace(/^Locate in\s+(.+)$/g, 'Найти в слое $1')
+    .replace(/^Zoom to\s+(.+)$/g, 'Показать на карте: $1')
     .replace(/\b(\d+)\s+pending\b/g, 'Несохраненных изменений: $1')
     .replace(
       /\b(\d+)\s+active\s+\/\s+(\d+)\s+saved\b/g,

@@ -22,6 +22,7 @@ import (
 )
 
 var ErrConnectionFailed = errors.New("database connection failed")
+var ErrConstraintViolation = errors.New("database constraint violation")
 var ErrInvalidWriteRequest = errors.New("invalid write request")
 var ErrWriteConflict = errors.New("database write conflict")
 
@@ -2271,11 +2272,32 @@ func (service *Service) ListRelatedRows(
 		return nil, err
 	}
 
-	relations, err := service.listReferencingForeignKeys(
+	referencingRelations, err := service.listReferencingForeignKeys(
 		timeoutCtx,
 		conn,
 		request.Schema,
 		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+	foreignKeys, err := service.listForeignKeys(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+	)
+	if err != nil {
+		return nil, err
+	}
+	foreignKeyValues, err := service.loadRowColumnValues(
+		timeoutCtx,
+		conn,
+		request.Schema,
+		request.Table,
+		primaryKey,
+		request.RowKey,
+		foreignKeys,
 	)
 	if err != nil {
 		return nil, err
@@ -2286,8 +2308,8 @@ func (service *Service) ListRelatedRows(
 		limit = 20
 	}
 
-	groups := make([]RelatedRowsGroup, 0, len(relations))
-	for _, relation := range relations {
+	groups := make([]RelatedRowsGroup, 0, len(referencingRelations)+len(foreignKeys))
+	for _, relation := range referencingRelations {
 		sourceValue, ok := request.RowKey[relation.TargetColumn]
 		if !ok || sourceValue == nil {
 			continue
@@ -2305,10 +2327,103 @@ func (service *Service) ListRelatedRows(
 		}
 		groups = append(groups, group)
 	}
+	for _, foreignKey := range foreignKeys {
+		sourceValue := foreignKeyValues[foreignKey.ColumnName]
+		if sourceValue == nil {
+			continue
+		}
+
+		relation := ForeignKeyMeta{
+			ColumnName:   foreignKey.TargetColumn,
+			TargetSchema: foreignKey.TargetSchema,
+			TargetTable:  foreignKey.TargetTable,
+			TargetColumn: foreignKey.ColumnName,
+		}
+		group, err := service.listRelatedRowsForRelation(
+			timeoutCtx,
+			conn,
+			relation,
+			sourceValue,
+			limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
 
 	return &RelatedRowsResult{
 		Groups: groups,
 	}, nil
+}
+
+func (service *Service) loadRowColumnValues(
+	ctx context.Context,
+	runner queryRunner,
+	schema string,
+	table string,
+	primaryKey []string,
+	rowKey map[string]interface{},
+	foreignKeys []ForeignKeyMeta,
+) (map[string]interface{}, error) {
+	if len(foreignKeys) == 0 {
+		return map[string]interface{}{}, nil
+	}
+
+	columnDefinitions, err := service.listColumnDefinitions(ctx, runner, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	columnByName := make(map[string]columnDefinition, len(columnDefinitions))
+	for _, definition := range columnDefinitions {
+		columnByName[definition.Name] = definition
+	}
+
+	columnNames := make([]string, 0, len(foreignKeys))
+	seenColumns := make(map[string]struct{}, len(foreignKeys))
+	for _, foreignKey := range foreignKeys {
+		if _, seen := seenColumns[foreignKey.ColumnName]; seen {
+			continue
+		}
+		seenColumns[foreignKey.ColumnName] = struct{}{}
+		columnNames = append(columnNames, foreignKey.ColumnName)
+	}
+
+	whereClause, parameters, err := buildPrimaryKeyFilter(
+		columnByName,
+		primaryKey,
+		rowKey,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	selectExpressions := make([]string, 0, len(columnNames))
+	for _, columnName := range columnNames {
+		selectExpressions = append(selectExpressions, quoteIdentifier(columnName))
+	}
+	query := fmt.Sprintf(
+		`select %s from %s.%s where %s`,
+		strings.Join(selectExpressions, ", "),
+		quoteIdentifier(schema),
+		quoteIdentifier(table),
+		whereClause,
+	)
+
+	values := make([]interface{}, len(columnNames))
+	destinations := make([]interface{}, len(columnNames))
+	for index := range values {
+		destinations[index] = &values[index]
+	}
+	if err := runner.QueryRow(ctx, query, parameters...).Scan(destinations...); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	result := make(map[string]interface{}, len(columnNames))
+	for index, columnName := range columnNames {
+		result[columnName] = normalizeValue(values[index])
+	}
+	return result, nil
 }
 
 func (service *Service) listRelatedRowsForRelation(
@@ -4052,6 +4167,13 @@ func (service *Service) applyDeleteOperation(
 
 	commandTag, err := transaction.Exec(ctx, query, parameters...)
 	if err != nil {
+		var postgresError *pgconn.PgError
+		if errors.As(err, &postgresError) && postgresError.Code == "23503" {
+			return fmt.Errorf(
+				"%w: deletion blocked because related records still reference this row",
+				ErrConstraintViolation,
+			)
+		}
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 

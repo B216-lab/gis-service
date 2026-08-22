@@ -77,6 +77,7 @@ export interface FlowmapTableSource {
   };
   spatialFilter?: LayerSpatialFilter | null;
   rowRef?: RowReference | null;
+  refreshKey?: string;
 }
 
 export type MapSource = GeoJsonTableSource | FlowmapTableSource;
@@ -158,6 +159,7 @@ interface ConnectionStoreState {
   tableDisplayByKey: Record<string, TableDisplayConfig>;
   selectedBasemapId: BasemapId;
   selectedConnectionId: string | null;
+  selectedSchemaNamesByConnectionId: Record<string, string[]>;
   selectedTableByConnectionId: Record<string, string | null>;
   addConnection: (
     connection: Omit<
@@ -185,6 +187,7 @@ interface ConnectionStoreState {
   removeSavedTableView: (viewId: string) => void;
   setSelectedBasemap: (basemapId: BasemapId) => void;
   selectConnection: (connectionId: string) => void;
+  setSelectedSchemaNames: (connectionId: string, schemaNames: string[]) => void;
   setSelectedTable: (connectionId: string, tableKey: string | null) => void;
   setRelationDisplayConfig: (
     key: string,
@@ -210,6 +213,7 @@ interface ConnectionStoreState {
     schema: string;
     table: string;
   }) => void;
+  refreshMapSourcesForConnection: (connectionId: string) => void;
   addFlowmapLayer: (payload: {
     connectionId: string;
     schema: string;
@@ -463,6 +467,7 @@ function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
       },
       spatialFilter: source.spatialFilter ?? null,
       rowRef: source.rowRef ?? null,
+      refreshKey: source.refreshKey ?? '',
     };
   }
 
@@ -542,6 +547,13 @@ function findGeoJsonSource(
 }
 
 function touchGeoJsonSource(source: GeoJsonTableSource): GeoJsonTableSource {
+  return {
+    ...source,
+    refreshKey: crypto.randomUUID(),
+  };
+}
+
+function touchMapSource(source: MapSource): MapSource {
   return {
     ...source,
     refreshKey: crypto.randomUUID(),
@@ -646,6 +658,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
       tableDisplayByKey: {},
       selectedBasemapId: defaultBasemapId,
       selectedConnectionId: null,
+      selectedSchemaNamesByConnectionId: {},
       selectedTableByConnectionId: {},
       addConnection: (connection) =>
         set((state) => {
@@ -663,6 +676,10 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           return {
             connections: [nextConnection, ...state.connections],
             selectedConnectionId: nextConnection.id,
+            selectedSchemaNamesByConnectionId: {
+              ...state.selectedSchemaNamesByConnectionId,
+              [nextConnection.id]: [],
+            },
             selectedTableByConnectionId: {
               ...state.selectedTableByConnectionId,
               [nextConnection.id]: null,
@@ -719,6 +736,12 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           return {
             connections: nextConnections,
             selectedConnectionId,
+            selectedSchemaNamesByConnectionId: {
+              ...Object.fromEntries(
+                nextServerConnections.map((connection) => [connection.id, []]),
+              ),
+              ...state.selectedSchemaNamesByConnectionId,
+            },
             selectedTableByConnectionId: {
               ...Object.fromEntries(
                 nextServerConnections.map((connection) => [
@@ -756,6 +779,11 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               (view) => view.connectionId !== connectionId,
             ),
             selectedConnectionId: nextSelectedId,
+            selectedSchemaNamesByConnectionId: Object.fromEntries(
+              Object.entries(state.selectedSchemaNamesByConnectionId).filter(
+                ([key]) => key !== connectionId,
+              ),
+            ),
             selectedTableByConnectionId: Object.fromEntries(
               Object.entries(state.selectedTableByConnectionId).filter(
                 ([key]) => key !== connectionId,
@@ -838,6 +866,13 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         set({
           selectedConnectionId: connectionId,
         }),
+      setSelectedSchemaNames: (connectionId, schemaNames) =>
+        set((state) => ({
+          selectedSchemaNamesByConnectionId: {
+            ...state.selectedSchemaNamesByConnectionId,
+            [connectionId]: schemaNames,
+          },
+        })),
       setSelectedTable: (connectionId, tableKey) =>
         set((state) => ({
           selectedTableByConnectionId: {
@@ -938,6 +973,14 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               : source,
           ),
         })),
+      refreshMapSourcesForConnection: (connectionId) =>
+        set((state) => ({
+          mapSources: state.mapSources.map((source) =>
+            source.connectionId === connectionId
+              ? touchMapSource(source)
+              : source,
+          ),
+        })),
       addFlowmapLayer: (payload) =>
         set((state) => {
           let source = findFlowmapSource(state.mapSources, payload);
@@ -955,6 +998,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               columns: payload.columns,
               spatialFilter: null,
               rowRef: payload.rowRef ?? null,
+              refreshKey: '',
             };
             nextSources.push(source);
           }
@@ -1012,6 +1056,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
               columns: payload.columns,
               spatialFilter: null,
               rowRef: payload.rowRef ?? null,
+              refreshKey: '',
             };
             nextSources.push(source);
           }
@@ -1259,6 +1304,9 @@ export const useConnectionStore = create<ConnectionStoreState>()(
           tableDisplayByKey:
             state.tableDisplayByKey ?? currentState.tableDisplayByKey,
           selectedConnectionId,
+          selectedSchemaNamesByConnectionId:
+            state.selectedSchemaNamesByConnectionId ??
+            currentState.selectedSchemaNamesByConnectionId,
         };
       },
       partialize: (state) => ({
@@ -1268,6 +1316,8 @@ export const useConnectionStore = create<ConnectionStoreState>()(
         savedTableViews: state.savedTableViews,
         relationDisplayByKey: state.relationDisplayByKey,
         selectedConnectionId: state.selectedConnectionId,
+        selectedSchemaNamesByConnectionId:
+          state.selectedSchemaNamesByConnectionId,
         selectedTableByConnectionId: state.selectedTableByConnectionId,
       }),
     },
