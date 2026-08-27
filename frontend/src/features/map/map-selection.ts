@@ -237,7 +237,7 @@ export function buildFeaturePickCandidates(params: {
       selection: buildVectorMapSelection(feature, layer, source),
       label: layer.name,
       detail: getFeatureDisplayDetail(feature),
-      color: layer.color,
+      color: layer.icon === 'line' ? layer.strokeColor : layer.fillColor,
     });
   }
 
@@ -279,9 +279,13 @@ export function buildSelectionPickCandidate(
     label: selection.layerName,
     detail,
     color:
-      layer.type === 'geojson' || layer.type === 'arc'
-        ? layer.color
-        : '#4dabf7',
+      layer.type === 'geojson'
+        ? layer.icon === 'line'
+          ? layer.strokeColor
+          : layer.fillColor
+        : layer.type === 'arc'
+          ? layer.color
+          : '#4dabf7',
   };
 }
 

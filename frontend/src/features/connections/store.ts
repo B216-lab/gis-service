@@ -155,7 +155,17 @@ interface ConnectionStoreState {
   updateGeoJsonLayer: (
     layerId: string,
     patch: Partial<
-      Pick<GeoJsonMapLayer, 'name' | 'icon' | 'color' | 'opacity'>
+      Pick<
+        GeoJsonMapLayer,
+        | 'name'
+        | 'icon'
+        | 'fillColor'
+        | 'fillOpacity'
+        | 'strokeColor'
+        | 'strokeOpacity'
+        | 'strokeWidth'
+        | 'pointRadius'
+      >
     >,
   ) => void;
   updateGeoJsonSource: (
@@ -185,7 +195,9 @@ interface ConnectionStoreState {
   ) => void;
   updateArcLayer: (
     layerId: string,
-    patch: Partial<Pick<ArcMapLayer, 'name' | 'icon' | 'color' | 'width'>>,
+    patch: Partial<
+      Pick<ArcMapLayer, 'name' | 'icon' | 'color' | 'opacity' | 'width'>
+    >,
   ) => void;
   toggleConnectionActive: (connectionId: string) => void;
   setConnectionTestPending: (connectionId: string) => void;
@@ -509,8 +521,12 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 visible: true,
                 icon: getDefaultLayerIcon(payload.geometryType),
                 purpose: payload.purpose ?? 'configured',
-                color: getDefaultLayerColor(state.mapLayers.length),
-                opacity: 80,
+                fillColor: getDefaultLayerColor(state.mapLayers.length),
+                fillOpacity: 80,
+                strokeColor: getDefaultLayerColor(state.mapLayers.length),
+                strokeOpacity: 95,
+                strokeWidth: 2,
+                pointRadius: 6,
               },
             ],
           };
@@ -646,6 +662,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 icon: 'flow',
                 purpose: payload.purpose ?? 'configured',
                 color: getDefaultLayerColor(state.mapLayers.length),
+                opacity: 86,
                 width: 3,
               },
             ],

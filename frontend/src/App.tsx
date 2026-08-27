@@ -105,6 +105,7 @@ import {
 } from './features/map/flowmap-geometry';
 import { MapPane } from './features/map/MapPane';
 import type { MapSelection } from './features/map/selection';
+import { OnboardingTour } from './features/onboarding/OnboardingTour';
 
 type RightPaneTab = 'layer' | 'data' | 'analysis';
 
@@ -2188,17 +2189,17 @@ export function App() {
     <WorkspaceLayout
       panels={{
         sources: (
-          <PanelFrame>
+          <PanelFrame tourId="sources-panel">
             <ConnectionManager {...connectionManagerProps} view="sources" />
           </PanelFrame>
         ),
         layers: (
-          <PanelFrame>
+          <PanelFrame tourId="layers-panel">
             <ConnectionManager {...connectionManagerProps} view="layers" />
           </PanelFrame>
         ),
         map: (
-          <PanelFrame padding={0}>
+          <PanelFrame padding={0} tourId="map-panel">
             <MapPane
               activeLayerId={activeLayerId}
               basemapId={selectedBasemapId ?? defaultBasemapId}
@@ -2214,7 +2215,7 @@ export function App() {
           </PanelFrame>
         ),
         table: (
-          <PanelFrame>
+          <PanelFrame tourId="table-panel">
             <DataInspector
               connection={selectedConnection}
               featureCreateRefreshToken={featureCreateRefreshToken}
@@ -2236,7 +2237,7 @@ export function App() {
           </PanelFrame>
         ),
         workspace: (
-          <PanelFrame>
+          <PanelFrame tourId="workspace-panel">
             <RightPaneTabs
               activeLayer={activeLayer}
               activeSource={activeLayerSource}
@@ -2253,10 +2254,13 @@ export function App() {
         ),
       }}
       toolbar={
-        <AppSettings
-          basemapId={selectedBasemapId ?? defaultBasemapId}
-          onBasemapChange={setSelectedBasemap}
-        />
+        <Group gap={4} wrap="nowrap">
+          <OnboardingTour />
+          <AppSettings
+            basemapId={selectedBasemapId ?? defaultBasemapId}
+            onBasemapChange={setSelectedBasemap}
+          />
+        </Group>
       }
     />
   );

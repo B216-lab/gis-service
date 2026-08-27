@@ -54,8 +54,6 @@ export function addVectorStyleLayers(params: {
   sourceLayer: string;
 }) {
   const { layer, map, source, sourceLayer } = params;
-  const color = layer.color;
-  const opacity = layer.opacity / 100;
   const [fillLayerId, lineLayerId, circleLayerId] =
     getVectorStyleLayerIds(layer);
   const sourceId = mapLibreSourceId(source.id);
@@ -67,8 +65,8 @@ export function addVectorStyleLayers(params: {
       source: sourceId,
       'source-layer': sourceLayer,
       paint: {
-        'fill-color': color,
-        'fill-opacity': opacity,
+        'fill-color': layer.fillColor,
+        'fill-opacity': layer.fillOpacity / 100,
       },
     });
   }
@@ -83,9 +81,9 @@ export function addVectorStyleLayers(params: {
       source: sourceId,
       'source-layer': sourceLayer,
       paint: {
-        'line-color': color,
-        'line-opacity': Math.min(1, opacity + 0.15),
-        'line-width': /line/i.test(source.geometryType) ? 3 : 1.5,
+        'line-color': layer.strokeColor,
+        'line-opacity': layer.strokeOpacity / 100,
+        'line-width': layer.strokeWidth,
       },
     });
   }
@@ -100,11 +98,12 @@ export function addVectorStyleLayers(params: {
       source: sourceId,
       'source-layer': sourceLayer,
       paint: {
-        'circle-color': color,
-        'circle-opacity': opacity,
-        'circle-radius': 6,
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 1,
+        'circle-color': layer.fillColor,
+        'circle-opacity': layer.fillOpacity / 100,
+        'circle-radius': layer.pointRadius,
+        'circle-stroke-color': layer.strokeColor,
+        'circle-stroke-opacity': layer.strokeOpacity / 100,
+        'circle-stroke-width': layer.strokeWidth,
       },
     });
   }

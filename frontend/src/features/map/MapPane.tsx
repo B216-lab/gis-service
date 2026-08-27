@@ -1069,10 +1069,10 @@ export function MapPane({
         new TerraDrawPolygonMode({
           editable: false,
           styles: {
-            fillColor: target.layer.color as HexColor,
+            fillColor: target.layer.fillColor as HexColor,
             fillOpacity: 0.22,
-            outlineColor: target.layer.color as HexColor,
-            outlineWidth: 2,
+            outlineColor: target.layer.strokeColor as HexColor,
+            outlineWidth: target.layer.strokeWidth,
           },
         }),
       ],

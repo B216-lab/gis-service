@@ -40,15 +40,18 @@ export function PanelFrame({
   action,
   children,
   padding = 'md',
+  tourId,
 }: {
   title?: string;
   hint?: string;
   action?: ReactNode;
   children?: ReactNode;
   padding?: 0 | 'md';
+  tourId?: string;
 }) {
   return (
     <Paper
+      data-tour={tourId}
       h="100%"
       p={padding}
       radius={0}

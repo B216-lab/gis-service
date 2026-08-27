@@ -345,10 +345,20 @@ export function WorkspaceLayout({
 
   const focusPanel = useCallback(
     (panelId: string) => {
-      const tabId = dynamicPanelTabId(panelId);
+      const coreTabId = `panel-${panelId}`;
+      const tabId = model.getNodeById(coreTabId)
+        ? coreTabId
+        : dynamicPanelTabId(panelId);
       const tabNode = model.getNodeById(tabId) as TabNode | undefined;
       if (tabNode) {
-        model.doAction(Actions.selectTab(tabId));
+        const parent = tabNode.getParent();
+        const shouldSelect =
+          parent instanceof BorderNode
+            ? !parent.isShowing() || parent.getSelectedNode()?.getId() !== tabId
+            : !tabNode.isSelected();
+        if (shouldSelect) {
+          model.doAction(Actions.selectTab(tabId));
+        }
         if (tabNode.isPoppedOut()) {
           model.doAction(Actions.movePopoutToFront(tabNode.getLayoutId()));
         }
@@ -536,6 +546,7 @@ export function WorkspaceLayout({
         }}
       >
         <Group
+          data-tour="workspace-toolbar"
           h={38}
           justify="space-between"
           px="xs"
