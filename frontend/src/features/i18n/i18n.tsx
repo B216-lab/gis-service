@@ -59,6 +59,7 @@ const translations: Record<string, string> = {
   'Schema settings failed': 'Ошибка настроек схем',
   Alias: 'Псевдоним',
   Show: 'Показать',
+  'Open in Google Maps': 'Открыть в Google Картах',
   'Configure schemas': 'Настроить схемы',
   'All schemas are hidden. Configure schemas from connection options.':
     'Все схемы скрыты. Настройте схемы в параметрах подключения.',

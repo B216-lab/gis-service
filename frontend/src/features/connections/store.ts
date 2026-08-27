@@ -8,147 +8,61 @@ import type {
 } from '../filters/types';
 import { type BasemapId, defaultBasemapId } from '../map/basemaps';
 import type { RowReference } from '../map/selection';
+import type {
+  ArcMapLayer,
+  DatabaseConnection,
+  FlowmapMapLayer,
+  FlowmapTableSource,
+  GeoJsonMapLayer,
+  GeoJsonTableSource,
+  LayerGlyphIcon,
+  LayerSpatialFilter,
+  LegacyImportedLayer,
+  MapLayer,
+  MapLayerPurpose,
+  MapSource,
+  RelationDisplayConfig,
+  TableDisplayConfig,
+} from './model';
 
-export interface DatabaseConnection {
-  id: string;
-  name: string;
-  host: string;
-  port: string;
-  database: string;
-  user: string;
-  password: string;
-  isServerManaged: boolean;
-  isActive: boolean;
-  createdAt: string;
-  testStatus: 'idle' | 'testing' | 'success' | 'error';
-  testMessage: string;
-  postgresVersion: string;
-  postgisVersion: string;
-}
+export type {
+  ArcMapLayer,
+  DatabaseConnection,
+  FlowmapMapLayer,
+  FlowmapTableSource,
+  GeoJsonMapLayer,
+  GeoJsonTableSource,
+  LayerGlyphIcon,
+  LayerSpatialFilter,
+  MapLayer,
+  MapLayerPurpose,
+  MapSource,
+  RelationDisplayConfig,
+  SpatialFilterPredicate,
+  TableDisplayConfig,
+} from './model';
 
-export type LayerGlyphIcon = 'circle' | 'square' | 'diamond' | 'line' | 'flow';
-export type SpatialFilterPredicate = 'intersects' | 'within';
-
-export interface LayerSpatialFilter {
-  sourceLayerId: string;
-  sourceLayerName: string;
-  sourceSchema: string;
-  sourceTable: string;
-  sourceGeometryColumn: string;
-  rowRefs: RowReference[];
-  predicate: SpatialFilterPredicate;
-}
-
-export interface GeoJsonTableSource {
-  id: string;
-  type: 'geojson-table';
-  connectionId: string;
-  schema: string;
-  table: string;
-  fullName: string;
-  kind: string;
-  geometryColumn: string;
-  geometryType: string;
-  filter?: TableFilterDefinition | null;
-  spatialFilter?: LayerSpatialFilter | null;
-  sourceViewId?: string | null;
-  refreshKey?: string;
-}
-
-export interface FlowmapTableSource {
-  id: string;
-  type: 'flowmap-table';
-  connectionId: string;
-  schema: string;
-  table: string;
-  fullName: string;
-  kind: string;
-  columns: {
-    startMode: 'coordinates' | 'geometry';
-    startLon: string;
-    startLat: string;
-    startGeometry: string;
-    endMode: 'coordinates' | 'geometry';
-    endLon: string;
-    endLat: string;
-    endGeometry: string;
-    magnitude: string;
-    defaultMagnitude: number;
-  };
-  spatialFilter?: LayerSpatialFilter | null;
-  rowRef?: RowReference | null;
-  refreshKey?: string;
-}
-
-export type MapSource = GeoJsonTableSource | FlowmapTableSource;
-
-export type MapLayerPurpose = 'configured' | 'record-preview';
-
-interface BaseMapLayer {
-  id: string;
-  connectionId: string;
-  sourceId: string;
-  name: string;
-  visible: boolean;
-  icon: LayerGlyphIcon;
-  purpose: MapLayerPurpose;
-}
-
-export interface GeoJsonMapLayer extends BaseMapLayer {
-  type: 'geojson';
-  color: string;
-  opacity: number;
-}
-
-export interface FlowmapMapLayer extends BaseMapLayer {
-  type: 'flowmap';
-  style: {
-    flowLinesRenderingMode: 'straight' | 'curved' | 'animated-straight';
-    flowLineThicknessScale: number;
-    clusteringEnabled: boolean;
-    clusteringAuto: boolean;
-    locationsEnabled: boolean;
-    locationTotalsEnabled: boolean;
-    locationLabelsEnabled: boolean;
-    maxTopFlowsDisplayNum: number;
-    colorScheme: string;
-    darkMode: boolean;
-  };
-}
-
-export interface ArcMapLayer extends BaseMapLayer {
-  type: 'arc';
-  color: string;
-  width: number;
-}
-
-export type MapLayer = GeoJsonMapLayer | FlowmapMapLayer | ArcMapLayer;
-
-export interface RelationDisplayConfig {
-  labelColumns: string[];
-}
-
-export interface TableDisplayConfig {
-  tableAlias?: string;
-  columnLabels: Record<string, string>;
-  hiddenColumns: string[];
-}
-
-interface LegacyImportedLayer {
-  id: string;
-  connectionId: string;
-  schema: string;
-  table: string;
-  fullName: string;
-  kind: string;
-  name: string;
-  icon: 'circle' | 'square' | 'diamond' | 'line';
-  color: string;
-  opacity: number;
-  visible: boolean;
-  geometryColumn: string;
-  geometryType: string;
-}
+import {
+  createConnectionId,
+  createDefaultFlowmapStyle,
+  createMapLayerId,
+  createMapSourceId,
+  createSavedTableViewId,
+  findFlowmapSource,
+  findGeoJsonSource,
+  getDefaultLayerColor,
+  getDefaultLayerIcon,
+  isBundledLocalTestConnection,
+  isGeoJsonSourceLinkedToView,
+  migrateLegacyLayers,
+  normalizeConnection,
+  normalizeMapLayer,
+  normalizeMapSource,
+  normalizeSavedTableView,
+  stripConnectionSecret,
+  touchGeoJsonSource,
+  touchMapSource,
+} from './store-helpers';
 
 interface ConnectionStoreState {
   connections: DatabaseConnection[];
@@ -284,367 +198,6 @@ interface ConnectionStoreState {
     },
   ) => void;
   setConnectionTestError: (connectionId: string, message: string) => void;
-}
-
-function createConnectionId() {
-  return `connection-${crypto.randomUUID()}`;
-}
-
-function createMapSourceId() {
-  return `source-${crypto.randomUUID()}`;
-}
-
-function createMapLayerId() {
-  return `layer-${crypto.randomUUID()}`;
-}
-
-function createSavedTableViewId() {
-  return `view-${crypto.randomUUID()}`;
-}
-
-function normalizeSavedTableView(
-  view: Partial<SavedTableView & SavedTableFilter>,
-): SavedTableView | null {
-  const sourceSchema = view.sourceSchema ?? view.schema;
-  const sourceTable = view.sourceTable ?? view.table;
-  if (
-    !view.name ||
-    !view.connectionId ||
-    !sourceSchema ||
-    !sourceTable ||
-    !view.filter
-  ) {
-    return null;
-  }
-
-  const createdAt = view.createdAt ?? new Date().toISOString();
-
-  return {
-    id: view.id ?? createSavedTableViewId(),
-    name: view.name,
-    connectionId: view.connectionId,
-    sourceSchema,
-    sourceTable,
-    createdAt,
-    updatedAt: view.updatedAt ?? createdAt,
-    filter: view.filter,
-  };
-}
-
-const layerColors = [
-  '#228be6',
-  '#2f9e44',
-  '#f08c00',
-  '#e03131',
-  '#7b61ff',
-  '#0c8599',
-];
-
-function getDefaultLayerColor(index: number) {
-  return layerColors[index % layerColors.length];
-}
-
-function getDefaultLayerIcon(geometryType: string): LayerGlyphIcon {
-  if (/line/i.test(geometryType)) {
-    return 'line';
-  }
-
-  if (/polygon/i.test(geometryType)) {
-    return 'square';
-  }
-
-  if (/point/i.test(geometryType)) {
-    return 'circle';
-  }
-
-  return 'diamond';
-}
-
-function createDefaultFlowmapStyle(): FlowmapMapLayer['style'] {
-  return {
-    flowLinesRenderingMode: 'curved',
-    flowLineThicknessScale: 2,
-    clusteringEnabled: false,
-    clusteringAuto: true,
-    locationsEnabled: true,
-    locationTotalsEnabled: false,
-    locationLabelsEnabled: false,
-    maxTopFlowsDisplayNum: 500,
-    colorScheme: 'Teal',
-    darkMode: false,
-  };
-}
-
-function normalizeConnection(
-  connection: DatabaseConnection,
-): DatabaseConnection {
-  if (isBundledLocalTestConnection(connection) && connection.password === '') {
-    return {
-      ...connection,
-      password: 'geopanel',
-      isServerManaged: connection.isServerManaged ?? false,
-    };
-  }
-
-  return {
-    ...connection,
-    password: '',
-    isServerManaged: connection.isServerManaged ?? false,
-  };
-}
-
-function isBundledLocalTestConnection(connection: DatabaseConnection) {
-  return (
-    connection.name === 'Local PostGIS Test' &&
-    connection.host === '127.0.0.1' &&
-    connection.port === '55432' &&
-    connection.database === 'geopanel_test' &&
-    connection.user === 'geopanel'
-  );
-}
-
-function stripConnectionSecret(connection: DatabaseConnection) {
-  return {
-    ...connection,
-    password: '',
-  };
-}
-
-function normalizeMapSource(source: Partial<MapSource>): MapSource | null {
-  if (source.type === 'geojson-table') {
-    return {
-      id: source.id ?? createMapSourceId(),
-      type: 'geojson-table',
-      connectionId: source.connectionId ?? '',
-      schema: source.schema ?? 'public',
-      table: source.table ?? '',
-      fullName:
-        source.fullName ?? `${source.schema ?? 'public'}.${source.table ?? ''}`,
-      kind: source.kind ?? 'table',
-      geometryColumn: source.geometryColumn ?? 'geom',
-      geometryType: source.geometryType ?? '',
-      filter: source.filter ?? null,
-      spatialFilter: source.spatialFilter ?? null,
-      sourceViewId: source.sourceViewId ?? null,
-      refreshKey: source.refreshKey ?? '',
-    };
-  }
-
-  if (source.type === 'flowmap-table') {
-    const columns = source.columns ?? {
-      startMode: 'coordinates',
-      startLon: '',
-      startLat: '',
-      startGeometry: '',
-      endMode: 'coordinates',
-      endLon: '',
-      endLat: '',
-      endGeometry: '',
-      magnitude: '',
-      defaultMagnitude: 1,
-    };
-
-    return {
-      id: source.id ?? createMapSourceId(),
-      type: 'flowmap-table',
-      connectionId: source.connectionId ?? '',
-      schema: source.schema ?? 'public',
-      table: source.table ?? '',
-      fullName:
-        source.fullName ?? `${source.schema ?? 'public'}.${source.table ?? ''}`,
-      kind: source.kind ?? 'table',
-      columns: {
-        startMode: columns.startMode ?? 'coordinates',
-        startLon: columns.startLon ?? '',
-        startLat: columns.startLat ?? '',
-        startGeometry: columns.startGeometry ?? '',
-        endMode: columns.endMode ?? 'coordinates',
-        endLon: columns.endLon ?? '',
-        endLat: columns.endLat ?? '',
-        endGeometry: columns.endGeometry ?? '',
-        magnitude: columns.magnitude ?? '',
-        defaultMagnitude: columns.defaultMagnitude ?? 1,
-      },
-      spatialFilter: source.spatialFilter ?? null,
-      rowRef: source.rowRef ?? null,
-      refreshKey: source.refreshKey ?? '',
-    };
-  }
-
-  return null;
-}
-
-function normalizeMapLayer(layer: Partial<MapLayer>, index: number): MapLayer {
-  if (layer.type === 'flowmap') {
-    return {
-      id: layer.id ?? createMapLayerId(),
-      type: 'flowmap',
-      connectionId: layer.connectionId ?? '',
-      sourceId: layer.sourceId ?? '',
-      name: layer.name ?? 'Flow layer',
-      visible: layer.visible ?? true,
-      icon: layer.icon ?? 'flow',
-      purpose: layer.purpose ?? 'configured',
-      style: layer.style ?? createDefaultFlowmapStyle(),
-    };
-  }
-
-  if (layer.type === 'arc') {
-    const arcLayer = layer as Partial<ArcMapLayer>;
-
-    return {
-      id: arcLayer.id ?? createMapLayerId(),
-      type: 'arc',
-      connectionId: arcLayer.connectionId ?? '',
-      sourceId: arcLayer.sourceId ?? '',
-      name: arcLayer.name ?? 'Arc layer',
-      visible: arcLayer.visible ?? true,
-      icon: arcLayer.icon ?? 'flow',
-      purpose: arcLayer.purpose ?? 'configured',
-      color: arcLayer.color ?? getDefaultLayerColor(index),
-      width: arcLayer.width ?? 3,
-    };
-  }
-
-  const geoJsonLayer = layer as Partial<GeoJsonMapLayer>;
-
-  return {
-    id: geoJsonLayer.id ?? createMapLayerId(),
-    type: 'geojson',
-    connectionId: geoJsonLayer.connectionId ?? '',
-    sourceId: geoJsonLayer.sourceId ?? '',
-    name: geoJsonLayer.name ?? 'Layer',
-    visible: geoJsonLayer.visible ?? true,
-    icon: geoJsonLayer.icon ?? getDefaultLayerIcon(''),
-    purpose: geoJsonLayer.purpose ?? 'configured',
-    color: geoJsonLayer.color ?? getDefaultLayerColor(index),
-    opacity: geoJsonLayer.opacity ?? 80,
-  };
-}
-
-function findGeoJsonSource(
-  sources: MapSource[],
-  payload: {
-    connectionId: string;
-    schema: string;
-    table: string;
-    geometryColumn: string;
-    filter?: TableFilterDefinition | null;
-    sourceViewId?: string | null;
-  },
-) {
-  return sources.find(
-    (source): source is GeoJsonTableSource =>
-      source.type === 'geojson-table' &&
-      source.connectionId === payload.connectionId &&
-      source.schema === payload.schema &&
-      source.table === payload.table &&
-      source.geometryColumn === payload.geometryColumn &&
-      (source.sourceViewId ?? null) === (payload.sourceViewId ?? null) &&
-      JSON.stringify(source.filter ?? null) ===
-        JSON.stringify(payload.filter ?? null),
-  );
-}
-
-function touchGeoJsonSource(source: GeoJsonTableSource): GeoJsonTableSource {
-  return {
-    ...source,
-    refreshKey: crypto.randomUUID(),
-  };
-}
-
-function touchMapSource(source: MapSource): MapSource {
-  return {
-    ...source,
-    refreshKey: crypto.randomUUID(),
-  };
-}
-
-function isGeoJsonSourceLinkedToView(
-  source: GeoJsonTableSource,
-  view: SavedTableView,
-) {
-  return (
-    source.sourceViewId === view.id ||
-    ((source.sourceViewId ?? null) === null &&
-      source.connectionId === view.connectionId &&
-      source.schema === view.sourceSchema &&
-      source.table === view.sourceTable &&
-      JSON.stringify(source.filter ?? null) === JSON.stringify(view.filter))
-  );
-}
-
-function findFlowmapSource(
-  sources: MapSource[],
-  payload: {
-    connectionId: string;
-    schema: string;
-    table: string;
-    columns: FlowmapTableSource['columns'];
-    rowRef?: RowReference | null;
-  },
-) {
-  return sources.find(
-    (source): source is FlowmapTableSource =>
-      source.type === 'flowmap-table' &&
-      source.connectionId === payload.connectionId &&
-      source.schema === payload.schema &&
-      source.table === payload.table &&
-      JSON.stringify(source.columns) === JSON.stringify(payload.columns) &&
-      JSON.stringify(source.rowRef ?? null) ===
-        JSON.stringify(payload.rowRef ?? null),
-  );
-}
-
-function migrateLegacyLayers(
-  legacyLayers: LegacyImportedLayer[],
-  currentSources: MapSource[],
-  currentLayers: MapLayer[],
-) {
-  const sources = [...currentSources];
-  const layers = [...currentLayers];
-
-  for (const legacyLayer of legacyLayers) {
-    let source = findGeoJsonSource(sources, legacyLayer);
-
-    if (!source) {
-      source = {
-        id: createMapSourceId(),
-        type: 'geojson-table',
-        connectionId: legacyLayer.connectionId,
-        schema: legacyLayer.schema,
-        table: legacyLayer.table,
-        fullName: legacyLayer.fullName,
-        kind: legacyLayer.kind,
-        geometryColumn: legacyLayer.geometryColumn,
-        geometryType: legacyLayer.geometryType,
-      };
-      sources.push(source);
-    }
-
-    if (
-      layers.some(
-        (layer) => layer.id === legacyLayer.id || layer.sourceId === source.id,
-      )
-    ) {
-      continue;
-    }
-
-    layers.push({
-      id: legacyLayer.id ?? createMapLayerId(),
-      type: 'geojson',
-      connectionId: legacyLayer.connectionId,
-      sourceId: source.id,
-      name: legacyLayer.name,
-      visible: legacyLayer.visible,
-      icon: legacyLayer.icon,
-      purpose: 'configured',
-      color: legacyLayer.color,
-      opacity: legacyLayer.opacity,
-    });
-  }
-
-  return { mapSources: sources, mapLayers: layers };
 }
 
 export const useConnectionStore = create<ConnectionStoreState>()(
