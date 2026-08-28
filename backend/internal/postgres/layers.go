@@ -273,6 +273,12 @@ func (service *Service) GetLayerVectorTile(
 		fmt.Sprintf("%s as _geopanel_primary_key", primaryKeyJSONExpression(primaryKey)),
 		fmt.Sprintf("%s as _geopanel_row_key", rowKeyJSONExpression(primaryKey)),
 	}
+	if len(primaryKey) == 0 {
+		propertyExpressions = append(
+			propertyExpressions,
+			mvtInlinePropertyExpressions(columnDefinitions)...,
+		)
+	}
 
 	whereClauses := []string{
 		fmt.Sprintf("%s is not null", predicateGeometryExpression),

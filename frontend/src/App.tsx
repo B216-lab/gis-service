@@ -77,10 +77,7 @@ import {
 } from './features/inspector/api';
 import { DataInspector } from './features/inspector/DataInspector';
 import { GeometryMapPreviewList } from './features/inspector/GeometryPreview';
-import {
-  tableDisplayKey,
-  tableDisplayKeyFromParts,
-} from './features/inspector/keys';
+import { tableDisplayKeyFromParts } from './features/inspector/keys';
 import { formatCellValue } from './features/inspector/table-editing';
 import type {
   FlowmapLocateTarget,
@@ -1194,12 +1191,6 @@ export function App() {
   const selectedInspectableTable = selectedSourceTableKey
     ? (tableMetadataByKey[selectedSourceTableKey] ?? null)
     : null;
-  const selectedTableAlias =
-    selectedConnectionId && selectedInspectableTable
-      ? tableDisplayByKey[
-          tableDisplayKey(selectedConnectionId, selectedInspectableTable)
-        ]?.tableAlias?.trim()
-      : '';
   const visibleTableOptions = useMemo(
     () =>
       selectedSchemaNames.flatMap(
@@ -1306,67 +1297,90 @@ export function App() {
     [schemaTablesByName, selectedConnection],
   );
 
-  const loadCatalogSchemas = useCallback(async () => {
-    if (!selectedConnection || selectedConnection.testStatus !== 'success') {
-      return;
-    }
-
-    setIsLoadingSchemas(true);
-    setCatalogError('');
-
-    try {
-      const nextSchemas = await fetchInspectableSchemas(selectedConnection);
-      setSchemas(nextSchemas);
-      const visibleSchemaNames = new Set(
-        nextSchemas
-          .filter((schema) => schema.visible)
-          .map((schema) => schema.name),
-      );
-      const selectedTableSchema = selectedSourceTableKey?.split('.')[0] ?? null;
-      updateSelectedSchemaNames((current) => {
-        const next = current.filter((name) => visibleSchemaNames.has(name));
-        if (
-          selectedTableSchema &&
-          visibleSchemaNames.has(selectedTableSchema) &&
-          !next.includes(selectedTableSchema)
-        ) {
-          next.push(selectedTableSchema);
-        }
-        return next;
-      });
-      setExpandedSchemaNames((current) =>
-        Array.from(
-          new Set([
-            ...current.filter((name) => visibleSchemaNames.has(name)),
-            ...(selectedTableSchema &&
-            visibleSchemaNames.has(selectedTableSchema)
-              ? [selectedTableSchema]
-              : []),
-          ]),
-        ),
-      );
-      if (
-        selectedSourceTableKey &&
-        !visibleSchemaNames.has(selectedSourceTableKey.split('.')[0])
-      ) {
-        handleSelectTable(null);
-      } else if (selectedTableSchema) {
-        await loadSchemaTables(selectedTableSchema, true);
+  const loadCatalogSchemas = useCallback(
+    async (loadAllTables = false) => {
+      if (!selectedConnection || selectedConnection.testStatus !== 'success') {
+        return;
       }
-    } catch (error) {
-      setCatalogError(
-        error instanceof Error ? error.message : 'Failed to load schemas.',
-      );
-    } finally {
-      setIsLoadingSchemas(false);
-    }
-  }, [
-    handleSelectTable,
-    loadSchemaTables,
-    selectedConnection,
-    selectedSourceTableKey,
-    updateSelectedSchemaNames,
-  ]);
+
+      setIsLoadingSchemas(true);
+      setCatalogError('');
+
+      try {
+        const nextSchemas = await fetchInspectableSchemas(selectedConnection);
+        setSchemas(nextSchemas);
+        const visibleSchemaNames = new Set(
+          nextSchemas
+            .filter((schema) => schema.visible)
+            .map((schema) => schema.name),
+        );
+        if (loadAllTables) {
+          const visibleSchemas = nextSchemas.filter((schema) => schema.visible);
+          const loadedTables = await Promise.all(
+            visibleSchemas.map(
+              async (schema) =>
+                [
+                  schema.name,
+                  await fetchInspectableSchemaTables(
+                    selectedConnection,
+                    schema.name,
+                  ),
+                ] as const,
+            ),
+          );
+          setSchemaTablesByName((current) => ({
+            ...current,
+            ...Object.fromEntries(loadedTables),
+          }));
+        }
+        const selectedTableSchema =
+          selectedSourceTableKey?.split('.')[0] ?? null;
+        updateSelectedSchemaNames((current) => {
+          const next = current.filter((name) => visibleSchemaNames.has(name));
+          if (
+            selectedTableSchema &&
+            visibleSchemaNames.has(selectedTableSchema) &&
+            !next.includes(selectedTableSchema)
+          ) {
+            next.push(selectedTableSchema);
+          }
+          return next;
+        });
+        setExpandedSchemaNames((current) =>
+          Array.from(
+            new Set([
+              ...current.filter((name) => visibleSchemaNames.has(name)),
+              ...(selectedTableSchema &&
+              visibleSchemaNames.has(selectedTableSchema)
+                ? [selectedTableSchema]
+                : []),
+            ]),
+          ),
+        );
+        if (
+          selectedSourceTableKey &&
+          !visibleSchemaNames.has(selectedSourceTableKey.split('.')[0])
+        ) {
+          handleSelectTable(null);
+        } else if (selectedTableSchema) {
+          await loadSchemaTables(selectedTableSchema, true);
+        }
+      } catch (error) {
+        setCatalogError(
+          error instanceof Error ? error.message : 'Failed to load schemas.',
+        );
+      } finally {
+        setIsLoadingSchemas(false);
+      }
+    },
+    [
+      handleSelectTable,
+      loadSchemaTables,
+      selectedConnection,
+      selectedSourceTableKey,
+      updateSelectedSchemaNames,
+    ],
+  );
 
   function handleToggleCatalogSchema(schemaName: string) {
     updateSelectedSchemaNames((current) => {
@@ -1401,37 +1415,38 @@ export function App() {
     });
   }
 
-  function handleImportSelectedTable() {
-    if (!selectedConnectionId || !selectedTableKey) {
+  function handleCreateGeometryLayer(payload: {
+    table: InspectableTable;
+    name: string;
+    geometryColumn: string;
+  }) {
+    if (!selectedConnectionId) {
       return;
     }
 
-    if (
-      !selectedInspectableTable ||
-      selectedInspectableTable.geometryColumns.length === 0
-    ) {
+    const geometryColumn = payload.table.geometryColumns.find(
+      (column) => column.name === payload.geometryColumn,
+    );
+    if (!geometryColumn) {
       return;
     }
-
-    const geometryColumn = selectedInspectableTable.geometryColumns[0];
 
     addGeoJsonLayer({
       connectionId: selectedConnectionId,
-      schema: selectedInspectableTable.schema,
-      table: selectedInspectableTable.name,
-      fullName: selectedInspectableTable.fullName,
-      kind: selectedInspectableTable.kind,
-      name:
-        selectedSavedView?.name ??
-        (selectedTableAlias || selectedInspectableTable.name),
+      schema: payload.table.schema,
+      table: payload.table.name,
+      fullName: payload.table.fullName,
+      kind: payload.table.kind,
+      name: payload.name,
       geometryColumn: geometryColumn.name,
       geometryType: geometryColumn.geometryType,
-      filter: selectedSavedView?.filter ?? null,
-      sourceViewId: selectedSavedView?.id ?? null,
+      filter: null,
+      sourceViewId: null,
     });
   }
 
   function handleCreateFlowLayer(payload: {
+    table: InspectableTable;
     layerKind: MovementLayerKind;
     name: string;
     startMode: 'coordinates' | 'geometry';
@@ -1445,16 +1460,16 @@ export function App() {
     magnitude: string;
     defaultMagnitude: number;
   }) {
-    if (!selectedConnectionId || !selectedInspectableTable) {
+    if (!selectedConnectionId) {
       return;
     }
 
     const layerPayload = {
       connectionId: selectedConnectionId,
-      schema: selectedInspectableTable.schema,
-      table: selectedInspectableTable.name,
-      fullName: selectedInspectableTable.fullName,
-      kind: selectedInspectableTable.kind,
+      schema: payload.table.schema,
+      table: payload.table.name,
+      fullName: payload.table.fullName,
+      kind: payload.table.kind,
       name: payload.name,
       columns: {
         startMode: payload.startMode,
@@ -2170,7 +2185,8 @@ export function App() {
     mapLayers: selectedConnectionMapLayers,
     mapSources,
     onLoadSchemas: () => void loadCatalogSchemas(),
-    onImportSelectedTable: handleImportSelectedTable,
+    onLoadLayerSources: () => void loadCatalogSchemas(true),
+    onCreateGeometryLayer: handleCreateGeometryLayer,
     onCreateFlowLayer: handleCreateFlowLayer,
     onLocateLayer: handleLocateLayer,
     onRemoveSavedView: handleRemoveSavedView,

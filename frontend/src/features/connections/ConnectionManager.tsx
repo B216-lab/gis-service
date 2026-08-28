@@ -29,8 +29,11 @@ import {
   IconFocusCentered,
   IconInfoCircle,
   IconLayersIntersect,
+  IconMapPin,
   IconPlug,
   IconPlugConnected,
+  IconPlus,
+  IconPolygon,
   IconRoute,
   IconSettings,
   IconTrash,
@@ -48,6 +51,7 @@ import { EmptyState, LayerGlyph } from '../app/chrome';
 import type { SavedTableView } from '../filters/types';
 import {
   fetchInspectableSchemas,
+  fetchTableMetadata,
   type InspectableSchema,
   type InspectableTable,
   saveSchemaDisplayConfigs,
@@ -95,6 +99,8 @@ const initialConnectionForm: ConnectionFormState = {
 };
 
 type ConnectionManagerView = 'sources' | 'layers';
+type GeometryLayerKind = 'point' | 'polygon';
+type LayerCreationKind = GeometryLayerKind | MovementLayerKind;
 
 function connectionRequestPayload(connection: DatabaseConnection) {
   if (connection.isServerManaged) {
@@ -120,7 +126,8 @@ export function ConnectionManager({
   mapLayers,
   mapSources,
   onLoadSchemas,
-  onImportSelectedTable,
+  onLoadLayerSources,
+  onCreateGeometryLayer,
   onCreateFlowLayer,
   onLocateLayer,
   onSelectLayer,
@@ -140,8 +147,14 @@ export function ConnectionManager({
   mapLayers: MapLayer[];
   mapSources: MapSource[];
   onLoadSchemas: () => void;
-  onImportSelectedTable: () => void;
+  onLoadLayerSources: () => void;
+  onCreateGeometryLayer: (payload: {
+    table: InspectableTable;
+    name: string;
+    geometryColumn: string;
+  }) => void;
   onCreateFlowLayer: (payload: {
+    table: InspectableTable;
     layerKind: MovementLayerKind;
     name: string;
     startMode: 'coordinates' | 'geometry';
@@ -169,7 +182,7 @@ export function ConnectionManager({
   view: ConnectionManagerView;
 }) {
   const [connectionOpened, connectionModal] = useDisclosure(false);
-  const [flowLayerOpened, flowLayerModal] = useDisclosure(false);
+  const [layerCreationOpened, layerCreationModal] = useDisclosure(false);
   const [catalogOpened, catalogDisclosure] = useDisclosure(false);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
   const [layerPurposeFilter, setLayerPurposeFilter] = useState<
@@ -179,8 +192,13 @@ export function ConnectionManager({
   const [flowLayerForm, setFlowLayerForm] = useState<FlowLayerFormState>(() =>
     createFlowLayerDefaults(selectedInspectableTable),
   );
-  const [movementLayerKind, setMovementLayerKind] =
-    useState<MovementLayerKind>('flowmap');
+  const [layerCreationKind, setLayerCreationKind] =
+    useState<LayerCreationKind>('point');
+  const [layerSourceTable, setLayerSourceTable] =
+    useState<InspectableTable | null>(selectedInspectableTable);
+  const [isLoadingLayerSource, setIsLoadingLayerSource] = useState(false);
+  const [geometryLayerName, setGeometryLayerName] = useState('Point layer');
+  const [geometryColumn, setGeometryColumn] = useState<string | null>(null);
   const [flowLayerError, setFlowLayerError] = useState('');
   const [locatingLayerId, setLocatingLayerId] = useState<string | null>(null);
   const [layerLocateError, setLayerLocateError] = useState('');
@@ -234,19 +252,41 @@ export function ConnectionManager({
     (state) => state.tableDisplayByKey,
   );
 
-  const canImportSelectedTable = Boolean(
-    selectedInspectableTable &&
-      selectedInspectableTable.geometryColumns.length > 0,
-  );
-  const numericColumnOptions = (selectedInspectableTable?.columns ?? [])
+  const selectedConnection =
+    connections.find((connection) => connection.id === selectedConnectionId) ??
+    null;
+  const canConfigureLayer = selectedConnection?.testStatus === 'success';
+  const layerTableOptions = Object.values(catalog.schemaTablesByName)
+    .flat()
+    .map((table) => {
+      const alias = selectedConnectionId
+        ? tableDisplayByKey[
+            tableDisplayKeyFromParts(
+              selectedConnectionId,
+              table.schema,
+              table.name,
+            )
+          ]?.tableAlias?.trim()
+        : '';
+      const sourceLabel = selectedConnection?.name
+        ? `${selectedConnection.name} · ${table.fullName}`
+        : table.fullName;
+
+      return {
+        label: alias ? `${alias} — ${sourceLabel}` : sourceLabel,
+        value: table.fullName,
+      };
+    })
+    .sort((left, right) => left.label.localeCompare(right.label));
+  const numericColumnOptions = (layerSourceTable?.columns ?? [])
     .filter((column) => isNumericColumnType(column.type))
     .map((column) => ({
       label: `${column.name} (${column.type})`,
       value: column.name,
     }));
-  const canCreateFlowLayer = Boolean(selectedInspectableTable);
   const canSubmitFlowLayer = Boolean(
-    flowLayerForm.name.trim() &&
+    layerSourceTable &&
+      flowLayerForm.name.trim() &&
       (flowLayerForm.startMode === 'geometry'
         ? flowLayerForm.startGeometry
         : flowLayerForm.startLon && flowLayerForm.startLat) &&
@@ -255,33 +295,57 @@ export function ConnectionManager({
         : flowLayerForm.endLon && flowLayerForm.endLat) &&
       (flowLayerForm.magnitude || flowLayerForm.defaultMagnitude > 0),
   );
-  const geometryColumnOptions = (
-    selectedInspectableTable?.geometryColumns ?? []
-  ).map((column) => ({
-    label: `${column.name} (${column.geometryType})`,
-    value: column.name,
-  }));
-  const selectedTableAlias =
-    selectedConnectionId && selectedInspectableTable
+  const geometryColumnOptions = (layerSourceTable?.geometryColumns ?? []).map(
+    (column) => ({
+      label: `${column.name} (${column.geometryType})`,
+      value: column.name,
+    }),
+  );
+  const isGeometryLayer =
+    layerCreationKind === 'point' || layerCreationKind === 'polygon';
+  const geometryTypePattern =
+    layerCreationKind === 'polygon' ? /^(multi)?polygon$/i : /^(multi)?point$/i;
+  const geometryLayerCopy =
+    layerCreationKind === 'polygon'
+      ? {
+          description:
+            'Only Polygon and MultiPolygon geometry columns are available.',
+          empty: 'This table has no Polygon or MultiPolygon geometry column.',
+          emptyTitle: 'No polygon geometry',
+          label: 'Polygon geometry',
+          placeholder: 'Select polygon geometry column',
+        }
+      : {
+          description:
+            'Only Point and MultiPoint geometry columns are available.',
+          empty: 'This table has no Point or MultiPoint geometry column.',
+          emptyTitle: 'No point geometry',
+          label: 'Point geometry',
+          placeholder: 'Select point geometry column',
+        };
+  const geometryLayerColumnOptions = (layerSourceTable?.geometryColumns ?? [])
+    .filter((column) => geometryTypePattern.test(column.geometryType))
+    .map((column) => ({
+      label: `${column.name} (${column.geometryType}, EPSG:${column.srid})`,
+      value: column.name,
+    }));
+  const layerTableAlias =
+    selectedConnectionId && layerSourceTable
       ? tableDisplayByKey[
-          tableDisplayKey(selectedConnectionId, selectedInspectableTable)
+          tableDisplayKey(selectedConnectionId, layerSourceTable)
         ]?.tableAlias?.trim()
       : '';
-  const flowValidationMessages = validateFlowLayerForm(
-    flowLayerForm,
-    selectedInspectableTable,
-  );
   const currentFlowLayerDefaults = useMemo(() => {
-    const defaults = createFlowLayerDefaults(selectedInspectableTable);
-    if (!selectedInspectableTable || !selectedTableAlias) {
+    const defaults = createFlowLayerDefaults(layerSourceTable);
+    if (!layerSourceTable || !layerTableAlias) {
       return defaults;
     }
 
     return {
       ...defaults,
-      name: `${selectedTableAlias} flows`,
+      name: `${layerTableAlias} flows`,
     };
-  }, [selectedInspectableTable, selectedTableAlias]);
+  }, [layerSourceTable, layerTableAlias]);
   const filteredMapLayers =
     layerPurposeFilter === 'all'
       ? mapLayers
@@ -305,11 +369,84 @@ export function ConnectionManager({
     connectionModal.close();
   }
 
-  function handleOpenMovementLayerModal(layerKind: MovementLayerKind) {
-    setMovementLayerKind(layerKind);
-    setFlowLayerForm(currentFlowLayerDefaults);
+  function applyLayerSource(
+    table: InspectableTable | null,
+    geometryKind: GeometryLayerKind = layerCreationKind === 'polygon'
+      ? 'polygon'
+      : 'point',
+  ) {
+    setLayerSourceTable(table);
+    const alias =
+      table && selectedConnectionId
+        ? tableDisplayByKey[
+            tableDisplayKey(selectedConnectionId, table)
+          ]?.tableAlias?.trim()
+        : '';
+    setGeometryLayerName(
+      table
+        ? alias || table.name
+        : `${geometryKind === 'polygon' ? 'Polygon' : 'Point'} layer`,
+    );
+    const geometryPattern =
+      geometryKind === 'polygon' ? /^(multi)?polygon$/i : /^(multi)?point$/i;
+    setGeometryColumn(
+      table?.geometryColumns.find((column) =>
+        geometryPattern.test(column.geometryType),
+      )?.name ?? null,
+    );
+    setFlowLayerForm(createFlowLayerDefaults(table));
+  }
+
+  function handleOpenLayerCreationModal(kind: LayerCreationKind) {
+    setLayerCreationKind(kind);
+    applyLayerSource(
+      selectedInspectableTable,
+      kind === 'polygon' ? 'polygon' : 'point',
+    );
     setFlowLayerError('');
-    flowLayerModal.open();
+    if (layerTableOptions.length === 0) {
+      onLoadLayerSources();
+    }
+    layerCreationModal.open();
+  }
+
+  async function handleLayerSourceChange(fullName: string | null) {
+    if (!fullName || !selectedConnection) {
+      applyLayerSource(null);
+      return;
+    }
+
+    const cachedTable = tables.find((table) => table.fullName === fullName);
+    if (cachedTable) {
+      applyLayerSource(cachedTable);
+      return;
+    }
+
+    const tableSummary = Object.values(catalog.schemaTablesByName)
+      .flat()
+      .find((table) => table.fullName === fullName);
+    if (!tableSummary) {
+      applyLayerSource(null);
+      return;
+    }
+
+    setIsLoadingLayerSource(true);
+    setFlowLayerError('');
+    try {
+      const metadata = await fetchTableMetadata(
+        selectedConnection,
+        tableSummary.schema,
+        tableSummary.name,
+      );
+      applyLayerSource({ ...metadata, rowEstimate: tableSummary.rowEstimate });
+    } catch (error) {
+      applyLayerSource(null);
+      setFlowLayerError(
+        error instanceof Error ? error.message : 'Failed to load table setup.',
+      );
+    } finally {
+      setIsLoadingLayerSource(false);
+    }
   }
 
   async function handleLocateLayer(layerId: string) {
@@ -327,7 +464,7 @@ export function ConnectionManager({
   }
 
   function handleCloseFlowLayerModal() {
-    flowLayerModal.close();
+    layerCreationModal.close();
   }
 
   function handleToggleCatalog() {
@@ -364,7 +501,7 @@ export function ConnectionManager({
   function handleCreateFlowLayer() {
     const validationMessages = validateFlowLayerForm(
       flowLayerForm,
-      selectedInspectableTable,
+      layerSourceTable,
     );
     if (validationMessages.length > 0) {
       setFlowLayerError(validationMessages[0]);
@@ -376,7 +513,8 @@ export function ConnectionManager({
     }
 
     onCreateFlowLayer({
-      layerKind: movementLayerKind,
+      table: layerSourceTable as InspectableTable,
+      layerKind: layerCreationKind as MovementLayerKind,
       name: flowLayerForm.name.trim(),
       startMode: flowLayerForm.startMode,
       startLon: flowLayerForm.startLon ?? '',
@@ -388,6 +526,19 @@ export function ConnectionManager({
       endGeometry: flowLayerForm.endGeometry ?? '',
       magnitude: flowLayerForm.magnitude ?? '',
       defaultMagnitude: flowLayerForm.defaultMagnitude,
+    });
+    handleCloseFlowLayerModal();
+  }
+
+  function handleCreateGeometryLayer() {
+    if (!layerSourceTable || !geometryLayerName.trim() || !geometryColumn) {
+      return;
+    }
+
+    onCreateGeometryLayer({
+      table: layerSourceTable,
+      name: geometryLayerName.trim(),
+      geometryColumn,
     });
     handleCloseFlowLayerModal();
   }
@@ -630,209 +781,241 @@ export function ConnectionManager({
       <Modal
         centered
         onClose={handleCloseFlowLayerModal}
-        opened={flowLayerOpened}
-        title={`Create ${movementLayerKind === 'arc' ? 'arc' : 'flowmap'} layer`}
+        opened={layerCreationOpened}
+        size="lg"
+        title={`Create ${layerCreationKind} layer`}
       >
         <Stack gap="sm">
-          <TextInput
-            label="Layer name"
-            onChange={(event) =>
-              setFlowLayerForm((current) => ({
-                ...current,
-                name: event.currentTarget.value,
-              }))
-            }
-            value={flowLayerForm.name}
-          />
-
-          <Stack gap="xs">
-            <Group grow>
-              <Select
-                data={[
-                  { label: 'Lon/lat columns', value: 'coordinates' },
-                  { label: 'Geometry column', value: 'geometry' },
-                ]}
-                label="Departure point"
-                onChange={(value) =>
-                  setFlowLayerForm((current) => ({
-                    ...current,
-                    startMode:
-                      value === 'geometry' ? 'geometry' : 'coordinates',
-                  }))
-                }
-                value={flowLayerForm.startMode}
-              />
-              <Select
-                data={[
-                  { label: 'Lon/lat columns', value: 'coordinates' },
-                  { label: 'Geometry column', value: 'geometry' },
-                ]}
-                label="Destination point"
-                onChange={(value) =>
-                  setFlowLayerForm((current) => ({
-                    ...current,
-                    endMode: value === 'geometry' ? 'geometry' : 'coordinates',
-                  }))
-                }
-                value={flowLayerForm.endMode}
-              />
-            </Group>
-
-            {flowLayerForm.startMode === 'geometry' ? (
-              <Select
-                data={geometryColumnOptions}
-                error={flowValidationMessages.some((message) =>
-                  message.includes('Departure geometry'),
-                )}
-                label="Departure geometry"
-                onChange={(value) =>
-                  setFlowLayerForm((current) => ({
-                    ...current,
-                    startGeometry: value,
-                  }))
-                }
-                placeholder="Geometry point column"
-                searchable
-                value={flowLayerForm.startGeometry}
-              />
-            ) : (
-              <Group grow>
-                <Select
-                  data={numericColumnOptions}
-                  error={flowValidationMessages.some((message) =>
-                    message.includes('Departure longitude'),
-                  )}
-                  label="Departure longitude"
-                  onChange={(value) =>
-                    setFlowLayerForm((current) => ({
-                      ...current,
-                      startLon: value,
-                    }))
-                  }
-                  placeholder="Numeric lon/x column"
-                  searchable
-                  value={flowLayerForm.startLon}
-                />
-                <Select
-                  data={numericColumnOptions}
-                  error={flowValidationMessages.some((message) =>
-                    message.includes('Departure latitude'),
-                  )}
-                  label="Departure latitude"
-                  onChange={(value) =>
-                    setFlowLayerForm((current) => ({
-                      ...current,
-                      startLat: value,
-                    }))
-                  }
-                  placeholder="Numeric lat/y column"
-                  searchable
-                  value={flowLayerForm.startLat}
-                />
-              </Group>
-            )}
-
-            {flowLayerForm.endMode === 'geometry' ? (
-              <Select
-                data={geometryColumnOptions}
-                error={flowValidationMessages.some((message) =>
-                  message.includes('Destination geometry'),
-                )}
-                label="Destination geometry"
-                onChange={(value) =>
-                  setFlowLayerForm((current) => ({
-                    ...current,
-                    endGeometry: value,
-                  }))
-                }
-                placeholder="Geometry point column"
-                searchable
-                value={flowLayerForm.endGeometry}
-              />
-            ) : (
-              <Group grow>
-                <Select
-                  data={numericColumnOptions}
-                  error={flowValidationMessages.some((message) =>
-                    message.includes('Destination longitude'),
-                  )}
-                  label="Destination longitude"
-                  onChange={(value) =>
-                    setFlowLayerForm((current) => ({
-                      ...current,
-                      endLon: value,
-                    }))
-                  }
-                  placeholder="Numeric lon/x column"
-                  searchable
-                  value={flowLayerForm.endLon}
-                />
-                <Select
-                  data={numericColumnOptions}
-                  error={flowValidationMessages.some((message) =>
-                    message.includes('Destination latitude'),
-                  )}
-                  label="Destination latitude"
-                  onChange={(value) =>
-                    setFlowLayerForm((current) => ({
-                      ...current,
-                      endLat: value,
-                    }))
-                  }
-                  placeholder="Numeric lat/y column"
-                  searchable
-                  value={flowLayerForm.endLat}
-                />
-              </Group>
-            )}
-          </Stack>
-
           <Select
-            data={numericColumnOptions}
-            error={flowValidationMessages.some((message) =>
-              message.includes('Density'),
-            )}
-            label="Density column"
-            onChange={(value) =>
-              setFlowLayerForm((current) => ({
-                ...current,
-                magnitude: value,
-              }))
-            }
-            placeholder="Optional numeric weight/count column"
-            clearable
+            data={layerTableOptions}
+            description="Choose layer data directly. Opening the table for inspection is optional."
+            label="Data table"
+            loading={isLoadingLayerSource || catalog.isLoadingSchemas}
+            nothingFoundMessage="Open a schema in Data Sources to load its tables"
+            onChange={(value) => void handleLayerSourceChange(value)}
+            placeholder="Select schema and table"
             searchable
-            value={flowLayerForm.magnitude}
+            value={layerSourceTable?.fullName ?? null}
           />
-          <NumberInput
-            decimalScale={3}
-            disabled={Boolean(flowLayerForm.magnitude)}
-            error={flowValidationMessages.some((message) =>
-              message.includes('Default density'),
-            )}
-            label="Default density"
-            min={0.001}
-            onChange={(value) =>
-              setFlowLayerForm((current) => ({
-                ...current,
-                defaultMagnitude: typeof value === 'number' ? value : 1,
-              }))
-            }
-            value={flowLayerForm.defaultMagnitude}
-          />
+
+          {isGeometryLayer ? (
+            <>
+              <TextInput
+                label="Layer name"
+                onChange={(event) =>
+                  setGeometryLayerName(event.currentTarget.value)
+                }
+                value={geometryLayerName}
+              />
+              <Select
+                data={geometryLayerColumnOptions}
+                description={geometryLayerCopy.description}
+                label={geometryLayerCopy.label}
+                onChange={setGeometryColumn}
+                placeholder={geometryLayerCopy.placeholder}
+                value={geometryColumn}
+              />
+            </>
+          ) : (
+            <>
+              <TextInput
+                label="Layer name"
+                onChange={(event) =>
+                  setFlowLayerForm((current) => ({
+                    ...current,
+                    name: event.currentTarget.value,
+                  }))
+                }
+                value={flowLayerForm.name}
+              />
+
+              <Stack gap="xs">
+                <Group grow>
+                  <Select
+                    data={[
+                      { label: 'Lon/lat columns', value: 'coordinates' },
+                      { label: 'Geometry column', value: 'geometry' },
+                    ]}
+                    label="Departure point"
+                    onChange={(value) =>
+                      setFlowLayerForm((current) => ({
+                        ...current,
+                        startMode:
+                          value === 'geometry' ? 'geometry' : 'coordinates',
+                      }))
+                    }
+                    value={flowLayerForm.startMode}
+                  />
+                  <Select
+                    data={[
+                      { label: 'Lon/lat columns', value: 'coordinates' },
+                      { label: 'Geometry column', value: 'geometry' },
+                    ]}
+                    label="Destination point"
+                    onChange={(value) =>
+                      setFlowLayerForm((current) => ({
+                        ...current,
+                        endMode:
+                          value === 'geometry' ? 'geometry' : 'coordinates',
+                      }))
+                    }
+                    value={flowLayerForm.endMode}
+                  />
+                </Group>
+
+                {flowLayerForm.startMode === 'geometry' ? (
+                  <Select
+                    data={geometryColumnOptions}
+                    label="Departure geometry"
+                    onChange={(value) =>
+                      setFlowLayerForm((current) => ({
+                        ...current,
+                        startGeometry: value,
+                      }))
+                    }
+                    placeholder="Geometry point column"
+                    searchable
+                    value={flowLayerForm.startGeometry}
+                  />
+                ) : (
+                  <Group grow>
+                    <Select
+                      data={numericColumnOptions}
+                      label="Departure longitude"
+                      onChange={(value) =>
+                        setFlowLayerForm((current) => ({
+                          ...current,
+                          startLon: value,
+                        }))
+                      }
+                      placeholder="Numeric lon/x column"
+                      searchable
+                      value={flowLayerForm.startLon}
+                    />
+                    <Select
+                      data={numericColumnOptions}
+                      label="Departure latitude"
+                      onChange={(value) =>
+                        setFlowLayerForm((current) => ({
+                          ...current,
+                          startLat: value,
+                        }))
+                      }
+                      placeholder="Numeric lat/y column"
+                      searchable
+                      value={flowLayerForm.startLat}
+                    />
+                  </Group>
+                )}
+
+                {flowLayerForm.endMode === 'geometry' ? (
+                  <Select
+                    data={geometryColumnOptions}
+                    label="Destination geometry"
+                    onChange={(value) =>
+                      setFlowLayerForm((current) => ({
+                        ...current,
+                        endGeometry: value,
+                      }))
+                    }
+                    placeholder="Geometry point column"
+                    searchable
+                    value={flowLayerForm.endGeometry}
+                  />
+                ) : (
+                  <Group grow>
+                    <Select
+                      data={numericColumnOptions}
+                      label="Destination longitude"
+                      onChange={(value) =>
+                        setFlowLayerForm((current) => ({
+                          ...current,
+                          endLon: value,
+                        }))
+                      }
+                      placeholder="Numeric lon/x column"
+                      searchable
+                      value={flowLayerForm.endLon}
+                    />
+                    <Select
+                      data={numericColumnOptions}
+                      label="Destination latitude"
+                      onChange={(value) =>
+                        setFlowLayerForm((current) => ({
+                          ...current,
+                          endLat: value,
+                        }))
+                      }
+                      placeholder="Numeric lat/y column"
+                      searchable
+                      value={flowLayerForm.endLat}
+                    />
+                  </Group>
+                )}
+              </Stack>
+
+              <Select
+                clearable
+                data={numericColumnOptions}
+                label="Density column"
+                onChange={(value) =>
+                  setFlowLayerForm((current) => ({
+                    ...current,
+                    magnitude: value,
+                  }))
+                }
+                placeholder="Optional numeric weight/count column"
+                searchable
+                value={flowLayerForm.magnitude}
+              />
+              <NumberInput
+                decimalScale={3}
+                disabled={Boolean(flowLayerForm.magnitude)}
+                label="Default density"
+                min={0.001}
+                onChange={(value) =>
+                  setFlowLayerForm((current) => ({
+                    ...current,
+                    defaultMagnitude: typeof value === 'number' ? value : 1,
+                  }))
+                }
+                value={flowLayerForm.defaultMagnitude}
+              />
+            </>
+          )}
+
+          {isGeometryLayer &&
+          layerSourceTable &&
+          geometryLayerColumnOptions.length === 0 ? (
+            <Alert
+              color="orange"
+              title={geometryLayerCopy.emptyTitle}
+              variant="light"
+            >
+              {geometryLayerCopy.empty}
+            </Alert>
+          ) : null}
 
           {flowLayerError ? (
-            <Alert color="red" title="Flow setup incomplete" variant="light">
+            <Alert color="red" title="Layer setup incomplete" variant="light">
               {flowLayerError}
             </Alert>
           ) : null}
-          <Group justify="space-between" pt="xs">
-            <Text c="dimmed" size="xs">
-              One table. Static read-only flows from selected point columns.
-            </Text>
+          <Group justify="flex-end" pt="xs">
             <Button
-              disabled={!canSubmitFlowLayer}
-              onClick={handleCreateFlowLayer}
+              disabled={
+                isLoadingLayerSource ||
+                (isGeometryLayer
+                  ? !layerSourceTable ||
+                    !geometryLayerName.trim() ||
+                    !geometryColumn
+                  : !canSubmitFlowLayer)
+              }
+              onClick={
+                isGeometryLayer
+                  ? handleCreateGeometryLayer
+                  : handleCreateFlowLayer
+              }
             >
               Create layer
             </Button>
@@ -1073,34 +1256,42 @@ export function ConnectionManager({
                 <Menu.Target>
                   <Button
                     data-tour="layer-actions"
+                    leftSection={<IconPlus size={14} />}
                     rightSection={<IconChevronDown size={14} />}
                     size="compact-sm"
                     variant="light"
                   >
-                    Layer Actions
+                    Create new
                   </Button>
                 </Menu.Target>
                 <Menu.Dropdown>
                   <Menu.Item
-                    disabled={!canImportSelectedTable}
-                    leftSection={<IconDatabasePlus size={14} />}
-                    onClick={onImportSelectedTable}
+                    disabled={!canConfigureLayer}
+                    leftSection={<IconMapPin size={16} />}
+                    onClick={() => handleOpenLayerCreationModal('point')}
                   >
-                    Import Layer
+                    Point layer
                   </Menu.Item>
                   <Menu.Item
-                    disabled={!canCreateFlowLayer}
-                    leftSection={<IconRoute size={14} />}
-                    onClick={() => handleOpenMovementLayerModal('flowmap')}
+                    disabled={!canConfigureLayer}
+                    leftSection={<IconPolygon size={16} />}
+                    onClick={() => handleOpenLayerCreationModal('polygon')}
                   >
-                    Create Flowmap
+                    Polygon layer
                   </Menu.Item>
                   <Menu.Item
-                    disabled={!canCreateFlowLayer}
-                    leftSection={<IconLayersIntersect size={14} />}
-                    onClick={() => handleOpenMovementLayerModal('arc')}
+                    disabled={!canConfigureLayer}
+                    leftSection={<IconRoute size={16} />}
+                    onClick={() => handleOpenLayerCreationModal('flowmap')}
                   >
-                    Create Arc
+                    Flowmap layer
+                  </Menu.Item>
+                  <Menu.Item
+                    disabled={!canConfigureLayer}
+                    leftSection={<IconLayersIntersect size={16} />}
+                    onClick={() => handleOpenLayerCreationModal('arc')}
+                  >
+                    Arc layer
                   </Menu.Item>
                 </Menu.Dropdown>
               </Menu>
@@ -1296,8 +1487,8 @@ export function ConnectionManager({
 
                 {mapLayers.length === 0 ? (
                   <Text c="dimmed" size="xs">
-                    Select table below, then import geometry or create flow
-                    layer.
+                    Use Create new to choose a layer type and configure its
+                    data.
                   </Text>
                 ) : filteredMapLayers.length === 0 ? (
                   <Text c="dimmed" size="xs">

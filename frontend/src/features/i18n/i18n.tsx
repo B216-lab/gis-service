@@ -112,6 +112,33 @@ const translations: Record<string, string> = {
     'Сохраните первое подключение PostGIS, чтобы начать создавать источники данных.',
   'Map Layers': 'Слои карты',
   'Layer Actions': 'Действия со слоями',
+  'This icon appears next to the layer in the Map Layers list.':
+    'Этот значок отображается рядом со слоем в списке слоев карты.',
+  'Create new': 'Создать',
+  'Point layer': 'Точечный слой',
+  'Polygon layer': 'Полигональный слой',
+  'Create point layer': 'Создать точечный слой',
+  'Create polygon layer': 'Создать полигональный слой',
+  'Polygon geometry': 'Полигональная геометрия',
+  'Only Polygon and MultiPolygon geometry columns are available.':
+    'Доступны только столбцы геометрии Polygon и MultiPolygon.',
+  'Select polygon geometry column': 'Выберите столбец полигональной геометрии',
+  'No polygon geometry': 'Нет полигональной геометрии',
+  'This table has no Polygon or MultiPolygon geometry column.':
+    'В этой таблице нет столбца геометрии Polygon или MultiPolygon.',
+  'Flowmap layer': 'Слой потоков',
+  'Arc layer': 'Слой дуг',
+  'Data table': 'Таблица данных',
+  'Choose layer data directly. Opening the table for inspection is optional.':
+    'Выберите данные слоя напрямую. Открывать таблицу для просмотра необязательно.',
+  'Select schema and table': 'Выберите схему и таблицу',
+  'Point geometry': 'Точечная геометрия',
+  'Only Point and MultiPoint geometry columns are available.':
+    'Доступны только столбцы геометрии Point и MultiPoint.',
+  'Select point geometry column': 'Выберите столбец точечной геометрии',
+  'No point geometry': 'Нет точечной геометрии',
+  'This table has no Point or MultiPoint geometry column.':
+    'В этой таблице нет столбца геометрии Point или MultiPoint.',
   All: 'Все',
   Configured: 'Настроенные',
   Previews: 'Предпросмотры',
@@ -137,6 +164,8 @@ const translations: Record<string, string> = {
   'Failed to locate layer.': 'Не удалось найти слой.',
   'Select table below, then import geometry or create flow layer.':
     'Выберите таблицу ниже, затем импортируйте геометрию или создайте слой потоков.',
+  'Use Create new to choose a layer type and configure its data.':
+    'Нажмите «Создать», выберите тип слоя и настройте его данные.',
   Catalog: 'Каталог',
   'Refresh catalog schemas': 'Обновить схемы каталога',
   Hide: 'Скрыть',

@@ -10,9 +10,13 @@ import {
   Tabs,
   Text,
   TextInput,
+  Tooltip,
 } from '@mantine/core';
+import { IconInfoCircle } from '@tabler/icons-react';
+import type { ReactNode } from 'react';
 import { startTransition, useEffect, useState } from 'react';
 
+import { LayerGlyph } from '../app/chrome';
 import type { InspectableTable } from '../inspector/api';
 import { isNumericColumnType } from '../inspector/table-editing';
 import type {
@@ -24,6 +28,62 @@ import type {
   MapLayer,
   MapSource,
 } from './store';
+
+const listIconHelp =
+  'This icon appears next to the layer in the Map Layers list.';
+
+function LayerIconSelect({
+  colorForIcon,
+  data,
+  onChange,
+  value,
+}: {
+  colorForIcon: (icon: LayerGlyphIcon) => string;
+  data: Array<{ label: string; value: LayerGlyphIcon }>;
+  onChange: (value: LayerGlyphIcon) => void;
+  value: LayerGlyphIcon;
+}) {
+  const iconPreview = (icon: LayerGlyphIcon): ReactNode => (
+    <Box miw={18}>
+      <LayerGlyph color={colorForIcon(icon)} icon={icon} visible />
+    </Box>
+  );
+
+  return (
+    <Select
+      data={data}
+      label={
+        <Group gap={4} wrap="nowrap">
+          <Text inherit>List icon</Text>
+          <Tooltip label={listIconHelp} withArrow>
+            <Box
+              aria-label={listIconHelp}
+              component="span"
+              style={{ cursor: 'help', display: 'inline-flex' }}
+              tabIndex={0}
+            >
+              <IconInfoCircle size={13} />
+            </Box>
+          </Tooltip>
+        </Group>
+      }
+      leftSection={iconPreview(value)}
+      onChange={(nextValue) => {
+        if (nextValue) {
+          onChange(nextValue as LayerGlyphIcon);
+        }
+      }}
+      renderOption={({ option }) => (
+        <Group gap="xs" wrap="nowrap">
+          {iconPreview(option.value as LayerGlyphIcon)}
+          <Text size="xs">{option.label}</Text>
+        </Group>
+      )}
+      size="xs"
+      value={value}
+    />
+  );
+}
 
 function FlowmapSetupFields({
   columns,
@@ -581,26 +641,23 @@ export function MapLayerEditor({
                 </Stack>
               ) : null}
 
-              <Select
+              <LayerIconSelect
+                colorForIcon={(icon) =>
+                  icon === 'line' ? layer.strokeColor : layer.fillColor
+                }
                 data={[
                   { label: 'Circle', value: 'circle' },
                   { label: 'Square', value: 'square' },
                   { label: 'Diamond', value: 'diamond' },
                   { label: 'Line', value: 'line' },
                 ]}
-                label="List icon"
-                onChange={(value) => {
-                  if (!value) {
-                    return;
-                  }
-
+                onChange={(value) =>
                   startTransition(() => {
                     onUpdateGeoJsonLayer(layer.id, {
-                      icon: value as LayerGlyphIcon,
+                      icon: value,
                     });
-                  });
-                }}
-                size="xs"
+                  })
+                }
                 value={layer.icon}
               />
             </>
@@ -642,24 +699,19 @@ export function MapLayerEditor({
                   />
                 </Box>
 
-                <Select
+                <LayerIconSelect
+                  colorForIcon={() => layer.color}
                   data={[
                     { label: 'Flow', value: 'flow' },
                     { label: 'Line', value: 'line' },
                   ]}
-                  label="List icon"
-                  onChange={(value) => {
-                    if (!value) {
-                      return;
-                    }
-
+                  onChange={(value) =>
                     startTransition(() => {
                       onUpdateArcLayer(layer.id, {
-                        icon: value as LayerGlyphIcon,
+                        icon: value,
                       });
-                    });
-                  }}
-                  size="xs"
+                    })
+                  }
                   value={layer.icon}
                 />
               </Group>
@@ -798,25 +850,20 @@ export function MapLayerEditor({
                   size="xs"
                   value={layer.style.colorScheme}
                 />
-                <Select
+                <LayerIconSelect
+                  colorForIcon={() => '#0c8599'}
                   data={[
                     { label: 'Flow', value: 'flow' },
                     { label: 'Line', value: 'line' },
                     { label: 'Diamond', value: 'diamond' },
                   ]}
-                  label="List icon"
-                  onChange={(value) => {
-                    if (!value) {
-                      return;
-                    }
-
+                  onChange={(value) =>
                     startTransition(() => {
                       onUpdateFlowmapLayer(layer.id, {
-                        icon: value as LayerGlyphIcon,
+                        icon: value,
                       });
-                    });
-                  }}
-                  size="xs"
+                    })
+                  }
                   value={layer.icon}
                 />
               </Group>

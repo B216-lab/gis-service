@@ -108,7 +108,7 @@ const copy = {
       {
         title: 'Create a map layer',
         description:
-          'After selecting a table, use Layer Actions to import geometry or create flow and arc layers.',
+          'Use Create new, choose a layer type, then select its data table and geographic columns. Opening the table first is optional.',
         target: 'layer-actions',
         panelId: 'layers',
         placement: 'right',
@@ -180,7 +180,7 @@ const copy = {
       {
         title: 'Создавайте слой карты',
         description:
-          'После выбора таблицы импортируйте геометрию либо создайте слой потоков или дуг через меню действий.',
+          'Нажмите «Создать», выберите тип слоя, затем таблицу и географические столбцы. Предварительно открывать таблицу необязательно.',
         target: 'layer-actions',
         panelId: 'layers',
         placement: 'right',

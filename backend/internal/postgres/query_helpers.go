@@ -486,6 +486,41 @@ func rowKeyJSONExpression(primaryKey []string) string {
 	)
 }
 
+const (
+	maxMVTInlinePropertyColumns = 16
+	maxMVTInlineTextLength      = 512
+)
+
+func mvtInlinePropertyExpressions(columns []columnDefinition) []string {
+	expressions := make([]string, 0, min(len(columns), maxMVTInlinePropertyColumns))
+	for _, column := range columns {
+		if len(expressions) >= maxMVTInlinePropertyColumns {
+			break
+		}
+		if column.UdtName == "geometry" ||
+			column.UdtName == "geography" ||
+			column.UdtName == "bytea" ||
+			column.UdtName == "raster" ||
+			strings.EqualFold(column.Name, "geom") ||
+			strings.HasPrefix(column.Name, "_geopanel_") {
+			continue
+		}
+
+		quotedName := quoteIdentifier(column.Name)
+		expressions = append(
+			expressions,
+			fmt.Sprintf(
+				"left(source_row.%s::text, %d) as %s",
+				quotedName,
+				maxMVTInlineTextLength,
+				quotedName,
+			),
+		)
+	}
+
+	return expressions
+}
+
 func normalizeValue(value interface{}) interface{} {
 	switch typed := value.(type) {
 	case nil:

@@ -522,7 +522,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 icon: getDefaultLayerIcon(payload.geometryType),
                 purpose: payload.purpose ?? 'configured',
                 fillColor: getDefaultLayerColor(state.mapLayers.length),
-                fillOpacity: 80,
+                fillOpacity: /polygon/i.test(payload.geometryType) ? 50 : 80,
                 strokeColor: getDefaultLayerColor(state.mapLayers.length),
                 strokeOpacity: 95,
                 strokeWidth: 2,
