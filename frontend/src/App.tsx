@@ -7,6 +7,7 @@ import {
   Group,
   Loader,
   Menu,
+  Modal,
   Paper,
   ScrollArea,
   Select,
@@ -25,7 +26,8 @@ import {
 } from '@tabler/icons-react';
 import 'mantine-react-table/styles.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
+import { AnalyticsWorkspace } from './features/analytics/AnalyticsWorkspace';
+import { SharedDashboardPage } from './features/analytics/DashboardViewer';
 import {
   createSavedViewSelectionKey,
   findLayerSource,
@@ -1064,6 +1066,21 @@ function AppSettings({
 }
 
 export function App() {
+  const params = new URLSearchParams(window.location.search);
+  const shareToken = params.get('dashboardShare');
+  const publicationId = params.get('analyticsPublication');
+  if (shareToken || publicationId)
+    return (
+      <SharedDashboardPage
+        shareToken={shareToken || undefined}
+        publicationId={publicationId || undefined}
+      />
+    );
+  return <GISApp />;
+}
+
+function GISApp() {
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const connections = useConnectionStore((state) => state.connections);
   const mapSources = useConnectionStore((state) => state.mapSources);
   const mapLayers = useConnectionStore((state) => state.mapLayers);
@@ -2271,6 +2288,23 @@ export function App() {
       }}
       toolbar={
         <Group gap={4} wrap="nowrap">
+          <Button
+            size="xs"
+            variant="light"
+            leftSection={<IconChartBar size={16} />}
+            onClick={() => setAnalyticsOpen(true)}
+          >
+            Analytics
+          </Button>
+          <Modal
+            opened={analyticsOpen}
+            onClose={() => setAnalyticsOpen(false)}
+            fullScreen
+            title="Analytics workspace"
+            keepMounted
+          >
+            <AnalyticsWorkspace />
+          </Modal>
           <OnboardingTour />
           <AppSettings
             basemapId={selectedBasemapId ?? defaultBasemapId}

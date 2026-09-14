@@ -158,7 +158,7 @@ export function SavedViewModal({
             <Select
               allowDeselect={false}
               data={[
-                { label: 'Equals', value: 'eq' },
+                { label: '=', value: 'eq' },
                 { label: 'In list', value: 'in' },
               ]}
               label="Operator"

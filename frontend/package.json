@@ -11,6 +11,7 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@deck.gl/aggregation-layers": "9.3.2",
     "@deck.gl/layers": "^9.2.2",
     "@deck.gl/mapbox": "^9.2.2",
     "@flowmap.gl/layers": "^9.3.0",
@@ -20,6 +21,7 @@
     "@tabler/icons-react": "^3.34.1",
     "clsx": "^2.1.1",
     "dayjs": "^1.11.21",
+    "echarts": "^6.1.0",
     "flexlayout-react": "^0.10.5",
     "mantine-react-table": "2.0.0-beta.9",
     "maplibre-gl": "^5.9.0",
@@ -38,5 +40,8 @@
     "@vitejs/plugin-react": "^5.1.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.1"
+  },
+  "overrides": {
+    "@luma.gl/shadertools": "9.3.3"
   }
 }

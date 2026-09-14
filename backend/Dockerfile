@@ -26,7 +26,9 @@ FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates=20260611-r0
 
-RUN addgroup -S geopanel && adduser -S -G geopanel geopanel
+RUN addgroup -S geopanel && adduser -S -G geopanel geopanel \
+    && mkdir -p /var/lib/geopanel \
+    && chown geopanel:geopanel /var/lib/geopanel
 USER geopanel
 
 COPY --from=build /out/geopanel-api /usr/local/bin/geopanel-api

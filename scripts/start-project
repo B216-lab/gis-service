@@ -94,6 +94,7 @@ start_backend() {
   (
     cd "$ROOT_DIR/backend"
     API_ADDR=:18080 \
+      ANALYTICS_METADATA_PATH="${ANALYTICS_METADATA_PATH:-$RUN_DIR/analytics.json}" \
       API_DB_TIMEOUT="${API_DB_TIMEOUT:-45s}" \
       GEOPANEL_DATABASE_URL="$(database_url)" \
       GEOPANEL_DATABASE_ID="${GEOPANEL_DATABASE_ID:-$(env_value GEOPANEL_DATABASE_ID)}" \
@@ -152,6 +153,7 @@ start() {
   (
     cd "$ROOT_DIR/backend"
     API_ADDR=:18080 \
+      ANALYTICS_METADATA_PATH="${ANALYTICS_METADATA_PATH:-$RUN_DIR/analytics.json}" \
       API_DB_TIMEOUT="${API_DB_TIMEOUT:-45s}" \
       GEOPANEL_DATABASE_URL="$(database_url)" \
       GEOPANEL_DATABASE_ID="${GEOPANEL_DATABASE_ID:-$(env_value GEOPANEL_DATABASE_ID)}" \

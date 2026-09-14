@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"geopanel/backend/internal/analytics"
 	"geopanel/backend/internal/httpapi"
 	"geopanel/backend/internal/postgres"
 )
@@ -19,9 +20,19 @@ func main() {
 	registeredConnections := registeredConnectionsFromEnv()
 
 	service := postgres.NewService(databaseTimeout, registeredConnections...)
+	store, err := analytics.OpenStore(envOrDefault("ANALYTICS_METADATA_PATH", "data/analytics.json"))
+	if err != nil {
+		log.Fatalf("analytics metadata: %v", err)
+	}
+	mux := httpapi.NewServer(service)
+	analyticsHandler := analytics.NewHandler(store)
+	queries := analytics.RegisterQueryRoutes(analyticsHandler, store, service)
+	analytics.RegisterPublicationRoutes(analyticsHandler, queries)
+	analytics.RegisterImportRoutes(analyticsHandler, service)
+	mux.Handle("/api/v1/analytics/", analyticsHandler)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewServer(service),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

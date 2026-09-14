@@ -19,6 +19,407 @@ const languageOptions = [
 ] as const;
 
 const translations: Record<string, string> = {
+  'Line chart': 'Линейный график',
+  'invalid definition: import validation failed':
+    'Проверка импортируемых объектов не пройдена',
+  'invalid definition: filter targets unknown widget':
+    'Фильтр ссылается на неизвестный виджет',
+  'invalid definition: chart filter targets unknown widget':
+    'Фильтр диаграммы ссылается на неизвестный виджет',
+  'invalid definition: native filter targets unknown widget':
+    'Фильтр дашборда ссылается на неизвестный виджет',
+  'invalid definition: widget references unknown chart':
+    'Диаграмма виджета не найдена',
+  'invalid definition: invalid widget id or layout':
+    'Некорректный идентификатор или размер виджета',
+  'invalid definition: invalid native filter reference':
+    'Некорректная ссылка в фильтре дашборда',
+  'invalid definition: refresh interval must be zero or at least 30 seconds':
+    'Интервал обновления должен быть 0 или не менее 30 секунд',
+  'invalid definition: malformed dashboard': 'Некорректное описание дашборда',
+  'invalid definition: composite chart dependency cycle':
+    'Обнаружен цикл зависимостей слоёв составной карты',
+  'invalid definition: invalid layer chart reference':
+    'Некорректная ссылка на диаграмму слоя',
+  'invalid definition: HAVING references unselected metric':
+    'Условие HAVING ссылается на невыбранный показатель',
+  'invalid definition: chart references unknown date field':
+    'Поле даты диаграммы не найдено',
+  'invalid definition: chart references unknown metric':
+    'Показатель диаграммы не найден',
+  'invalid definition: chart references unknown field':
+    'Поле диаграммы не найдено',
+  'invalid definition: chart query dataset mismatch':
+    'Набор данных запроса не совпадает с набором данных диаграммы',
+  'invalid definition: chart references unknown dataset':
+    'Набор данных диаграммы не найден',
+  'invalid definition: malformed chart': 'Некорректное описание диаграммы',
+  'invalid definition: relationship references unknown dataset/field':
+    'В связи указан неизвестный набор данных или поле',
+  'invalid definition: unknown default date field':
+    'Поле даты по умолчанию не найдено',
+  'invalid definition: invalid or duplicate metric':
+    'Некорректный или повторяющийся показатель',
+  'invalid definition: invalid or duplicate field':
+    'Некорректное или повторяющееся поле',
+  'invalid definition: dataset needs connectionId and either SQL or schema/table':
+    'Укажите подключение и SQL-запрос либо схему и таблицу',
+  'invalid definition: malformed dataset':
+    'Некорректное описание набора данных',
+  'Query failed. Check dataset fields, SQL, filters, and source access.':
+    'Запрос не выполнен. Проверьте поля набора данных, SQL, фильтры и доступ к источнику.',
+  'invalid definition': 'Некорректное описание объекта',
+  'revision conflict':
+    'Объект изменён другим пользователем. Обновите данные перед сохранением.',
+  'object not found': 'Объект не найден',
+  'Dashboard setting not migrated; native interactive dashboard behavior applies.':
+    'Параметр дашборда не перенесён; используется поведение встроенного интерактивного дашборда.',
+  'Preserved section/order/12-column widths; exported pixel heights scaled to native grid rows. Header typography is native.':
+    'Сохранены разделы, порядок и ширина в сетке из 12 столбцов; высота пересчитана из пикселей в строки сетки. Заголовки используют оформление приложения.',
+  'City filter expanded to all compatible widgets; export lists only ten chart IDs despite global scope.':
+    'Фильтр города применён ко всем совместимым виджетам; в экспорте указаны только десять диаграмм, хотя область действия глобальная.',
+  'Public city control accepts typed values because public arbitrary field-options queries are intentionally unavailable.':
+    'В публичном фильтре города значения вводятся вручную: произвольные запросы списка значений недоступны.',
+  'Export setting not migrated; native renderer behavior applies.':
+    'Параметр экспорта не перенесён; используется поведение встроенной визуализации.',
+  'Preserved lower date bound 2022-01-01; weekly bucketing uses UTC source sessions.':
+    'Сохранена нижняя граница даты 2022-01-01; группировка по неделям использует UTC.',
+  'Rolling three months resolved in UTC at request time; source Superset timezone was not exported.':
+    'Последние три месяца определяются на момент запроса в UTC; часовой пояс Superset отсутствует в экспорте.',
+  'Departure/destination layers overlaid; title does not imply subtraction.':
+    'Слои отправлений и прибытий наложены друг на друга; разность значений не вычисляется.',
+  'Palette approximated; exact Superset category-to-color assignments are not pinned.':
+    'Подобрана близкая палитра; точное соответствие цветов категориям Superset не сохранено.',
+  'Clamped exported row limit to server maximum 10000; truncation is reported.':
+    'Лимит строк ограничен серверным максимумом 10000; при усечении результата выводится уведомление.',
+  'Journey filters mean respondents with matching journeys, implemented with EXISTS; respondent totals retain questionnaire grain.':
+    'Фильтры перемещений выбирают респондентов с подходящими поездками через EXISTS; итоговое число респондентов считается по анкетам.',
+  'Added matching Russian gender calculated field for value-compatible semantic filtering; raw gender codes remain separately mapped.':
+    'Добавлено вычисляемое поле пола с русскими значениями для совместной фильтрации; исходные коды пола сохранены отдельно.',
+  'Corrected integer division to numeric ratio and guarded zero denominator.':
+    'Целочисленное деление заменено дробным; добавлена защита от деления на ноль.',
+  Analytics: 'Аналитика',
+  'Analytics request failed': 'Не удалось выполнить запрос аналитики',
+  Dataset: 'Набор данных',
+  Datasets: 'Наборы данных',
+  'Dataset catalog': 'Каталог наборов данных',
+  'Dataset name': 'Название набора данных',
+  'New dataset': 'Новый набор данных',
+  'Edit dataset': 'Редактирование набора данных',
+  'Save dataset': 'Сохранить набор данных',
+  'Delete dataset': 'Удалить набор данных',
+  'Dataset saved.': 'Набор данных сохранён.',
+  'Dataset deleted.': 'Набор данных удалён.',
+  'Choose a saved dataset': 'Выберите сохранённый набор данных',
+  'Choose a dataset or create one from a server connection.':
+    'Выберите набор данных или создайте его на основе серверного подключения.',
+  'Choose a dataset.': 'Выберите набор данных.',
+  'Could not load analytics.': 'Не удалось загрузить аналитику.',
+  'Could not load server connections.':
+    'Не удалось загрузить серверные подключения.',
+  'Server connection': 'Серверное подключение',
+  'Source connection': 'Подключение к источнику',
+  'Row grain': 'Что представляет одна строка',
+  'One row per submission_id': 'Одна строка на submission_id',
+  'Default date field': 'Поле даты по умолчанию',
+  'Physical table': 'Таблица базы данных',
+  'SQL / virtual table': 'SQL / виртуальная таблица',
+  'Visual joins': 'Конструктор связей таблиц',
+  'Read-only SQL': 'SQL-запрос для чтения',
+  'Use table names within this connection. Preview inspects output columns.':
+    'Используйте таблицы выбранного подключения. Предпросмотр покажет столбцы результата.',
+  Schema: 'Схема',
+  'Base schema': 'Схема основной таблицы',
+  'Base table (alias: base)': 'Основная таблица (псевдоним: base)',
+  'Projected columns / expressions': 'Столбцы и выражения результата',
+  'Example: base.id AS submission_id, status.description_ru AS social_status':
+    'Пример: base.id AS submission_id, status.description_ru AS social_status',
+  'Join schema': 'Схема присоединяемой таблицы',
+  'Join table': 'Присоединяемая таблица',
+  'Base key': 'Ключ основной таблицы',
+  'Joined key': 'Ключ присоединяемой таблицы',
+  Join: 'Соединение',
+  'Add join': 'Добавить соединение',
+  'Remove join': 'Удалить соединение',
+  'Generate SQL': 'Сформировать SQL',
+  'Base table and every join table, alias and key are required.':
+    'Укажите основную таблицу, а для каждого соединения — таблицу, псевдоним и ключи.',
+  'Joins may multiply rows. Use unique joined keys to preserve the declared grain; preview before saving.':
+    'Соединения могут дублировать строки. Используйте уникальные ключи присоединяемых таблиц и проверьте результат перед сохранением.',
+  'Fields and calculated columns': 'Поля и вычисляемые столбцы',
+  Field: 'Поле',
+  'Field ID': 'Идентификатор поля',
+  'Column name': 'Имя столбца',
+  'Display label': 'Подпись',
+  'Shared semantic ID': 'Общий идентификатор поля для фильтрации',
+  Type: 'Тип',
+  Role: 'Назначение',
+  Format: 'Формат',
+  'Calculated SQL expression (optional)':
+    'Вычисляемое SQL-выражение (необязательно)',
+  'Add field': 'Добавить поле',
+  'Remove field': 'Удалить поле',
+  'Reusable metrics': 'Общие показатели',
+  Metric: 'Показатель',
+  Metrics: 'Показатели',
+  'Metric ID': 'Идентификатор показателя',
+  Label: 'Подпись',
+  'Aggregate SQL expression': 'Агрегатное SQL-выражение',
+  'Add metric': 'Добавить показатель',
+  'Remove metric': 'Удалить показатель',
+  'Dataset relationships': 'Связи наборов данных',
+  'Target dataset': 'Связанный набор данных',
+  'Source key': 'Ключ текущего набора',
+  'Target key': 'Ключ связанного набора',
+  Cardinality: 'Тип связи',
+  'Allow related filtering': 'Разрешить фильтрацию по связанному набору',
+  'Add relationship': 'Добавить связь',
+  'Remove relationship': 'Удалить связь',
+  'Preview / inspect columns': 'Предпросмотр и проверка столбцов',
+  'Preview failed.': 'Не удалось загрузить предпросмотр.',
+  'Delete saved dataset?': 'Удалить сохранённый набор данных?',
+  'Dependent charts prevent deletion. This removes its saved definition.':
+    'Набор нельзя удалить, пока его используют графики. Будет удалена только сохранённая настройка набора.',
+  'Confirm deletion': 'Подтвердить удаление',
+  'Add discovered fields': 'Добавить найденные поля',
+  'No rows match this dataset.': 'В наборе данных нет строк.',
+  'Refresh catalog': 'Обновить каталог',
+  'Reload selected': 'Загрузить сохранённую версию',
+  Chart: 'График',
+  Charts: 'Графики',
+  'New chart': 'Новый график',
+  'Chart name': 'Название графика',
+  'Save chart': 'Сохранить график',
+  'Delete chart': 'Удалить график',
+  'Chart saved.': 'График сохранён.',
+  'Chart deleted.': 'График удалён.',
+  'Chart failed': 'Не удалось построить график',
+  'Chart query failed.': 'Не удалось получить данные графика.',
+  'Could not load charts.': 'Не удалось загрузить графики.',
+  'Chart definition unavailable.': 'Настройки графика недоступны.',
+  'Choose at least one metric.': 'Выберите хотя бы один показатель.',
+  'Enter a chart name.': 'Укажите название графика.',
+  Visualization: 'Вид графика',
+  Dimensions: 'Поля группировки',
+  'Order: category, series breakdown. Map: longitude, latitude, destination longitude, destination latitude.':
+    'Порядок: категория, затем разделение на серии. Для карты: долгота, широта, долгота и широта назначения.',
+  'Each layer uses its saved query and coordinates.':
+    'Каждый слой использует собственный сохранённый запрос и координаты.',
+  'Map layers': 'Слои карты',
+  Coordinates: 'Координаты',
+  'Weight metric': 'Показатель веса',
+  'Default filters': 'Фильтры по умолчанию',
+  'Add filter': 'Добавить фильтр',
+  'Remove filter': 'Удалить фильтр',
+  Condition: 'Условие',
+  'Separate multiple values with |. Dates use ISO 8601 (UTC).':
+    'Разделяйте значения символом |. Даты указывайте в формате ISO 8601 (UTC).',
+  'Month count, e.g. 3. Resolves at query time.':
+    'Количество месяцев, например 3. Период рассчитывается при выполнении запроса.',
+  'Aggregate filters': 'Фильтры по показателям',
+  'Aggregate condition': 'Условие для показателя',
+  'Aggregate values': 'Значения показателя',
+  'Add aggregate filter': 'Добавить фильтр по показателю',
+  'Remove aggregate filter': 'Удалить фильтр по показателю',
+  'Number; separate range bounds with |.':
+    'Число; границы диапазона разделяйте символом |.',
+  'Date field': 'Поле даты',
+  'Time grouping': 'Группировка по времени',
+  'Sort by': 'Сортировать по',
+  'Descending sort': 'По убыванию',
+  'Row limit': 'Ограничение числа строк',
+  Appearance: 'Оформление',
+  'Primary color': 'Основной цвет',
+  Decimals: 'Знаков после запятой',
+  Prefix: 'Перед значением',
+  Suffix: 'После значения',
+  Legend: 'Легенда',
+  'Value labels': 'Подписи значений',
+  Horizontal: 'Горизонтально',
+  Stacked: 'С накоплением',
+  'Category order': 'Порядок категорий',
+  'Row order': 'Порядок строк',
+  'Normalization scope': 'Область нормализации',
+  'Color by percentile rank': 'Цвет по процентильному рангу',
+  'Show percentage in tooltip': 'Показывать долю в подсказке',
+  'Heat radius (pixels)': 'Радиус теплового пятна (пиксели)',
+  'Run preview': 'Построить предпросмотр',
+  'Clear selection': 'Снять выделение',
+  'Selection ready': 'Выделение готово',
+  'Click marks to select. Ctrl/Shift-click combines selections. Dashboard determines filter targets.':
+    'Нажмите на элемент графика для выделения. Ctrl/Shift + щелчок добавляет элементы. Область действия фильтра задаётся в дашборде.',
+  'No data for current filters.': 'Нет данных для выбранных фильтров.',
+  'Row limit reached. Narrow filters to display complete results.':
+    'Достигнуто ограничение числа строк. Уточните фильтры, чтобы увидеть полный результат.',
+  Dashboard: 'Дашборд',
+  Dashboards: 'Дашборды',
+  'New dashboard': 'Новый дашборд',
+  'Dashboard catalog': 'Каталог дашбордов',
+  'Dashboard name': 'Название дашборда',
+  'Dashboard catalog unavailable.': 'Каталог дашбордов недоступен.',
+  'Dashboard unavailable': 'Дашборд недоступен',
+  'Dashboard unavailable.': 'Дашборд недоступен.',
+  Description: 'Описание',
+  'Refresh dashboards and charts': 'Обновить дашборды и графики',
+  'Reload dashboard': 'Загрузить сохранённый дашборд',
+  'Save current selections as default filters':
+    'Сохранить текущее выделение как фильтры по умолчанию',
+  'Auto refresh (seconds; 0 = off, minimum 30)':
+    'Автообновление в секундах (0 — выключено, минимум 30)',
+  'Save dashboard and filters': 'Сохранить дашборд и фильтры',
+  'Dashboard and current filters saved.':
+    'Дашборд и текущие фильтры сохранены.',
+  'Delete dashboard': 'Удалить дашборд',
+  'Delete dashboard definition?': 'Удалить сохранённый дашборд?',
+  'Confirm dashboard deletion': 'Подтвердить удаление дашборда',
+  Layout: 'Компоновка',
+  'Interactive preview': 'Интерактивный предпросмотр',
+  'Publish and share': 'Публикация и доступ',
+  'Saved chart': 'Сохранённый график',
+  'Add chart': 'Добавить график',
+  'Add section heading': 'Добавить заголовок раздела',
+  'Add text': 'Добавить текст',
+  'Dashboard filter controls': 'Фильтры дашборда',
+  'Filter title': 'Название фильтра',
+  'Filter dataset': 'Набор данных фильтра',
+  'Filter column': 'Поле фильтра',
+  'Filter target charts': 'Графики, к которым применяется фильтр',
+  'Add filter control': 'Добавить фильтр дашборда',
+  'Remove filter control': 'Удалить фильтр дашборда',
+  'Drag cards to reorder. Width uses 12 columns; mobile stacks cards. Height controls chart area.':
+    'Перетаскивайте карточки для изменения порядка. Ширина задаётся в сетке из 12 столбцов; на телефоне карточки располагаются друг под другом. Высота задаёт размер области графика.',
+  'Missing chart': 'График не найден',
+  'Section heading': 'Заголовок раздела',
+  'Text block': 'Текстовый блок',
+  Text: 'Текст',
+  'Remove widget': 'Удалить блок',
+  'Width (columns)': 'Ширина (столбцы)',
+  'Height (units)': 'Высота (единицы сетки)',
+  'Selection targets (empty = compatible charts)':
+    'Область действия выделения (пусто — все совместимые графики)',
+  'Move earlier': 'Переместить выше',
+  'Move later': 'Переместить ниже',
+  'Saved publications': 'Сохранённые публикации',
+  'Load publications': 'Загрузить публикации',
+  'Publication list unavailable.': 'Список публикаций недоступен.',
+  'Publication unavailable.': 'Публикация недоступна.',
+  'Publish the saved revision to freeze chart and dataset definitions. Source data stays live.':
+    'Опубликуйте сохранённую версию, чтобы закрепить настройки графиков и наборов данных. Данные источника продолжат обновляться.',
+  'Publish saved dashboard': 'Опубликовать сохранённый дашборд',
+  'Published revision': 'Опубликованная версия',
+  'Published saved revision. Draft changes require saving and publishing again.':
+    'Сохранённая версия опубликована. Чтобы опубликовать изменения черновика, сохраните его и создайте новую публикацию.',
+  'Authenticated viewer link': 'Ссылка для пользователей с доступом',
+  'Public link expiry (optional)':
+    'Срок действия публичной ссылки (необязательно)',
+  'Lock current filters into public link':
+    'Закрепить текущие фильтры в публичной ссылке',
+  'Create public link': 'Создать публичную ссылку',
+  'Public dashboard link (copy now)':
+    'Публичная ссылка на дашборд (скопируйте сейчас)',
+  'Refresh shares': 'Обновить ссылки доступа',
+  'No expiry': 'Без срока действия',
+  'Revoke link': 'Отозвать ссылку',
+  Revoked: 'Отозвана',
+  'Publish failed.': 'Не удалось опубликовать дашборд.',
+  'Share creation failed.': 'Не удалось создать ссылку доступа.',
+  'Revocation failed.': 'Не удалось отозвать ссылку.',
+  'Refresh charts': 'Обновить графики',
+  'Filter field': 'Поле фильтрации',
+  'Target charts (empty = compatible charts)':
+    'Область действия фильтра (пусто — все совместимые графики)',
+  'Apply filter': 'Применить фильтр',
+  'Clear filters': 'Сбросить фильтры',
+  'Filter choices come from visible chart results.':
+    'Варианты значений получены из данных отображаемых графиков.',
+  'Filter options unavailable.': 'Не удалось загрузить значения фильтра.',
+  'Retry chart': 'Повторить запрос',
+  'Published definition': 'Опубликованная версия',
+  'Choose suggestions or type values and press Enter. Multiple values match any selection.':
+    'Выберите предложенное значение или введите своё и нажмите Enter. При нескольких значениях достаточно совпадения с любым из них.',
+  'Enter valid numeric values.': 'Введите корректные числовые значения.',
+  'A filter has no compatible target charts. Clear it or change its scope before saving.':
+    'Для одного из фильтров нет совместимых графиков. Сбросьте его или измените область действия перед сохранением.',
+  'Import reference': 'Импорт из Superset',
+  'Import movements dashboard': 'Импорт дашборда передвижений',
+  'Import reference dashboard': 'Импортировать дашборд из Superset',
+  'Create two datasets, twenty charts and the dashboard from the saved Superset reference. Reimport restores these imported definitions; other dashboards stay separate.':
+    'Создать два набора данных, двадцать графиков и дашборд из сохранённого экспорта Superset. Повторный импорт восстановит их исходные настройки; остальные дашборды не изменятся.',
+  'Import failed.': 'Не удалось выполнить импорт.',
+  'Filter to visible map area': 'Фильтровать по видимой области карты',
+  'WebGL map unavailable.': 'Не удалось отобразить карту WebGL.',
+  'Save failed.': 'Не удалось сохранить изменения.',
+  'Delete failed.': 'Не удалось удалить объект.',
+  'Another editor changed this object. Reload before saving again.':
+    'Другой пользователь изменил этот объект. Загрузите актуальную версию перед сохранением.',
+  'Failed to fetch': 'Не удалось соединиться с сервером',
+  'Not in list': 'Не в списке',
+  Between: 'В диапазоне',
+  Contains: 'Содержит',
+  'Is empty': 'Не задано',
+  'Is not empty': 'Задано',
+  'Last months': 'За последние месяцы',
+  Number: 'Число',
+  Integer: 'Целое число',
+  Boolean: 'Логическое значение',
+  Date: 'Дата',
+  'Date and time': 'Дата и время',
+  Dimension: 'Поле группировки',
+  Time: 'Время',
+  Latitude: 'Широта',
+  Longitude: 'Долгота',
+  Identifier: 'Идентификатор',
+  'Many to one': 'Многие к одному',
+  'One to many': 'Один ко многим',
+  'One to one': 'Один к одному',
+  Hour: 'Час',
+  Day: 'День',
+  Week: 'Неделя',
+  Month: 'Месяц',
+  Quarter: 'Квартал',
+  Year: 'Год',
+  'Hour of day': 'Час суток',
+  'Day of week': 'День недели',
+  'Left join': 'Левое соединение',
+  'Inner join': 'Внутреннее соединение',
+  KPI: 'Ключевой показатель',
+  Bar: 'Столбчатая диаграмма',
+  Pie: 'Круговая диаграмма',
+  'Matrix heatmap': 'Матричная тепловая карта',
+  'Calendar heatmap': 'Календарная тепловая карта',
+  'Geographic heatmap': 'Географическая тепловая карта',
+  'Movement arcs': 'Дуги передвижений',
+  'Composite map': 'Карта с несколькими слоями',
+  'Label ascending': 'По подписи: по возрастанию',
+  'Label descending': 'По подписи: по убыванию',
+  'Total ascending': 'По сумме: по возрастанию',
+  'Total descending': 'По сумме: по убыванию',
+  'Entire heatmap': 'Вся тепловая карта',
+  'Within each row': 'В пределах строки',
+  'Within each column': 'В пределах столбца',
+  'Calendar heatmap requires one date dimension, one metric, and day time grouping.':
+    'Для календарной тепловой карты нужны одно поле даты, один показатель и группировка по дням.',
+  'Choose coordinate fields and include each in dimensions.':
+    'Выберите координатные поля и добавьте каждое в поля группировки.',
+  'Choose one category dimension, optionally a second for series breakdown.':
+    'Выберите поле категорий. При необходимости добавьте второе поле для разделения на серии.',
+  'KPI requires metrics and no dimensions.':
+    'Для ключевого показателя выберите показатели без полей группировки.',
+  'Matrix heatmap requires two dimensions and one metric.':
+    'Для матричной тепловой карты нужны два поля группировки и один показатель.',
+  'Pie requires one dimension and one metric.':
+    'Для круговой диаграммы нужны одно поле группировки и один показатель.',
+  'Multiple selected groups': 'Несколько выбранных групп',
+  Revision: 'Версия',
+  'Preview:': 'Предпросмотр:',
+  '(limited)': '(показана часть строк)',
+  'Locked:': 'Закреплено:',
+  'created,': 'создано,',
+  'updated,': 'обновлено,',
+  'unchanged. Charts remain editable.':
+    'без изменений. Графики можно редактировать.',
+  'migration notes': 'примечаний к импорту',
+
   'Switch to light theme': 'Переключить на светлую тему',
   'Switch to dark theme': 'Переключить на темную тему',
   Basemap: 'Карта',
@@ -347,7 +748,7 @@ const translations: Record<string, string> = {
   'Active layer': 'Активный слой',
   Source: 'Источник',
   Flowmap: 'Карта потоков',
-  'Analytics workspace': 'Рабочая область анализа',
+  'Analytics workspace': 'Аналитика',
   'Use this tab for widgets, charts, and infographics bound to current layer or map selection.':
     'Эта вкладка для виджетов, графиков и инфографики, связанных с активным слоем или выделением.',
   'No object selected': 'Объект не выбран',
@@ -461,6 +862,22 @@ function translateText(value: string) {
   }
 
   return value
+    .replace(
+      /^Native renderer heat scale replaces exported palette (.+)\.$/,
+      'Цветовая шкала встроенной карты заменяет палитру экспорта $1.',
+    )
+    .replace(
+      /^Export category sort (.+) is not reproduced; native series ordering applies\.$/,
+      'Сортировка категорий $1 не перенесена; используется порядок рядов встроенной диаграммы.',
+    )
+    .replace(
+      /^Analytics request failed \((\d+)\)$/,
+      'Запрос аналитики не выполнен ($1)',
+    )
+    .replace(
+      /^(.+) interactive chart\. Click to filter; Ctrl or Shift click to select multiple\.$/,
+      '$1 — интерактивная диаграмма. Нажмите для фильтрации; Ctrl или Shift — для выбора нескольких значений.',
+    )
     .replace(/\bVisible schemas(?=\s*·)/g, 'Видимые схемы')
     .replace(/^Alias for\s+(.+)$/g, 'Псевдоним для $1')
     .replace(/^Relation label for\s+(.+)$/g, 'Подпись связи для $1')
@@ -514,6 +931,10 @@ function translateText(value: string) {
     );
 }
 
+export function translateLabel(value: string, language: AppLanguage): string {
+  return language === 'ru' ? (translations[value] ?? value) : value;
+}
+
 const originalTextByNode = new WeakMap<Text, string>();
 const originalAttributesByElement = new WeakMap<Element, Map<string, string>>();
 
@@ -525,6 +946,7 @@ function localizeNode(root: ParentNode, language: AppLanguage) {
   }
 
   for (const node of textNodes) {
+    if (node.parentElement?.closest('[translate="no"]')) continue;
     const currentValue = node.nodeValue ?? '';
     const storedValue = originalTextByNode.get(node);
     const originalValue =
@@ -543,6 +965,7 @@ function localizeNode(root: ParentNode, language: AppLanguage) {
 
   const attrNames = ['aria-label', 'title', 'placeholder'];
   for (const element of Array.from(root.querySelectorAll('*'))) {
+    if (element.closest('[translate="no"]')) continue;
     for (const attrName of attrNames) {
       const value = element.getAttribute(attrName);
       if (!value) {

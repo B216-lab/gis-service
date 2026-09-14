@@ -7,6 +7,7 @@ services:
       target: dev
     command: sh ./docker/dev-watch.sh
     environment:
+      ANALYTICS_METADATA_PATH: /var/lib/geopanel/analytics.json
       API_ADDR: :18080
       API_DB_TIMEOUT: ${API_DB_TIMEOUT:-45s}
       GEOPANEL_DATABASE_URL: ${GEOPANEL_DATABASE_URL:-postgres://backend:${GEOPANEL_DATABASE_PASSWORD:?set GEOPANEL_DATABASE_PASSWORD in .env.dev}@46.8.220.233:8487/backend?sslmode=disable}
@@ -21,6 +22,7 @@ services:
     ports:
       - "${GEOPANEL_DEV_API_PORT:-18081}:18080"
     volumes:
+      - analytics_data:/var/lib/geopanel
       - ./backend:/src
       - backend_go_mod:/go/pkg/mod
       - backend_go_build:/root/.cache/go-build
@@ -42,6 +44,7 @@ services:
       - frontend_node_modules:/app/node_modules
 
 volumes:
+  analytics_data:
   backend_go_mod:
   backend_go_build:
   frontend_node_modules:

@@ -1,5 +1,8 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
+  "files": {
+    "includes": ["**", "!!**/dist", "!!vite.config.js", "!!vite.config.d.ts"]
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space"
