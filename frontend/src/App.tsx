@@ -43,6 +43,7 @@ import {
   PanelFrame,
 } from './features/app/chrome';
 import { WorkspaceLayout } from './features/app/WorkspaceLayout';
+import { useAuthStore } from './features/auth/store';
 import { ConnectionManager } from './features/connections/ConnectionManager';
 import {
   type ArcMapLayer,
@@ -1022,9 +1023,11 @@ function AnalysisWorkspacePanel({
 function AppSettings({
   basemapId,
   onBasemapChange,
+  onLogout,
 }: {
   basemapId: BasemapId;
   onBasemapChange: (basemapId: BasemapId) => void;
+  onLogout: () => void;
 }) {
   return (
     <Menu
@@ -1060,6 +1063,8 @@ function AppSettings({
           <LanguageSwitcher />
           <ColorSchemeToggle />
         </Group>
+        <Menu.Divider />
+        <Menu.Item onClick={onLogout}>Log out</Menu.Item>
       </Menu.Dropdown>
     </Menu>
   );
@@ -1080,6 +1085,52 @@ export function App() {
 }
 
 function GISApp() {
+  const authStatus = useAuthStore((state) => state.status);
+  const initializeAuth = useAuthStore((state) => state.initialize);
+  const login = useAuthStore((state) => state.login);
+  const logout = useAuthStore((state) => state.logout);
+
+  useEffect(() => {
+    void initializeAuth();
+  }, [initializeAuth]);
+
+  if (authStatus === 'loading') {
+    return (
+      <Box
+        h="100vh"
+        display="flex"
+        style={{ alignItems: 'center', justifyContent: 'center' }}
+      >
+        <Stack align="center" gap="sm">
+          <Loader aria-label="Checking authentication" />
+          <Text c="dimmed">Checking sign-in…</Text>
+        </Stack>
+      </Box>
+    );
+  }
+
+  if (authStatus === 'anonymous') {
+    return (
+      <Box
+        h="100vh"
+        display="flex"
+        style={{ alignItems: 'center', justifyContent: 'center' }}
+      >
+        <Stack align="center" gap="sm">
+          <Text fw={600} size="lg">
+            Sign in required
+          </Text>
+          <Text c="dimmed">Sign in to access the workspace.</Text>
+          <Button onClick={login}>Sign in</Button>
+        </Stack>
+      </Box>
+    );
+  }
+
+  return <AuthenticatedGISApp onLogout={() => void logout()} />;
+}
+
+function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const connections = useConnectionStore((state) => state.connections);
   const mapSources = useConnectionStore((state) => state.mapSources);
@@ -2309,6 +2360,7 @@ function GISApp() {
           <AppSettings
             basemapId={selectedBasemapId ?? defaultBasemapId}
             onBasemapChange={setSelectedBasemap}
+            onLogout={onLogout}
           />
         </Group>
       }
