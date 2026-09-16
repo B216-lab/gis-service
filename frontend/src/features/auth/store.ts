@@ -15,6 +15,7 @@ interface AuthState {
   initialize: () => Promise<void>;
   login: () => void;
   logout: () => Promise<void>;
+  markAnonymous: () => void;
 }
 
 let initialization: Promise<void> | null = null;
@@ -57,4 +58,5 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ status: 'anonymous', user: null });
     }
   },
+  markAnonymous: () => set({ status: 'anonymous', user: null }),
 }));

@@ -12,11 +12,12 @@ import (
 // Principal identifies the authenticated caller for one request.
 // Scopes and Groups are copied by middleware before being stored in context.
 type Principal struct {
-	Subject   string
-	TokenID   string
-	Workspace string
-	Scopes    map[string]bool
-	Groups    []string
+	Subject    string
+	TokenID    string
+	IsAPIToken bool
+	Workspace  string
+	Scopes     map[string]bool
+	Groups     []string
 }
 
 // Authenticator resolves a request into a principal. ErrUnauthenticated means

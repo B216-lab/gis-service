@@ -34,6 +34,7 @@ type tokenRow struct {
 	expires                time.Time
 	revoked                *time.Time
 	created                string
+	role                   WorkspaceRole
 	err                    error
 }
 
@@ -48,6 +49,7 @@ func (r tokenRow) Scan(dest ...any) error {
 	*dest[4].(*time.Time) = r.expires
 	*dest[5].(**time.Time) = r.revoked
 	*dest[6].(*string) = r.created
+	*dest[7].(*WorkspaceRole) = r.role
 	return nil
 }
 
@@ -82,7 +84,7 @@ func TestAPITokenCreateStoresHashOnly(t *testing.T) {
 			t.Fatal("plaintext token persisted")
 		}
 	}
-	if !reflect.DeepEqual(db.args[1], apiTokenHash(result.Token)) {
+	if !reflect.DeepEqual(db.args[2], apiTokenHash(result.Token)) {
 		t.Fatal("token hash not persisted")
 	}
 }
@@ -90,13 +92,13 @@ func TestAPITokenCreateStoresHashOnly(t *testing.T) {
 func TestAPITokenAuthenticateScopeExpiryRevocationAndInvalidBearer(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	token, _, _ := NewAPIToken()
-	db := &tokenDB{row: tokenRow{id: "id", subject: "sub", workspace: "ws", scopes: []string{"read", "write"}, expires: now.Add(time.Hour)}}
+	db := &tokenDB{row: tokenRow{id: "id", subject: "sub", workspace: "ws", scopes: []string{"read", "write"}, expires: now.Add(time.Hour), role: WorkspaceEditor}}
 	store, _ := NewPostgreSQLAPITokenStore(db)
 	store.now = func() time.Time { return now }
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	principal, err := store.Authenticate(req)
-	if err != nil || principal.Subject != "sub" || !principal.Scopes["read"] {
+	if err != nil || principal.Subject != "sub" || !principal.IsAPIToken || !principal.Scopes["read"] {
 		t.Fatalf("auth = %#v, %v", principal, err)
 	}
 	for _, value := range []string{"Basic x", "Bearer", "Bearer wrong extra"} {
@@ -105,7 +107,7 @@ func TestAPITokenAuthenticateScopeExpiryRevocationAndInvalidBearer(t *testing.T)
 			t.Fatalf("invalid bearer %q accepted", value)
 		}
 	}
-	db.row = tokenRow{id: "id", subject: "sub", workspace: "ws", expires: now.Add(-time.Second)}
+	db.row = tokenRow{id: "id", subject: "sub", workspace: "ws", scopes: []string{"read"}, expires: now.Add(-time.Second), role: WorkspaceViewer}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if _, err := store.Authenticate(req); err == nil {
 		t.Fatal("expired token accepted")

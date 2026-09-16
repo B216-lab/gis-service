@@ -48,6 +48,9 @@ func main() {
 	if err := auth.EnsurePostgreSQLSchema(context.Background(), authPool); err != nil {
 		log.Fatalf("auth database: %v", err)
 	}
+	if err := auth.BootstrapWorkspace(context.Background(), authPool, config.BootstrapWorkspaceID, config.BootstrapWorkspaceName, config.BootstrapWorkspaceSubject); err != nil {
+		log.Fatalf("auth workspace bootstrap: %v", err)
+	}
 	sessions, err := auth.NewPostgreSQLSessionStoreWithSecret(authPool, config.SessionSecret)
 	if err != nil {
 		log.Fatalf("auth sessions: %v", err)
@@ -63,6 +66,10 @@ func main() {
 	workspaceAuthz, err := auth.NewPostgreSQLWorkspaceAuthorizer(authPool)
 	if err != nil {
 		log.Fatalf("auth workspace authorization: %v", err)
+	}
+	workspaces, err := auth.NewPostgreSQLWorkspaceStore(authPool)
+	if err != nil {
+		log.Fatalf("auth workspaces: %v", err)
 	}
 	oidcAuthenticator, err := auth.NewOIDCAuthenticator(context.Background(), config.OIDCConfig)
 	if err != nil {
@@ -80,7 +87,7 @@ func main() {
 		log.Fatalf("OIDC browser handler: %v", err)
 	}
 	authenticator := auth.NewCompositeAuthenticator(browser.SessionAuthenticator(), auth.NewBearerAuthenticator(oidcAuthenticator, apiTokens))
-	mux := newRootHandler(legacyAPI, auth.NewHTTPHandlerWithTokens(browser, authenticator, apiTokens, workspaceAuthz), authenticator)
+	mux := newRootHandler(legacyAPI, auth.NewHTTPHandlerWithManagement(browser, authenticator, apiTokens, workspaceAuthz, workspaces), authenticator)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -115,6 +122,8 @@ func newRootHandler(api, authRoutes http.Handler, authenticator auth.Authenticat
 	root.Handle("/api/v1/auth/me", authRoutes)
 	root.Handle("/api/v1/auth/tokens", authRoutes)
 	root.Handle("/api/v1/auth/tokens/", authRoutes)
+	root.Handle("/api/v1/auth/workspaces", authRoutes)
+	root.Handle("/api/v1/auth/workspaces/", authRoutes)
 	root.Handle("/api/v1/health", api)
 	// TODO: Route ownership outside health/share is still legacy. Protect it
 	// until individual public endpoints are explicitly specified.

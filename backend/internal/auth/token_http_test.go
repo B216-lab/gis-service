@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,9 @@ func (s *tokenHTTPTestStore) RevokeWorkspace(_ context.Context, workspace, id st
 	s.revokedWorkspace, s.revokedID = workspace, id
 	return nil
 }
+func (s *tokenHTTPTestStore) RotateWorkspace(_ context.Context, workspace, id, subject string) (APIToken, error) {
+	return APIToken{ID: "rotated", Token: "gp_rotated", Workspace: workspace, Subject: subject}, nil
+}
 
 type tokenHTTPTestAuthz struct{ roles map[string]WorkspaceRole }
 
@@ -59,7 +63,8 @@ func TestTokenRoutesUsePrincipalWorkspaceAndNeverReturnPlaintextOnList(t *testin
 	}
 
 	response = httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/tokens", strings.NewReader(`{"scopes":{"read":true},"expires_at":"2099-01-01T00:00:00Z"}`)).WithContext(WithPrincipal(context.Background(), principal))
+	body := fmt.Sprintf(`{"scopes":{"read":true},"expires_at":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/tokens", strings.NewReader(body)).WithContext(WithPrincipal(context.Background(), principal))
 	handler.tokens(response, request)
 	if response.Code != http.StatusCreated || store.created.Workspace != "ws" || !strings.Contains(response.Body.String(), "gp_plaintext") {
 		t.Fatalf("create response: status=%d workspace=%q body=%q", response.Code, store.created.Workspace, response.Body.String())

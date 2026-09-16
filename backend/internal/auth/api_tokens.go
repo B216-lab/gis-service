@@ -20,6 +20,7 @@ const (
 	apiTokenBytes  = 32
 	apiTokenPrefix = "gp_"
 	apiTokenMeta   = 12
+	MaxAPITokenTTL = 90 * 24 * time.Hour
 )
 
 var ErrInvalidAPIToken = errors.New("invalid API token")
@@ -34,19 +35,28 @@ type APITokenQueryDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
+type apiTokenTxDB interface {
+	APITokenQueryDB
+	Begin(context.Context) (pgx.Tx, error)
+}
+
 type APIToken struct {
-	ID        string
-	Token     string // populated only by Create; never persisted
-	Prefix    string
-	Subject   string
-	Workspace string
-	Scopes    map[string]bool
-	ExpiresAt time.Time
-	RevokedAt *time.Time
-	CreatedBy string
+	ID         string
+	Name       string
+	Token      string // populated only by Create; never persisted
+	Prefix     string
+	Subject    string
+	Workspace  string
+	Scopes     map[string]bool
+	ExpiresAt  time.Time
+	RevokedAt  *time.Time
+	LastUsedAt *time.Time
+	CreatedAt  time.Time
+	CreatedBy  string
 }
 
 type APITokenCreateRequest struct {
+	Name      string
 	Subject   string
 	Workspace string
 	Scopes    map[string]bool
@@ -86,7 +96,16 @@ func parseTokenScopes(value []string) map[string]bool {
 }
 
 func (store *PostgreSQLAPITokenStore) Create(ctx context.Context, request APITokenCreateRequest) (APIToken, error) {
-	if strings.TrimSpace(request.Subject) == "" || strings.TrimSpace(request.Workspace) == "" || request.ExpiresAt.IsZero() || !request.ExpiresAt.After(store.now()) {
+	return store.create(ctx, store.db, request)
+}
+
+func (store *PostgreSQLAPITokenStore) create(ctx context.Context, db APITokenDB, request APITokenCreateRequest) (APIToken, error) {
+	now := store.now()
+	request.Name = strings.TrimSpace(request.Name)
+	if request.Name == "" {
+		request.Name = "API token"
+	}
+	if strings.TrimSpace(request.Subject) == "" || strings.TrimSpace(request.Workspace) == "" || request.ExpiresAt.IsZero() || !request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(MaxAPITokenTTL)) || !validTokenScopes(request.Scopes) {
 		return APIToken{}, ErrInvalidAPIToken
 	}
 	token, prefix, err := NewAPIToken()
@@ -98,11 +117,11 @@ func (store *PostgreSQLAPITokenStore) Create(ctx context.Context, request APITok
 		return APIToken{}, fmt.Errorf("generate API token ID: %w", err)
 	}
 	id := base64.RawURLEncoding.EncodeToString(idBytes)
-	_, err = store.db.Exec(ctx, `INSERT INTO auth_api_tokens (id, token_hash, token_prefix, subject_id, workspace_id, scopes, expires_at, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, apiTokenHash(token), prefix, request.Subject, request.Workspace, scopeList(request.Scopes), request.ExpiresAt, request.CreatedBy)
+	_, err = db.Exec(ctx, `INSERT INTO auth_api_tokens (id, name, token_hash, token_prefix, subject_id, workspace_id, scopes, expires_at, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, id, request.Name, apiTokenHash(token), prefix, request.Subject, request.Workspace, scopeList(request.Scopes), request.ExpiresAt, request.CreatedBy)
 	if err != nil {
 		return APIToken{}, fmt.Errorf("create API token: %w", err)
 	}
-	return APIToken{ID: id, Token: token, Prefix: prefix, Subject: request.Subject, Workspace: request.Workspace, Scopes: cloneScopes(request.Scopes), ExpiresAt: request.ExpiresAt, CreatedBy: request.CreatedBy}, nil
+	return APIToken{ID: id, Name: request.Name, Token: token, Prefix: prefix, Subject: request.Subject, Workspace: request.Workspace, Scopes: cloneScopes(request.Scopes), ExpiresAt: request.ExpiresAt, CreatedAt: now, CreatedBy: request.CreatedBy}, nil
 }
 
 func (store *PostgreSQLAPITokenStore) Authenticate(request *http.Request) (Principal, error) {
@@ -118,22 +137,27 @@ func (store *PostgreSQLAPITokenStore) Authenticate(request *http.Request) (Princ
 	}
 	var token APIToken
 	var scopes []string
+	var role WorkspaceRole
 	var revokedAt *time.Time
-	err := store.db.QueryRow(request.Context(), `SELECT id, subject_id, workspace_id, scopes, expires_at, revoked_at, created_by FROM auth_api_tokens WHERE token_hash = $1 AND expires_at > NOW() AND revoked_at IS NULL`, apiTokenHash(parts[1])).Scan(&token.ID, &token.Subject, &token.Workspace, &scopes, &token.ExpiresAt, &revokedAt, &token.CreatedBy)
+	err := store.db.QueryRow(request.Context(), `SELECT t.id, t.subject_id, t.workspace_id, t.scopes, t.expires_at, t.revoked_at, t.created_by, m.role
+FROM auth_api_tokens t
+JOIN auth_workspace_members m ON m.workspace_id = t.workspace_id AND m.subject_id = t.subject_id
+WHERE t.token_hash = $1 AND t.expires_at > NOW() AND t.revoked_at IS NULL`, apiTokenHash(parts[1])).Scan(&token.ID, &token.Subject, &token.Workspace, &scopes, &token.ExpiresAt, &revokedAt, &token.CreatedBy, &role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Principal{}, ErrInvalidAPIToken
 	}
 	if err != nil {
 		return Principal{}, fmt.Errorf("lookup API token: %w", err)
 	}
-	if !token.ExpiresAt.After(store.now()) || revokedAt != nil {
+	token.Scopes = parseTokenScopes(scopes)
+	if !token.ExpiresAt.After(store.now()) || revokedAt != nil || !roleAllowsScopes(role, token.Scopes) {
 		return Principal{}, ErrInvalidAPIToken
 	}
 	_, err = store.db.Exec(request.Context(), `UPDATE auth_api_tokens SET last_used_at = NOW() WHERE id = $1`, token.ID)
 	if err != nil {
 		return Principal{}, fmt.Errorf("update API token use: %w", err)
 	}
-	return Principal{Subject: token.Subject, TokenID: token.ID, Workspace: token.Workspace, Scopes: parseTokenScopes(scopes)}, nil
+	return Principal{Subject: token.Subject, TokenID: token.ID, IsAPIToken: true, Workspace: token.Workspace, Scopes: token.Scopes}, nil
 }
 
 func (store *PostgreSQLAPITokenStore) Revoke(ctx context.Context, id string) error {
@@ -151,7 +175,7 @@ func (store *PostgreSQLAPITokenStore) List(ctx context.Context, workspace string
 	if !ok {
 		return nil, errors.New("API token database does not support listing")
 	}
-	rows, err := db.Query(ctx, `SELECT id, token_prefix, subject_id, workspace_id, scopes, expires_at, revoked_at, created_by FROM auth_api_tokens WHERE workspace_id = $1 ORDER BY created_at DESC, id`, workspace)
+	rows, err := db.Query(ctx, `SELECT id, name, token_prefix, subject_id, workspace_id, scopes, expires_at, revoked_at, last_used_at, created_at, created_by FROM auth_api_tokens WHERE workspace_id = $1 ORDER BY created_at DESC, id`, workspace)
 	if err != nil {
 		return nil, fmt.Errorf("list API tokens: %w", err)
 	}
@@ -160,7 +184,7 @@ func (store *PostgreSQLAPITokenStore) List(ctx context.Context, workspace string
 	for rows.Next() {
 		var token APIToken
 		var scopes []string
-		if err := rows.Scan(&token.ID, &token.Prefix, &token.Subject, &token.Workspace, &scopes, &token.ExpiresAt, &token.RevokedAt, &token.CreatedBy); err != nil {
+		if err := rows.Scan(&token.ID, &token.Name, &token.Prefix, &token.Subject, &token.Workspace, &scopes, &token.ExpiresAt, &token.RevokedAt, &token.LastUsedAt, &token.CreatedAt, &token.CreatedBy); err != nil {
 			return nil, fmt.Errorf("scan API token: %w", err)
 		}
 		token.Scopes = parseTokenScopes(scopes)
@@ -170,6 +194,79 @@ func (store *PostgreSQLAPITokenStore) List(ctx context.Context, workspace string
 		return nil, fmt.Errorf("iterate API tokens: %w", err)
 	}
 	return result, nil
+}
+
+func (store *PostgreSQLAPITokenStore) RotateWorkspace(ctx context.Context, workspace, id, createdBy string) (APIToken, error) {
+	db, ok := store.db.(apiTokenTxDB)
+	if !ok {
+		return APIToken{}, errors.New("API token database does not support rotation")
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return APIToken{}, fmt.Errorf("begin API token rotation: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var request APITokenCreateRequest
+	var scopes []string
+	err = tx.QueryRow(ctx, `SELECT name, subject_id, workspace_id, scopes, expires_at FROM auth_api_tokens WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL AND expires_at > NOW() FOR UPDATE`, id, workspace).Scan(&request.Name, &request.Subject, &request.Workspace, &scopes, &request.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return APIToken{}, ErrWorkspaceMembership
+	}
+	if err != nil {
+		return APIToken{}, fmt.Errorf("load API token for rotation: %w", err)
+	}
+	request.Scopes, request.CreatedBy = parseTokenScopes(scopes), createdBy
+	created, err := store.create(ctx, tx, request)
+	if err != nil {
+		return APIToken{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE auth_api_tokens SET revoked_at = NOW() WHERE id = $1`, id); err != nil {
+		return APIToken{}, fmt.Errorf("revoke rotated API token: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return APIToken{}, fmt.Errorf("commit API token rotation: %w", err)
+	}
+	return created, nil
+}
+
+var tokenScopeRoles = map[string]WorkspaceRole{
+	"read": WorkspaceViewer, "write": WorkspaceEditor,
+	"analytics:read": WorkspaceViewer, "analytics:write": WorkspaceEditor,
+	"dashboards:read": WorkspaceViewer, "dashboards:write": WorkspaceEditor,
+	"datasets:read": WorkspaceViewer, "datasets:write": WorkspaceEditor,
+	"publish:write": WorkspacePublisher, "shares:write": WorkspacePublisher,
+	"auth:tokens:read": WorkspaceAdmin, "auth:tokens:write": WorkspaceAdmin,
+	"auth:workspaces:read": WorkspaceAdmin, "auth:workspaces:write": WorkspaceAdmin,
+	"auth:members:read": WorkspaceAdmin, "auth:members:write": WorkspaceAdmin,
+}
+
+func validTokenScopes(scopes map[string]bool) bool {
+	if len(scopes) == 0 {
+		return false
+	}
+	enabledCount := 0
+	for scope, enabled := range scopes {
+		if !enabled {
+			continue
+		}
+		enabledCount++
+		if _, ok := tokenScopeRoles[scope]; !ok {
+			return false
+		}
+	}
+	return enabledCount > 0
+}
+
+func roleAllowsScopes(role WorkspaceRole, scopes map[string]bool) bool {
+	if !validWorkspaceRole(role) || !validTokenScopes(scopes) {
+		return false
+	}
+	for scope, enabled := range scopes {
+		if enabled && roleRank(role) < roleRank(tokenScopeRoles[scope]) {
+			return false
+		}
+	}
+	return true
 }
 
 func apiTokenHash(token string) []byte { digest := sha256.Sum256([]byte(token)); return digest[:] }

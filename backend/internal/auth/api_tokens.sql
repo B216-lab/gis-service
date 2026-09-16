@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS auth_api_tokens (
     id text PRIMARY KEY,
+    name text NOT NULL DEFAULT 'API token',
     token_hash bytea NOT NULL UNIQUE,
     token_prefix text NOT NULL,
     subject_id text NOT NULL,
@@ -16,6 +17,9 @@ CREATE INDEX IF NOT EXISTS auth_api_tokens_scope_idx ON auth_api_tokens (subject
 
 CREATE TABLE IF NOT EXISTS auth_workspaces (
     id text PRIMARY KEY,
+    name text NOT NULL DEFAULT '',
+    description text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
     created_at timestamptz NOT NULL DEFAULT NOW()
 );
 
@@ -29,6 +33,14 @@ CREATE TABLE IF NOT EXISTS auth_workspace_members (
 
 CREATE INDEX IF NOT EXISTS auth_workspace_members_subject_idx
     ON auth_workspace_members (subject_id, workspace_id);
+
+CREATE TABLE IF NOT EXISTS auth_workspace_group_roles (
+    workspace_id text NOT NULL REFERENCES auth_workspaces(id) ON DELETE CASCADE,
+    group_name text NOT NULL,
+    role text NOT NULL CHECK (role IN ('admin', 'editor', 'publisher', 'viewer')),
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (workspace_id, group_name)
+);
 
 CREATE TABLE IF NOT EXISTS auth_oidc_flows (
     state_hash bytea PRIMARY KEY,

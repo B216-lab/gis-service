@@ -43,6 +43,7 @@ import {
   PanelFrame,
 } from './features/app/chrome';
 import { WorkspaceLayout } from './features/app/WorkspaceLayout';
+import { AuthManagementModal } from './features/auth/AuthManagementModal';
 import { useAuthStore } from './features/auth/store';
 import { ConnectionManager } from './features/connections/ConnectionManager';
 import {
@@ -1023,10 +1024,12 @@ function AnalysisWorkspacePanel({
 function AppSettings({
   basemapId,
   onBasemapChange,
+  onOpenAuthManagement,
   onLogout,
 }: {
   basemapId: BasemapId;
   onBasemapChange: (basemapId: BasemapId) => void;
+  onOpenAuthManagement: () => void;
   onLogout: () => void;
 }) {
   return (
@@ -1064,6 +1067,7 @@ function AppSettings({
           <ColorSchemeToggle />
         </Group>
         <Menu.Divider />
+        <Menu.Item onClick={onOpenAuthManagement}>Workspace access</Menu.Item>
         <Menu.Item onClick={onLogout}>Log out</Menu.Item>
       </Menu.Dropdown>
     </Menu>
@@ -1132,6 +1136,8 @@ function GISApp() {
 
 function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [authManagementOpen, setAuthManagementOpen] = useState(false);
+  const user = useAuthStore((state) => state.user);
   const connections = useConnectionStore((state) => state.connections);
   const mapSources = useConnectionStore((state) => state.mapSources);
   const mapLayers = useConnectionStore((state) => state.mapLayers);
@@ -2360,8 +2366,16 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
           <AppSettings
             basemapId={selectedBasemapId ?? defaultBasemapId}
             onBasemapChange={setSelectedBasemap}
+            onOpenAuthManagement={() => setAuthManagementOpen(true)}
             onLogout={onLogout}
           />
+          {user ? (
+            <AuthManagementModal
+              onClose={() => setAuthManagementOpen(false)}
+              opened={authManagementOpen}
+              user={user}
+            />
+          ) : null}
         </Group>
       }
     />

@@ -48,10 +48,7 @@ func Unauthorized(writer http.ResponseWriter) {
 
 func clonePrincipal(principal Principal) Principal {
 	if principal.Scopes != nil {
-		principal.Scopes = map[string]bool{}
-		for scope, allowed := range principal.Scopes {
-			principal.Scopes[scope] = allowed
-		}
+		principal.Scopes = cloneScopes(principal.Scopes)
 	}
 	principal.Groups = append([]string(nil), principal.Groups...)
 	return principal

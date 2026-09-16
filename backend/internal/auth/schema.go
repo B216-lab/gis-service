@@ -43,11 +43,18 @@ var authSchema = []string{
     created_by text NOT NULL
 );`,
 	`ALTER TABLE auth_api_tokens ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT NOW();`,
+	`ALTER TABLE auth_api_tokens ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT 'API token';`,
 	`CREATE INDEX IF NOT EXISTS auth_api_tokens_active_idx ON auth_api_tokens (token_hash) WHERE revoked_at IS NULL;`,
 	`CREATE TABLE IF NOT EXISTS auth_workspaces (
     id text PRIMARY KEY,
+    name text NOT NULL DEFAULT '',
+    description text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
     created_at timestamptz NOT NULL DEFAULT NOW()
 );`,
+	`ALTER TABLE auth_workspaces ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';`,
+	`ALTER TABLE auth_workspaces ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';`,
+	`ALTER TABLE auth_workspaces ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT NOW();`,
 	`CREATE TABLE IF NOT EXISTS auth_workspace_members (
     workspace_id text NOT NULL REFERENCES auth_workspaces(id) ON DELETE CASCADE,
     subject_id text NOT NULL,
@@ -56,4 +63,11 @@ var authSchema = []string{
     PRIMARY KEY (workspace_id, subject_id)
 );`,
 	`CREATE INDEX IF NOT EXISTS auth_workspace_members_subject_idx ON auth_workspace_members (subject_id, workspace_id);`,
+	`CREATE TABLE IF NOT EXISTS auth_workspace_group_roles (
+    workspace_id text NOT NULL REFERENCES auth_workspaces(id) ON DELETE CASCADE,
+    group_name text NOT NULL,
+    role text NOT NULL CHECK (role IN ('admin', 'editor', 'publisher', 'viewer')),
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (workspace_id, group_name)
+);`,
 }

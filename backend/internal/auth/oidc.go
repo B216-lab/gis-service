@@ -30,7 +30,10 @@ type OIDCConfig struct {
 // cannot fall back to anonymous access.
 type RuntimeConfig struct {
 	OIDCConfig
-	SessionSecret string
+	SessionSecret             string
+	BootstrapWorkspaceID      string
+	BootstrapWorkspaceName    string
+	BootstrapWorkspaceSubject string
 }
 
 func RuntimeConfigFromEnv() (RuntimeConfig, error) {
@@ -53,7 +56,20 @@ func RuntimeConfigFromLookup(lookup func(string) string) (RuntimeConfig, error) 
 	if allowAnonymous := strings.TrimSpace(lookup("AUTH_ALLOW_ANONYMOUS")); allowAnonymous != "" && !strings.EqualFold(allowAnonymous, "false") {
 		return RuntimeConfig{}, errors.New("AUTH_ALLOW_ANONYMOUS must be false when application authentication is enabled")
 	}
-	return RuntimeConfig{OIDCConfig: oidcConfig, SessionSecret: secret}, nil
+	workspaceID := strings.TrimSpace(lookup("AUTH_BOOTSTRAP_WORKSPACE_ID"))
+	workspaceSubject := strings.TrimSpace(lookup("AUTH_BOOTSTRAP_WORKSPACE_SUBJECT"))
+	if (workspaceID == "") != (workspaceSubject == "") {
+		return RuntimeConfig{}, errors.New("AUTH_BOOTSTRAP_WORKSPACE_ID and AUTH_BOOTSTRAP_WORKSPACE_SUBJECT must be set together")
+	}
+	workspaceName := strings.TrimSpace(lookup("AUTH_BOOTSTRAP_WORKSPACE_NAME"))
+	if workspaceID != "" && workspaceName == "" {
+		workspaceName = workspaceID
+	}
+	return RuntimeConfig{
+		OIDCConfig: oidcConfig, SessionSecret: secret,
+		BootstrapWorkspaceID: workspaceID, BootstrapWorkspaceName: workspaceName,
+		BootstrapWorkspaceSubject: workspaceSubject,
+	}, nil
 }
 
 // OIDCConfigFromEnv loads production OIDC settings. Missing values are errors;

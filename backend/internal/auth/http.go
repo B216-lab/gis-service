@@ -119,6 +119,10 @@ func NewHTTPHandler(browser BrowserHandler, authenticator Authenticator) http.Ha
 // management. workspace IDs are accepted only as query/path parameters; token
 // create bodies cannot select their owning workspace.
 func NewHTTPHandlerWithTokens(browser BrowserHandler, authenticator Authenticator, tokens APITokenManager, authz WorkspaceAuthorizer) http.Handler {
+	return NewHTTPHandlerWithManagement(browser, authenticator, tokens, authz, nil)
+}
+
+func NewHTTPHandlerWithManagement(browser BrowserHandler, authenticator Authenticator, tokens APITokenManager, authz WorkspaceAuthorizer, workspaces WorkspaceStore) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth/login", browser.Login)
 	mux.HandleFunc("GET /auth/callback", browser.Callback)
@@ -126,6 +130,9 @@ func NewHTTPHandlerWithTokens(browser BrowserHandler, authenticator Authenticato
 	mux.Handle("GET /api/v1/auth/me", Middleware(authenticator, Require(http.HandlerFunc(meHandler))))
 	if tokens != nil && authz != nil {
 		registerTokenRoutes(mux, authenticator, tokens, authz)
+	}
+	if workspaces != nil {
+		registerWorkspaceRoutes(mux, authenticator, workspaces)
 	}
 	return mux
 }
