@@ -44,7 +44,7 @@ import {
 } from './features/app/chrome';
 import { WorkspaceLayout } from './features/app/WorkspaceLayout';
 import { AuthManagementModal } from './features/auth/AuthManagementModal';
-import { useAuthStore } from './features/auth/store';
+import { type AuthUser, useAuthStore } from './features/auth/store';
 import { ConnectionManager } from './features/connections/ConnectionManager';
 import {
   type ArcMapLayer,
@@ -1026,12 +1026,17 @@ function AppSettings({
   onBasemapChange,
   onOpenAuthManagement,
   onLogout,
+  user,
 }: {
   basemapId: BasemapId;
   onBasemapChange: (basemapId: BasemapId) => void;
   onOpenAuthManagement: () => void;
   onLogout: () => void;
+  user: AuthUser | null;
 }) {
+  const accountName = user
+    ? user.name || user.username || user.email || user.subject
+    : 'Account';
   return (
     <Menu
       closeOnItemClick={false}
@@ -1045,6 +1050,7 @@ function AppSettings({
         </ActionIcon>
       </Menu.Target>
       <Menu.Dropdown>
+        <Menu.Label>{accountName}</Menu.Label>
         <Menu.Label>Map settings</Menu.Label>
         <Box px="xs" pb="xs">
           <Select
@@ -2368,6 +2374,7 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
             onBasemapChange={setSelectedBasemap}
             onOpenAuthManagement={() => setAuthManagementOpen(true)}
             onLogout={onLogout}
+            user={user}
           />
           {user ? (
             <AuthManagementModal

@@ -2,6 +2,9 @@ import { create } from 'zustand';
 
 export interface AuthUser {
   subject: string;
+  name?: string;
+  email?: string;
+  username?: string;
   workspace?: string;
   scopes: string[];
   groups: string[];

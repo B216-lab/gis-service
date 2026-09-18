@@ -184,11 +184,14 @@ func principalFromIDToken(token verifiedToken) (Principal, error) {
 		return Principal{}, errors.New("verified token has no subject")
 	}
 	var claims struct {
-		Scope   string   `json:"scope"`
-		Scp     any      `json:"scp"`
-		Groups  []string `json:"groups"`
-		JTI     string   `json:"jti"`
-		TokenID string   `json:"token_id"`
+		Name     string   `json:"name"`
+		Email    string   `json:"email"`
+		Username string   `json:"preferred_username"`
+		Scope    string   `json:"scope"`
+		Scp      any      `json:"scp"`
+		Groups   []string `json:"groups"`
+		JTI      string   `json:"jti"`
+		TokenID  string   `json:"token_id"`
 	}
 	if err := json.Unmarshal(token.claims, &claims); err != nil {
 		return Principal{}, fmt.Errorf("extract token claims: %w", err)
@@ -204,7 +207,7 @@ func principalFromIDToken(token verifiedToken) (Principal, error) {
 	if tokenID == "" {
 		tokenID = strings.TrimSpace(claims.TokenID)
 	}
-	return Principal{Subject: token.subject, TokenID: tokenID, Scopes: scopes, Groups: claims.Groups}, nil
+	return Principal{Subject: token.subject, Name: strings.TrimSpace(claims.Name), Email: strings.TrimSpace(claims.Email), Username: strings.TrimSpace(claims.Username), TokenID: tokenID, Scopes: scopes, Groups: claims.Groups}, nil
 }
 
 func claimStrings(value any) []string {

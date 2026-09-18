@@ -41,7 +41,7 @@ func TestOIDCConfigFromLookupRequiresProductionSettings(t *testing.T) {
 func TestOIDCAuthenticatorExtractsPrincipalClaims(t *testing.T) {
 	authenticator := newOIDCAuthenticator(fakeTokenVerifier{token: verifiedToken{
 		subject: "user-1",
-		claims:  []byte(`{"scope":"read write","scp":["admin"],"groups":["analyst"],"jti":"token-1"}`),
+		claims:  []byte(`{"name":"Ada Lovelace","email":"ada@example.com","preferred_username":"ada","scope":"read write","scp":["admin"],"groups":["analyst"],"jti":"token-1"}`),
 	}})
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set("Authorization", "Bearer signed-token")
@@ -51,7 +51,7 @@ func TestOIDCAuthenticatorExtractsPrincipalClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantScopes := map[string]bool{"read": true, "write": true, "admin": true}
-	if principal.Subject != "user-1" || principal.TokenID != "token-1" || !reflect.DeepEqual(principal.Scopes, wantScopes) || !reflect.DeepEqual(principal.Groups, []string{"analyst"}) {
+	if principal.Subject != "user-1" || principal.Name != "Ada Lovelace" || principal.Email != "ada@example.com" || principal.Username != "ada" || principal.TokenID != "token-1" || !reflect.DeepEqual(principal.Scopes, wantScopes) || !reflect.DeepEqual(principal.Groups, []string{"analyst"}) {
 		t.Fatalf("principal = %#v", principal)
 	}
 }

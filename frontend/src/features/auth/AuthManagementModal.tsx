@@ -145,11 +145,17 @@ function SecretReveal({
 }
 
 function CurrentUserPanel({ user }: { user: AuthUser }) {
+  const accountName = user.name || user.username || user.email || user.subject;
   return (
     <Paper p="md" withBorder>
       <Stack gap="xs">
         <Title order={4}>Current user</Title>
-        <Text fw={600}>{user.subject}</Text>
+        <Text fw={600}>{accountName}</Text>
+        {accountName !== user.subject ? (
+          <Text c="dimmed" size="xs">
+            {user.email || user.username || user.subject}
+          </Text>
+        ) : null}
         <Group gap="xs">
           {user.groups.map((group) => (
             <Badge key={group} variant="light">

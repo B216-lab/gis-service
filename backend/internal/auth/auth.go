@@ -13,6 +13,9 @@ import (
 // Scopes and Groups are copied by middleware before being stored in context.
 type Principal struct {
 	Subject    string
+	Name       string
+	Email      string
+	Username   string
 	TokenID    string
 	IsAPIToken bool
 	Workspace  string

@@ -148,6 +148,9 @@ func NewRoutesWithTokens(browser BrowserHandler, authenticator Authenticator, to
 }
 
 type meResponse struct {
+	Name      string   `json:"name,omitempty"`
+	Email     string   `json:"email,omitempty"`
+	Username  string   `json:"username,omitempty"`
 	Subject   string   `json:"subject"`
 	Workspace string   `json:"workspace,omitempty"`
 	Scopes    []string `json:"scopes"`
@@ -171,7 +174,7 @@ func meHandler(writer http.ResponseWriter, request *http.Request) {
 	if groups == nil {
 		groups = []string{}
 	}
-	writeAuthJSON(writer, http.StatusOK, meResponse{Subject: principal.Subject, Workspace: principal.Workspace, Scopes: scopes, Groups: groups})
+	writeAuthJSON(writer, http.StatusOK, meResponse{Name: principal.Name, Email: principal.Email, Username: principal.Username, Subject: principal.Subject, Workspace: principal.Workspace, Scopes: scopes, Groups: groups})
 }
 
 func writeAuthJSON(writer http.ResponseWriter, status int, value any) {

@@ -53,6 +53,9 @@ func NewPostgreSQLSessionStoreWithSecret(db SessionDB, secret string) (*PostgreS
 }
 
 type sessionClaims struct {
+	Name      string          `json:"name,omitempty"`
+	Email     string          `json:"email,omitempty"`
+	Username  string          `json:"username,omitempty"`
 	TokenID   string          `json:"tokenId,omitempty"`
 	Workspace string          `json:"workspace,omitempty"`
 	Scopes    map[string]bool `json:"scopes,omitempty"`
@@ -64,6 +67,7 @@ func (store *PostgreSQLSessionStore) Put(ctx context.Context, session Session) e
 		return ErrInvalidSession
 	}
 	claims, err := json.Marshal(sessionClaims{
+		Name: session.Principal.Name, Email: session.Principal.Email, Username: session.Principal.Username,
 		TokenID: session.Principal.TokenID, Workspace: session.Principal.Workspace,
 		Scopes: cloneScopes(session.Principal.Scopes), Groups: append([]string(nil), session.Principal.Groups...),
 	})
@@ -105,7 +109,7 @@ func (store *PostgreSQLSessionStore) Get(ctx context.Context, id string) (Sessio
 	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
 		return Session{}, false, fmt.Errorf("decode session claims: %w", err)
 	}
-	return Session{ID: id, Principal: Principal{Subject: subject, TokenID: claims.TokenID, Workspace: claims.Workspace, Scopes: cloneScopes(claims.Scopes), Groups: append([]string(nil), claims.Groups...)}, ExpiresAt: expiresAt}, true, nil
+	return Session{ID: id, Principal: Principal{Subject: subject, Name: claims.Name, Email: claims.Email, Username: claims.Username, TokenID: claims.TokenID, Workspace: claims.Workspace, Scopes: cloneScopes(claims.Scopes), Groups: append([]string(nil), claims.Groups...)}, ExpiresAt: expiresAt}, true, nil
 }
 
 func (store *PostgreSQLSessionStore) Delete(ctx context.Context, id string) error {
