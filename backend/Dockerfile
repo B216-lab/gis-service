@@ -24,7 +24,7 @@ CMD ["sh", "./docker/dev-watch.sh"]
 
 FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates=20260611-r0
+RUN apk add --no-cache ca-certificates
 
 RUN addgroup -S geopanel && adduser -S -G geopanel geopanel \
     && mkdir -p /var/lib/geopanel \
