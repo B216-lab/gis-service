@@ -82,6 +82,7 @@ interface BaseMapLayer {
   connectionId: string;
   sourceId: string;
   name: string;
+  tooltipEnabled: boolean;
   visible: boolean;
   icon: LayerGlyphIcon;
   purpose: MapLayerPurpose;

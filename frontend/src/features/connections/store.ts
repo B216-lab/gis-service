@@ -159,6 +159,7 @@ interface ConnectionStoreState {
         GeoJsonMapLayer,
         | 'name'
         | 'icon'
+        | 'tooltipEnabled'
         | 'fillColor'
         | 'fillOpacity'
         | 'strokeColor'
@@ -190,13 +191,17 @@ interface ConnectionStoreState {
     patch: {
       name?: string;
       icon?: LayerGlyphIcon;
+      tooltipEnabled?: boolean;
       style?: Partial<FlowmapMapLayer['style']>;
     },
   ) => void;
   updateArcLayer: (
     layerId: string,
     patch: Partial<
-      Pick<ArcMapLayer, 'name' | 'icon' | 'color' | 'opacity' | 'width'>
+      Pick<
+        ArcMapLayer,
+        'name' | 'icon' | 'color' | 'opacity' | 'width' | 'tooltipEnabled'
+      >
     >,
   ) => void;
   toggleConnectionActive: (connectionId: string) => void;
@@ -518,6 +523,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 connectionId: payload.connectionId,
                 sourceId: source.id,
                 name: payload.name,
+                tooltipEnabled: true,
                 visible: true,
                 icon: getDefaultLayerIcon(payload.geometryType),
                 purpose: payload.purpose ?? 'configured',
@@ -600,6 +606,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 connectionId: payload.connectionId,
                 sourceId: source.id,
                 name: payload.name,
+                tooltipEnabled: true,
                 visible: true,
                 icon: 'flow',
                 purpose: payload.purpose ?? 'configured',
@@ -658,6 +665,7 @@ export const useConnectionStore = create<ConnectionStoreState>()(
                 connectionId: payload.connectionId,
                 sourceId: source.id,
                 name: payload.name,
+                tooltipEnabled: true,
                 visible: true,
                 icon: 'flow',
                 purpose: payload.purpose ?? 'configured',

@@ -2,6 +2,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Code,
   CopyButton,
   Divider,
@@ -11,6 +12,7 @@ import {
   Paper,
   ScrollArea,
   Select,
+  SimpleGrid,
   Stack,
   Table,
   Tabs,
@@ -34,55 +36,89 @@ import type { AuthUser } from './store';
 
 const roles: WorkspaceRole[] = ['viewer', 'editor', 'publisher', 'admin'];
 
-export const tokenScopePresets = {
-  'read-only': {
-    label: 'Read-only analytics',
-    scopes: ['analytics:read', 'dashboards:read', 'datasets:read'],
+const tokenScopeDefinitions = [
+  {
+    scope: 'read',
+    label: 'Legacy API read',
+    description: 'Read legacy API resources covered by the broad read scope.',
   },
-  author: {
-    label: 'Dashboard author',
-    scopes: [
-      'analytics:read',
-      'analytics:write',
-      'dashboards:read',
-      'dashboards:write',
-      'datasets:read',
-    ],
+  {
+    scope: 'write',
+    label: 'Legacy API write',
+    description:
+      'Change legacy API resources covered by the broad write scope.',
   },
-  publisher: {
-    label: 'Publisher',
-    scopes: [
-      'analytics:read',
-      'analytics:write',
-      'dashboards:read',
-      'dashboards:write',
-      'datasets:read',
-      'publish:write',
-      'shares:write',
-    ],
+  {
+    scope: 'analytics:read',
+    label: 'Read analytics',
+    description: 'Run analytics queries and view their results.',
   },
-  automation: {
-    label: 'Automation admin',
-    scopes: [
-      'analytics:read',
-      'analytics:write',
-      'dashboards:read',
-      'dashboards:write',
-      'datasets:read',
-      'datasets:write',
-      'publish:write',
-      'shares:write',
-      'auth:tokens:read',
-      'auth:tokens:write',
-      'auth:workspaces:read',
-      'auth:workspaces:write',
-      'auth:members:read',
-      'auth:members:write',
-    ],
+  {
+    scope: 'analytics:write',
+    label: 'Edit analytics',
+    description: 'Create or change analytics queries and configurations.',
   },
-} as const;
-
-type ScopePreset = keyof typeof tokenScopePresets;
+  {
+    scope: 'dashboards:read',
+    label: 'View dashboards',
+    description: 'Open dashboards and read their chart configuration.',
+  },
+  {
+    scope: 'dashboards:write',
+    label: 'Edit dashboards',
+    description: 'Create, edit, or delete dashboards and charts.',
+  },
+  {
+    scope: 'datasets:read',
+    label: 'Read datasets',
+    description: 'Read dataset metadata and data available to the workspace.',
+  },
+  {
+    scope: 'datasets:write',
+    label: 'Edit datasets',
+    description: 'Create or modify workspace datasets.',
+  },
+  {
+    scope: 'publish:write',
+    label: 'Publish',
+    description: 'Publish dashboard or analytics revisions for other users.',
+  },
+  {
+    scope: 'shares:write',
+    label: 'Manage shares',
+    description: 'Create or revoke public and shared dashboard links.',
+  },
+  {
+    scope: 'auth:tokens:read',
+    label: 'View API tokens',
+    description: 'View token metadata in the workspace; secrets stay hidden.',
+  },
+  {
+    scope: 'auth:tokens:write',
+    label: 'Manage API tokens',
+    description: 'Create, rotate, or revoke API tokens. High privilege.',
+  },
+  {
+    scope: 'auth:workspaces:read',
+    label: 'View workspace settings',
+    description: 'Read workspace access and configuration metadata.',
+  },
+  {
+    scope: 'auth:workspaces:write',
+    label: 'Manage workspaces',
+    description: 'Change workspace settings. High privilege.',
+  },
+  {
+    scope: 'auth:members:read',
+    label: 'View members',
+    description: 'See workspace members and their assigned roles.',
+  },
+  {
+    scope: 'auth:members:write',
+    label: 'Manage members',
+    description: 'Add, remove, or change workspace members. High privilege.',
+  },
+] as const;
 
 export function tokenLifecycleStatus(token: {
   expires_at: string;
@@ -295,7 +331,7 @@ function TokensPanel({
   const revokeToken = useAuthManagementStore((state) => state.revokeToken);
   const rotateToken = useAuthManagementStore((state) => state.rotateToken);
   const [name, setName] = useState('');
-  const [preset, setPreset] = useState<ScopePreset>('read-only');
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
   const [expiryDays, setExpiryDays] = useState('30');
 
   async function submitToken() {
@@ -303,7 +339,7 @@ function TokensPanel({
       const expiresAt = new Date();
       expiresAt.setUTCDate(expiresAt.getUTCDate() + Number(expiryDays));
       const scopes = Object.fromEntries(
-        tokenScopePresets[preset].scopes.map((scope) => [scope, true]),
+        selectedScopes.map((scope) => [scope, true]),
       );
       const created = await createToken({
         name: name.trim(),
@@ -331,16 +367,6 @@ function TokensPanel({
             />
             <Select
               allowDeselect={false}
-              data={Object.entries(tokenScopePresets).map(([value, item]) => ({
-                value,
-                label: item.label,
-              }))}
-              label="Scope preset"
-              onChange={(value) => setPreset(value as ScopePreset)}
-              value={preset}
-            />
-            <Select
-              allowDeselect={false}
               data={[
                 { value: '7', label: '7 days' },
                 { value: '30', label: '30 days' },
@@ -353,14 +379,36 @@ function TokensPanel({
             <Button
               leftSection={<IconKey size={16} />}
               loading={busy === 'token:create'}
+              disabled={selectedScopes.length === 0}
               onClick={() => void submitToken()}
             >
               Create token
             </Button>
           </Group>
-          <Text c="dimmed" size="xs">
-            Scopes: {tokenScopePresets[preset].scopes.join(', ')}
+          <Text fw={600} size="sm">
+            Select permissions
           </Text>
+          <Text c="dimmed" size="sm">
+            Each checked permission is granted directly to this token. Start
+            with the smallest set needed by the integration.
+          </Text>
+          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
+            {tokenScopeDefinitions.map((definition) => (
+              <Checkbox
+                checked={selectedScopes.includes(definition.scope)}
+                description={definition.description}
+                key={definition.scope}
+                label={definition.label}
+                onChange={(event) => {
+                  setSelectedScopes((current) =>
+                    event.currentTarget.checked
+                      ? [...current, definition.scope]
+                      : current.filter((scope) => scope !== definition.scope),
+                  );
+                }}
+              />
+            ))}
+          </SimpleGrid>
         </Stack>
       </Paper>
 

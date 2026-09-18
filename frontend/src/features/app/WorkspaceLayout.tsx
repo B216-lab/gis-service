@@ -2,6 +2,7 @@ import {
   ActionIcon,
   Box,
   Group,
+  Menu,
   Text,
   useComputedColorScheme,
 } from '@mantine/core';
@@ -177,6 +178,30 @@ const defaultWorkspaceLayout: IJsonModel = {
     ],
   },
 };
+
+function createLayoutPreset(preset: WorkspaceLayoutPreset): IJsonModel {
+  const layout = JSON.parse(
+    JSON.stringify(defaultWorkspaceLayout),
+  ) as IJsonModel;
+  const borders = layout.borders ?? [];
+  const left = borders.find((border) => border.location === 'left');
+  const right = borders.find((border) => border.location === 'right');
+  const bottom = borders.find((border) => border.location === 'bottom');
+
+  if (preset === 'data') {
+    if (left) left.size = 360;
+    if (right) right.size = 300;
+    if (bottom) bottom.size = 360;
+  }
+
+  if (preset === 'map') {
+    if (left) left.size = 220;
+    if (right) right.size = 280;
+    if (bottom) bottom.size = 180;
+  }
+
+  return layout;
+}
 
 const panelIcons = {
   sources: IconPlugConnected,
@@ -533,8 +558,23 @@ export function WorkspaceLayout({
   );
 
   function handleResetLayout() {
+    if (
+      !window.confirm('Reset the workspace layout to its default arrangement?')
+    ) {
+      return;
+    }
     window.localStorage.removeItem(workspaceStorageKey);
     setModel(createDefaultModel());
+  }
+
+  function handleSelectLayout(preset: WorkspaceLayoutPreset) {
+    const layout = createLayoutPreset(preset);
+    try {
+      window.localStorage.setItem(workspaceStorageKey, JSON.stringify(layout));
+    } catch {
+      // Layout selection should still work when local storage is unavailable.
+    }
+    setModel(Model.fromJson(layout));
   }
 
   return (
@@ -565,21 +605,37 @@ export function WorkspaceLayout({
             <Text fw={600} size="sm">
               Workspace
             </Text>
-            <Text c="dimmed" size="xs" visibleFrom="sm">
-              Drag tabs to dock · pin or float panels
-            </Text>
           </Group>
 
           <Group gap={4} wrap="nowrap">
             {toolbar}
-            <ActionIcon
-              aria-label="Reset workspace layout"
-              onClick={handleResetLayout}
-              title="Reset workspace layout"
-              variant="default"
-            >
-              <IconRestore size={16} />
-            </ActionIcon>
+            <Menu position="bottom-end" shadow="md" width={190}>
+              <Menu.Target>
+                <ActionIcon
+                  aria-label="Workspace layouts"
+                  title="Workspace layouts"
+                  variant="default"
+                >
+                  <IconRestore size={16} />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Label>Workspace layout</Menu.Label>
+                <Menu.Item onClick={() => handleSelectLayout('balanced')}>
+                  Balanced
+                </Menu.Item>
+                <Menu.Item onClick={() => handleSelectLayout('data')}>
+                  Data focus
+                </Menu.Item>
+                <Menu.Item onClick={() => handleSelectLayout('map')}>
+                  Map focus
+                </Menu.Item>
+                <Menu.Divider />
+                <Menu.Item color="red" onClick={handleResetLayout}>
+                  Reset layout
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
           </Group>
         </Group>
 

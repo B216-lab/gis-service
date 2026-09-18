@@ -127,6 +127,11 @@ type LocateFeatureBoundsRequest = {
   token: number;
   bounds: GeoBounds;
 };
+type MapTooltipState = {
+  candidate: FeaturePickCandidate;
+  x: number;
+  y: number;
+};
 
 async function fetchSourceData(
   connection: DatabaseConnection,
@@ -185,6 +190,7 @@ export function MapPane({
     useState<FeaturePickState | null>(null);
   const [hoveredFeaturePick, setHoveredFeaturePick] =
     useState<FeaturePickCandidate | null>(null);
+  const [mapTooltip, setMapTooltip] = useState<MapTooltipState | null>(null);
   const [layerError, setLayerError] = useState('');
   const [cacheVersion, setCacheVersion] = useState(0);
   const [styleVersion, setStyleVersion] = useState(0);
@@ -415,6 +421,7 @@ export function MapPane({
     function handleMapMouseMove(event: MapMouseEvent) {
       if (drawRef.current) {
         map.getCanvas().style.cursor = '';
+        setMapTooltip(null);
         return;
       }
 
@@ -424,6 +431,7 @@ export function MapPane({
       );
       if (queryableLayerIds.length === 0) {
         map.getCanvas().style.cursor = '';
+        setMapTooltip(null);
         return;
       }
 
@@ -431,6 +439,20 @@ export function MapPane({
         layers: queryableLayerIds,
       });
       map.getCanvas().style.cursor = features.length > 0 ? 'pointer' : '';
+      const candidates = buildFeaturePickCandidates({
+        activeLayerId: activeLayerIdRef.current,
+        features,
+        layers: visibleLayersRef.current.filter(isGeoJsonMapLayer),
+        sources: sourcesRef.current,
+      });
+      const tooltipCandidate = candidates.find(
+        (candidate) => candidate.layer?.tooltipEnabled,
+      );
+      setMapTooltip(
+        tooltipCandidate
+          ? { candidate: tooltipCandidate, x: event.point.x, y: event.point.y }
+          : null,
+      );
     }
 
     function updateVectorTileLoadingState() {
@@ -447,6 +469,11 @@ export function MapPane({
 
       loadingVectorSourceIdsRef.current.add(event.sourceId);
       updateVectorTileLoadingState();
+    }
+
+    function handleMapMouseOut() {
+      setMapTooltip(null);
+      map.getCanvas().style.cursor = '';
     }
 
     function handleSourceData(event: MapSourceDataEvent) {
@@ -1392,6 +1419,31 @@ export function MapPane({
               ))}
             </Stack>
           </ScrollArea.Autosize>
+        </Box>
+      ) : null}
+
+      {mapTooltip ? (
+        <Box
+          style={{
+            background: 'var(--mantine-color-body)',
+            border: '1px solid var(--mantine-color-default-border)',
+            borderRadius: 'var(--mantine-radius-sm)',
+            boxShadow: 'var(--mantine-shadow-sm)',
+            left: Math.min(mapTooltip.x + 12, Math.max(12, mapWidth - 280)),
+            maxWidth: 280,
+            padding: '6px 8px',
+            pointerEvents: 'none',
+            position: 'absolute',
+            top: Math.min(mapTooltip.y + 12, Math.max(12, mapHeight - 70)),
+            zIndex: 3,
+          }}
+        >
+          <Text fw={600} size="xs">
+            {mapTooltip.candidate.label}
+          </Text>
+          <Text c="dimmed" size="xs" truncate>
+            {mapTooltip.candidate.detail || 'Feature'}
+          </Text>
         </Box>
       ) : null}
 

@@ -7,6 +7,7 @@ import {
   Select,
   Slider,
   Stack,
+  Switch,
   Tabs,
   Text,
   TextInput,
@@ -257,6 +258,7 @@ export function MapLayerEditor({
     patch: {
       name?: string;
       icon?: LayerGlyphIcon;
+      tooltipEnabled?: boolean;
       style?: Partial<FlowmapMapLayer['style']>;
     },
   ) => void;
@@ -267,7 +269,10 @@ export function MapLayerEditor({
   onUpdateArcLayer: (
     layerId: string,
     patch: Partial<
-      Pick<ArcMapLayer, 'name' | 'icon' | 'color' | 'opacity' | 'width'>
+      Pick<
+        ArcMapLayer,
+        'name' | 'icon' | 'color' | 'opacity' | 'width' | 'tooltipEnabled'
+      >
     >,
   ) => void;
   onUpdateGeoJsonLayer: (
@@ -277,6 +282,7 @@ export function MapLayerEditor({
         GeoJsonMapLayer,
         | 'name'
         | 'icon'
+        | 'tooltipEnabled'
         | 'fillColor'
         | 'fillOpacity'
         | 'strokeColor'
@@ -965,10 +971,28 @@ export function MapLayerEditor({
       </Tabs.Panel>
 
       <Tabs.Panel pt="xs" value="tooltip">
-        <Alert color="blue" title="Tooltip configuration" variant="light">
-          Field selection, labels, order, and value formatting will be
-          configured here.
-        </Alert>
+        <Stack gap="sm">
+          <Switch
+            checked={layer.tooltipEnabled}
+            label="Show tooltip on hover"
+            onChange={(event) => {
+              const tooltipEnabled = event.currentTarget.checked;
+              startTransition(() => {
+                if (layer.type === 'geojson') {
+                  onUpdateGeoJsonLayer(layer.id, { tooltipEnabled });
+                } else if (layer.type === 'arc') {
+                  onUpdateArcLayer(layer.id, { tooltipEnabled });
+                } else {
+                  onUpdateFlowmapLayer(layer.id, { tooltipEnabled });
+                }
+              });
+            }}
+            size="sm"
+          />
+          <Alert color="blue" title="Tooltip configuration" variant="light">
+            Shows a compact layer and feature preview while hovering the map.
+          </Alert>
+        </Stack>
       </Tabs.Panel>
     </Tabs>
   );
