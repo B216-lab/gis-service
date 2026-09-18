@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -65,6 +66,28 @@ func resolvedField(d Dataset, id, alias string) (string, error) {
 // CompileQuery accepts field IDs and parameter values, never caller SQL fragments.
 // SQL/metric expressions come exclusively from editor-owned dataset definitions.
 func CompileQuery(q Query, lookup DatasetLookup) (CompiledQuery, error) {
+	return compileQuery(q, lookup, nil)
+}
+
+// CompileQueryWithSource scopes only q's root dataset to a server-compiled
+// relation. Source SQL and arguments are never accepted from normal queries.
+func CompileQueryWithSource(q Query, lookup DatasetLookup, sourceSQL string, sourceArgs []any) (CompiledQuery, error) {
+	if strings.TrimSpace(sourceSQL) == "" {
+		return CompiledQuery{}, fmt.Errorf("workspace source SQL is required")
+	}
+	return compileQuery(q, func(id string) (Dataset, error) {
+		d, err := lookup(id)
+		if err != nil || id != q.DatasetID {
+			return d, err
+		}
+		d.SQL = sourceSQL
+		d.Schema = ""
+		d.Table = ""
+		return d, nil
+	}, sourceArgs)
+}
+
+func compileQuery(q Query, lookup DatasetLookup, sourceArgs []any) (CompiledQuery, error) {
 	d, err := lookup(q.DatasetID)
 	if err != nil {
 		return CompiledQuery{}, err
@@ -83,7 +106,7 @@ func CompileQuery(q Query, lookup DatasetLookup) (CompiledQuery, error) {
 	if len(q.Dimensions)+len(q.Metrics) > 100 || len(q.Filters) > 100 || len(q.Having) > 100 {
 		return CompiledQuery{}, fmt.Errorf("query exceeds complexity limit")
 	}
-	out := CompiledQuery{ConnectionID: d.ConnectionID, Limit: limit}
+	out := CompiledQuery{ConnectionID: d.ConnectionID, Limit: limit, Args: append([]any(nil), sourceArgs...)}
 	selections := []string{}
 	groups := []string{}
 	selected := map[string]bool{}
@@ -352,6 +375,38 @@ func compileDatasetFilter(d Dataset, alias string, f Filter, args *[]any, depth 
 	expr, e := resolvedField(d, f.FieldID, alias)
 	if e != nil {
 		return "", e
+	}
+	if f.Operator == "within_bbox" {
+		if len(f.Values) != 4 {
+			return "", fmt.Errorf("map extent requires west, south, east, north")
+		}
+		bounds := make([]float64, 4)
+		for i, value := range f.Values {
+			switch n := value.(type) {
+			case float64:
+				bounds[i] = n
+			case int:
+				bounds[i] = float64(n)
+			default:
+				return "", fmt.Errorf("map extent must be numeric")
+			}
+			if math.IsNaN(bounds[i]) || math.IsInf(bounds[i], 0) {
+				return "", fmt.Errorf("map extent must be finite")
+			}
+		}
+		if bounds[0] < -180 || bounds[0] > 180 || bounds[2] < -180 || bounds[2] > 180 || bounds[1] < -90 || bounds[3] > 90 || bounds[1] > bounds[3] {
+			return "", fmt.Errorf("invalid map extent")
+		}
+		geometry := "ST_Transform(" + expr + "::geometry, 4326)"
+		envelope := func(west, east float64) string {
+			start := len(*args)
+			*args = append(*args, west, bounds[1], east, bounds[3])
+			return fmt.Sprintf("ST_Intersects(%s, ST_MakeEnvelope($%d, $%d, $%d, $%d, 4326))", geometry, start+1, start+2, start+3, start+4)
+		}
+		if bounds[0] > bounds[2] {
+			return "(" + envelope(bounds[0], 180) + " OR " + envelope(-180, bounds[2]) + ")", nil
+		}
+		return envelope(bounds[0], bounds[2]), nil
 	}
 	if f.Operator == "last_months" {
 		if len(f.Values) != 1 {

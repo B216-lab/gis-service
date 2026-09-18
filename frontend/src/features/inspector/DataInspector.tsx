@@ -17,6 +17,7 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
+  IconChartBar,
   IconDeviceFloppy,
   IconMapPin,
   IconPencil,
@@ -43,7 +44,12 @@ import {
   useRef,
   useState,
 } from 'react';
-
+import {
+  combineTableFilters,
+  filtersToTableFilter,
+  sourceCompatible,
+} from '../analytics/workspace-context';
+import { useWorkspaceAnalyticsStore } from '../analytics/workspace-store';
 import {
   createEmptyInsertRow,
   type DraftInsertRow,
@@ -64,6 +70,7 @@ import {
 import { SavedViewModal } from '../filters/SavedViewModal';
 import type { SavedTableView, TableFilterDefinition } from '../filters/types';
 import { useI18n } from '../i18n/i18n';
+import type { RowReference } from '../map/selection';
 import {
   commitInspectorRows,
   fetchInspectorRows,
@@ -181,6 +188,8 @@ export function DataInspector({
   const [isLoadingRows, setIsLoadingRows] = useState(false);
   const [rowsError, setRowsError] = useState('');
   const [rowsRefreshToken, setRowsRefreshToken] = useState(0);
+  const [acceptedTableFilter, setAcceptedTableFilter] =
+    useState<TableFilterDefinition | null>(null);
   const [draftUpdates, setDraftUpdates] = useState<
     Record<string, Record<string, unknown>>
   >({});
@@ -203,6 +212,8 @@ export function DataInspector({
   const [selectedGridRowId, setSelectedGridRowId] = useState<string | null>(
     null,
   );
+  const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
+  const rowSelectionInteractionRef = useRef(false);
   const [relationLabels, setRelationLabels] = useState<
     Record<string, Record<string, RelationOption>>
   >({});
@@ -238,6 +249,23 @@ export function DataInspector({
   );
   const setTableDisplayConfig = useConnectionStore(
     (state) => state.setTableDisplayConfig,
+  );
+  const requestAnalysis = useWorkspaceAnalyticsStore(
+    (state) => state.requestAnalysis,
+  );
+  const setWorkspaceSelection = useWorkspaceAnalyticsStore(
+    (state) => state.setSelection,
+  );
+  const refreshAnalytics = useWorkspaceAnalyticsStore((state) => state.refresh);
+  const workspaceFilters = useWorkspaceAnalyticsStore((state) => state.filters);
+  const workspaceFilterDataset = useWorkspaceAnalyticsStore(
+    (state) => state.filterDataset,
+  );
+  const activeWorkspaceSource = useWorkspaceAnalyticsStore(
+    (state) => state.activeSource,
+  );
+  const workspaceSelection = useWorkspaceAnalyticsStore(
+    (state) => state.selection,
   );
 
   const matchingSavedViews = useMemo(
@@ -315,6 +343,60 @@ export function DataInspector({
     });
   }, [activeSavedView?.id, mapLayers, mapSources, selectedTable]);
   const activeTableFilter = activeSavedView?.filter ?? null;
+  const workspaceTableSource = useMemo(
+    () =>
+      connection && selectedTable
+        ? {
+            connectionId: connection.id,
+            schema: selectedTable.schema,
+            table: selectedTable.name,
+            name: activeSavedView?.name ?? selectedTable.name,
+            filter: activeTableFilter,
+          }
+        : null,
+    [activeSavedView?.name, activeTableFilter, connection, selectedTable],
+  );
+  const compatibleWorkspaceFilterState = useMemo(() => {
+    const dataset = workspaceFilterDataset;
+    if (
+      !workspaceTableSource ||
+      !dataset ||
+      !sourceCompatible(workspaceTableSource, dataset)
+    ) {
+      return { filter: null, error: null };
+    }
+
+    if (
+      workspaceFilters.some(
+        (filter) => filter.datasetId && filter.datasetId !== dataset.id,
+      )
+    ) {
+      return {
+        filter: null,
+        error: 'Analytics filters belong to a different dataset.',
+      };
+    }
+
+    try {
+      return {
+        filter: filtersToTableFilter(workspaceFilters, dataset),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        filter: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Analytics filters could not be applied to this table.',
+      };
+    }
+  }, [workspaceFilterDataset, workspaceFilters, workspaceTableSource]);
+  const compatibleWorkspaceFilter = compatibleWorkspaceFilterState.filter;
+  const workspaceFilterError = compatibleWorkspaceFilterState.error;
+  const effectiveTableFilter = useMemo<TableFilterDefinition | null>(() => {
+    return combineTableFilters(activeTableFilter, compatibleWorkspaceFilter);
+  }, [activeTableFilter, compatibleWorkspaceFilter]);
   const canCreateSavedView = Boolean(
     selectedTable?.columns.some((column) => isEditableColumnType(column.type)),
   );
@@ -388,6 +470,10 @@ export function DataInspector({
     draftInserts.length +
     Object.keys(draftUpdates).length +
     Object.keys(draftDeletes).length;
+  const pendingTableFilterChange =
+    hasDirtyChanges &&
+    JSON.stringify(acceptedTableFilter) !==
+      JSON.stringify(effectiveTableFilter);
 
   const resetDraftState = useCallback(() => {
     setDraftUpdates({});
@@ -408,6 +494,28 @@ export function DataInspector({
     },
     [hasDirtyChanges],
   );
+
+  useEffect(() => {
+    if (!connection || !selectedTable || workspaceFilterError) {
+      return;
+    }
+
+    const filterChanged =
+      JSON.stringify(acceptedTableFilter) !==
+      JSON.stringify(effectiveTableFilter);
+    if (!filterChanged || hasDirtyChanges) {
+      return;
+    }
+
+    setAcceptedTableFilter(effectiveTableFilter);
+  }, [
+    acceptedTableFilter,
+    connection,
+    effectiveTableFilter,
+    hasDirtyChanges,
+    selectedTable,
+    workspaceFilterError,
+  ]);
 
   useEffect(() => {
     const nextSearch = deferredSearchInput.trim();
@@ -456,6 +564,9 @@ export function DataInspector({
     const featureRefreshVersion = featureCreateRefreshToken;
     const refreshVersion = rowsRefreshToken;
     let isActive = true;
+    if (workspaceFilterError) {
+      return;
+    }
 
     void featureRefreshVersion;
     void refreshVersion;
@@ -471,7 +582,7 @@ export function DataInspector({
           offset,
           pageSize,
           appliedSearch,
-          activeTableFilter,
+          acceptedTableFilter,
         );
 
         if (!isActive) {
@@ -501,12 +612,13 @@ export function DataInspector({
       isActive = false;
     };
   }, [
-    activeTableFilter,
+    acceptedTableFilter,
     appliedSearch,
     connection,
     featureCreateRefreshToken,
     rowsRefreshToken,
     selectedTable,
+    workspaceFilterError,
   ]);
 
   useEffect(() => {
@@ -599,7 +711,7 @@ export function DataInspector({
         nextOffset,
         pageSize,
         appliedSearch,
-        activeTableFilter,
+        acceptedTableFilter,
       );
       setRowsState(payload);
     } catch (error) {
@@ -621,6 +733,47 @@ export function DataInspector({
     startTransition(() => {
       setRowsRefreshToken((value) => value + 1);
     });
+  }
+
+  function handleAnalyzeTable() {
+    if (!connection || !selectedTable) {
+      return;
+    }
+
+    const sourceSelection =
+      selectedRowReferences.length > 0
+        ? selectedRowReferences
+        : activeWorkspaceSource?.connectionId === connection.id &&
+            activeWorkspaceSource.schema === selectedTable.schema &&
+            activeWorkspaceSource.table === selectedTable.name
+          ? workspaceSelection
+          : [];
+    requestAnalysis({
+      connectionId: connection.id,
+      schema: selectedTable.schema,
+      table: selectedTable.name,
+      name: activeSavedView?.name ?? selectedTableAlias ?? selectedTable.name,
+      geometryColumn:
+        selectedTable.geometryColumns.length === 1
+          ? selectedTable.geometryColumns[0].name
+          : undefined,
+      ...(activeTableFilter ? { filter: activeTableFilter } : {}),
+    });
+    setWorkspaceSelection(sourceSelection);
+  }
+
+  function handleApplyPendingTableFilter() {
+    if (!pendingTableFilterChange) {
+      return;
+    }
+
+    if (!confirmDraftReset('applying analytics filters')) {
+      return;
+    }
+
+    resetDraftState();
+    setSaveMessage('');
+    setAcceptedTableFilter(effectiveTableFilter);
   }
 
   function handleAddDraftRow() {
@@ -781,6 +934,7 @@ export function DataInspector({
       setSaveMessage(
         `Saved ${payload.applied} change${payload.applied === 1 ? '' : 's'}.`,
       );
+      refreshAnalytics();
       refreshMapSourcesForConnection(connection.id);
       startTransition(() => {
         setRowsRefreshToken((value) => value + 1);
@@ -1005,6 +1159,62 @@ export function DataInspector({
           .join(', ')
       : '';
 
+  const selectedRowReferences = useMemo<RowReference[]>(
+    () =>
+      inspectorGridRows.flatMap((gridRow) => {
+        if (
+          gridRow.kind !== 'record' ||
+          !rowSelection[gridRow.id] ||
+          !gridRow.row.rowKey
+        ) {
+          return [];
+        }
+
+        return [
+          {
+            primaryKey: activePrimaryKey,
+            rowKey: gridRow.row.rowKey,
+          },
+        ];
+      }),
+    [activePrimaryKey, inspectorGridRows, rowSelection],
+  );
+
+  useEffect(() => {
+    if (!rowSelectionInteractionRef.current) {
+      return;
+    }
+
+    rowSelectionInteractionRef.current = false;
+    if (
+      !activeWorkspaceSource ||
+      !connection ||
+      !selectedTable ||
+      activeWorkspaceSource.connectionId !== connection.id ||
+      activeWorkspaceSource.schema !== selectedTable.schema ||
+      activeWorkspaceSource.table !== selectedTable.name
+    ) {
+      return;
+    }
+
+    setWorkspaceSelection(selectedRowReferences);
+  }, [
+    activeWorkspaceSource,
+    connection,
+    selectedRowReferences,
+    selectedTable,
+    setWorkspaceSelection,
+  ]);
+
+  useEffect(() => {
+    const tableKey = `${connection?.id ?? ''}:${selectedTable?.schema ?? ''}.${selectedTable?.name ?? ''}`;
+    setRowSelection({});
+    setAcceptedTableFilter(null);
+    if (!tableKey) {
+      return;
+    }
+  }, [connection?.id, selectedTable?.name, selectedTable?.schema]);
+
   useEffect(() => {
     void relatedRowsRefreshToken;
     if (
@@ -1141,6 +1351,8 @@ export function DataInspector({
   const inspectorTable = useMantineReactTable<InspectorGridRow>({
     columns: inspectorColumns,
     data: inspectorGridRows,
+    enableRowSelection: ({ original }) =>
+      original.kind === 'record' && Boolean(original.row.rowKey),
     enableBottomToolbar: false,
     enableColumnActions: false,
     enableColumnOrdering: true,
@@ -1279,8 +1491,13 @@ export function DataInspector({
     state: {
       columnVisibility,
       isLoading: isLoadingRows,
+      rowSelection,
       showAlertBanner: Boolean(rowsError),
       showProgressBars: isLoadingRows,
+    },
+    onRowSelectionChange: (updater) => {
+      rowSelectionInteractionRef.current = true;
+      setRowSelection(updater);
     },
   });
 
@@ -1401,6 +1618,7 @@ export function DataInspector({
                     startTransition(() => {
                       setRowsRefreshToken((value) => value + 1);
                     });
+                    refreshAnalytics();
                     refreshMapSourcesForConnection(connection.id);
                   }}
                   onSaved={(values) => {
@@ -1434,6 +1652,7 @@ export function DataInspector({
                         },
                       };
                     });
+                    refreshAnalytics();
                     refreshMapSourcesForConnection(connection.id);
                     setRelatedRowsRefreshToken((value) => value + 1);
                   }}
@@ -1518,6 +1737,15 @@ export function DataInspector({
             ) : null}
           </Group>
           <Group gap="xs" wrap="nowrap">
+            <Button
+              disabled={!selectedTable}
+              leftSection={<IconChartBar size={14} />}
+              onClick={handleAnalyzeTable}
+              size="compact-sm"
+              variant="light"
+            >
+              Analyze
+            </Button>
             <Button
               disabled={!canCreateSavedView}
               leftSection={<IconPlus size={14} />}
@@ -1633,6 +1861,35 @@ export function DataInspector({
           <Text c="red" size="sm">
             {rowsError}
           </Text>
+        ) : null}
+
+        {workspaceFilterError ? (
+          <Alert
+            color="orange"
+            title="Analytics filter not applied"
+            variant="light"
+          >
+            {workspaceFilterError}
+          </Alert>
+        ) : null}
+
+        {pendingTableFilterChange && !workspaceFilterError ? (
+          <Alert
+            color="orange"
+            title="Analytics filter waiting for unsaved edits"
+            variant="light"
+          >
+            Apply the new analytics filter after deciding what to do with the
+            pending table changes.
+            <Button
+              mt="xs"
+              onClick={handleApplyPendingTableFilter}
+              size="compact-sm"
+              variant="light"
+            >
+              Apply analytics filter
+            </Button>
+          </Alert>
         ) : null}
 
         {saveError ? (

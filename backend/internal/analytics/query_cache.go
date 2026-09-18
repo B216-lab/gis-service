@@ -60,6 +60,13 @@ func (s *QueryService) ExecuteScopedFresh(ctx context.Context, q Query, lookup D
 	if e != nil {
 		return QueryResult{}, e
 	}
+	return s.executeCompiledScopedFresh(ctx, compiled, revisions, scope, refresh)
+}
+
+func (s *QueryService) executeCompiledScopedFresh(ctx context.Context, compiled CompiledQuery, revisions map[string]int, scope string, refresh bool) (QueryResult, error) {
+	if e := ctx.Err(); e != nil {
+		return QueryResult{}, e
+	}
 	keyData, e := json.Marshal(struct {
 		Scope     string
 		Compiled  CompiledQuery

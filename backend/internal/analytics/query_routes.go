@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,13 @@ import (
 
 type QueryExecutor interface {
 	ExecuteAnalytics(context.Context, string, string, []any, int) ([]map[string]any, []postgres.ColumnMeta, bool, error)
+}
+type WorkspaceScopeCompiler interface {
+	CompileAnalyticsWorkspaceScope(context.Context, postgres.AnalyticsWorkspaceSource) (postgres.AnalyticsWorkspaceScope, error)
+}
+type WorkspaceQueryRequest struct {
+	Query  Query                             `json:"query"`
+	Source postgres.AnalyticsWorkspaceSource `json:"source"`
 }
 type QueryResult struct {
 	Rows      []map[string]any      `json:"rows"`
@@ -55,6 +63,9 @@ func RegisterQueryRoutes(h *Handler, store *Store, executor QueryExecutor) *Quer
 		if err := decoder.Decode(v); err != nil {
 			return fmt.Errorf("invalid query request")
 		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return fmt.Errorf("invalid query request")
+		}
 		return nil
 	}
 	reply := func(w http.ResponseWriter, result QueryResult, err error) {
@@ -73,6 +84,51 @@ func RegisterQueryRoutes(h *Handler, store *Store, executor QueryExecutor) *Quer
 			return
 		}
 		result, e := service.ExecuteScopedFresh(r.Context(), q, store.Dataset, "editor", requestNoCache(r))
+		reply(w, result, e)
+	}))
+	h.Mux.HandleFunc("POST /api/v1/analytics/workspace-query", noStore(func(w http.ResponseWriter, r *http.Request) {
+		compiler, ok := executor.(WorkspaceScopeCompiler)
+		if !ok {
+			reply(w, QueryResult{}, fmt.Errorf("workspace source scopes are unavailable"))
+			return
+		}
+		var req WorkspaceQueryRequest
+		if e := decode(w, r, &req); e != nil {
+			reply(w, QueryResult{}, e)
+			return
+		}
+		req.Source.TrimSpaces()
+		root, e := store.Dataset(req.Query.DatasetID)
+		if strings.TrimSpace(root.SQL) != "" {
+			reply(w, QueryResult{}, fmt.Errorf("workspace source requires a physical dataset"))
+			return
+		}
+		if e != nil || !workspaceSourceMatchesDataset(req.Source, root) {
+			reply(w, QueryResult{}, fmt.Errorf("workspace source does not match dataset"))
+			return
+		}
+		scope, e := compiler.CompileAnalyticsWorkspaceScope(r.Context(), req.Source)
+		if e != nil {
+			reply(w, QueryResult{}, e)
+			return
+		}
+		revisions := map[string]int{}
+		compiled, e := CompileQueryWithSource(req.Query, func(id string) (Dataset, error) {
+			if id == req.Query.DatasetID {
+				revisions[id] = root.Revision
+				return root, nil
+			}
+			d, lookupErr := store.Dataset(id)
+			if lookupErr == nil {
+				revisions[id] = d.Revision
+			}
+			return d, lookupErr
+		}, scope.SQL, scope.Args)
+		if e != nil {
+			reply(w, QueryResult{}, e)
+			return
+		}
+		result, e := service.executeCompiledScopedFresh(r.Context(), compiled, revisions, "workspace-editor", requestNoCache(r))
 		reply(w, result, e)
 	}))
 	h.Mux.HandleFunc("POST /api/v1/analytics/preview", noStore(func(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +174,12 @@ func RegisterQueryRoutes(h *Handler, store *Store, executor QueryExecutor) *Quer
 		reply(w, result, e)
 	}))
 	return service
+}
+
+func workspaceSourceMatchesDataset(source postgres.AnalyticsWorkspaceSource, dataset Dataset) bool {
+	return source.ConnectionID == strings.TrimSpace(dataset.ConnectionID) &&
+		source.Schema == strings.TrimSpace(dataset.Schema) &&
+		source.Table == strings.TrimSpace(dataset.Table)
 }
 
 func requestNoCache(r *http.Request) bool {

@@ -120,7 +120,13 @@ func (service *Service) ListFlowmapData(
 		endLonExpression,
 		endLatExpression,
 	)
-	parameters := []interface{}{}
+	filterClause, parameters, err := buildQueryFilterClause(columnDefinitions, request.Filter, 0)
+	if err != nil {
+		return nil, err
+	}
+	if filterClause != "" {
+		notNullPredicates = append(notNullPredicates, fmt.Sprintf("(%s)", filterClause))
+	}
 	if request.RowKey != nil {
 		if err := validateRowKey(request.RowKey, primaryKey); err != nil {
 			return nil, err

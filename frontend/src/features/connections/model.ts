@@ -55,6 +55,7 @@ export interface FlowmapTableSource {
   table: string;
   fullName: string;
   kind: string;
+  filter?: TableFilterDefinition | null;
   columns: {
     startMode: 'coordinates' | 'geometry';
     startLon: string;

@@ -30,6 +30,10 @@ import maplibregl, {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type HexColor, TerraDraw, TerraDrawPolygonMode } from 'terra-draw';
 import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter';
+import { AnalyticsMapLayerQueries } from '../analytics/AnalyticsMapLayerQueries';
+import { createGeographicDeckLayers } from '../analytics/geographic-deck-layers';
+import { useWorkspaceAnalyticsMapLayerStore } from '../analytics/workspace-map-layer-store';
+import { useWorkspaceAnalyticsStore } from '../analytics/workspace-store';
 
 import type {
   DatabaseConnection,
@@ -195,6 +199,18 @@ export function MapPane({
   );
   const [isSavingFeature, setIsSavingFeature] = useState(false);
   const [featureError, setFeatureError] = useState('');
+  const analyticsMapLayers = useWorkspaceAnalyticsMapLayerStore(
+    (state) => state.layers,
+  );
+  const analyticsMapResults = useWorkspaceAnalyticsMapLayerStore(
+    (state) => state.results,
+  );
+  const workspaceSource = useWorkspaceAnalyticsStore(
+    (state) => state.activeSource,
+  );
+  const setWorkspaceFilters = useWorkspaceAnalyticsStore(
+    (state) => state.setFilters,
+  );
 
   visibleLayersRef.current = visibleLayers;
   sourcesRef.current = sources;
@@ -475,13 +491,26 @@ export function MapPane({
       updateVectorTileLoadingState();
     }
 
+    function publishMapExtent() {
+      const bounds = map.getBounds();
+      useWorkspaceAnalyticsStore.getState().setViewport({
+        west: bounds.getWest(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        north: bounds.getNorth(),
+      });
+    }
+
     map.once('load', () => {
       setIsMapReady(true);
       map.resize();
+      publishMapExtent();
     });
+    map.on('moveend', publishMapExtent);
     map.on('click', handleMapClick);
     map.on('movestart', closeFeaturePicker);
     map.on('mousemove', handleMapMouseMove);
+    map.on('mouseout', handleMapMouseOut);
     map.on('sourcedataloading', handleSourceDataLoading);
     map.on('sourcedata', handleSourceData);
     map.on('sourcedataabort', handleSourceDataAbort);
@@ -496,8 +525,11 @@ export function MapPane({
       drawRef.current?.stop();
       drawRef.current = null;
       map.off('click', handleMapClick);
+      map.off('moveend', publishMapExtent);
+      useWorkspaceAnalyticsStore.getState().setViewport(null);
       map.off('movestart', closeFeaturePicker);
       map.off('mousemove', handleMapMouseMove);
+      map.off('mouseout', handleMapMouseOut);
       map.off('sourcedataloading', handleSourceDataLoading);
       map.off('sourcedata', handleSourceData);
       map.off('sourcedataabort', handleSourceDataAbort);
@@ -1011,6 +1043,33 @@ export function MapPane({
 
       return layersList;
     }, []);
+    for (const analyticsLayer of analyticsMapLayers) {
+      if (!analyticsLayer.visible) continue;
+      const results = analyticsMapResults[analyticsLayer.id] || [];
+      if (!results.length) continue;
+      deckLayers.push(
+        ...createGeographicDeckLayers(
+          results,
+          `workspace-analytics-map:${analyticsLayer.id}`,
+          analyticsLayer.reference
+            ? undefined
+            : (picked) => {
+                const dataset = results.find(
+                  (result) => result.chart.datasetId === picked[0]?.datasetId,
+                )?.dataset;
+                if (dataset && workspaceSource) {
+                  setWorkspaceFilters(
+                    picked.map((filter) => ({
+                      ...filter,
+                      sourceWidgetId: `workspace-map:${analyticsLayer.id}`,
+                    })),
+                    dataset,
+                  );
+                }
+              },
+        ),
+      );
+    }
 
     overlayRef.current.setProps({
       layers: deckLayers as never,
@@ -1045,12 +1104,16 @@ export function MapPane({
     });
   }, [
     cacheVersion,
+    analyticsMapLayers,
+    analyticsMapResults,
     connection,
     isMapReady,
     mapSelection,
     styleVersion,
     sources,
+    setWorkspaceFilters,
     visibleLayers,
+    workspaceSource,
   ]);
 
   useEffect(() => {
@@ -1243,6 +1306,7 @@ export function MapPane({
         overflow: 'hidden',
       }}
     >
+      <AnalyticsMapLayerQueries />
       <Box
         ref={containerRef}
         style={{

@@ -334,6 +334,7 @@ export async function fetchFlowmapSourceData(
       endGeometryColumn: source.columns.endGeometry,
       magnitudeColumn: source.columns.magnitude,
       defaultMagnitude: source.columns.defaultMagnitude,
+      filter: source.filter ?? null,
       spatialFilter: source.spatialFilter ?? null,
       rowKey: source.rowRef?.rowKey ?? null,
       limit: 5000,

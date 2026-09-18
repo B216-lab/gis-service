@@ -6,6 +6,7 @@ import {
   useComputedColorScheme,
 } from '@mantine/core';
 import {
+  IconChartBar,
   IconDatabase,
   IconDatabaseSearch,
   IconLayoutGrid,
@@ -51,7 +52,9 @@ export type WorkspacePanelId =
 const workspaceStorageKey = 'geopanel-workspace-layout-v1';
 const dynamicPanelPrefix = 'workspace-dynamic:';
 
-export type WorkspaceDynamicPanelIcon = 'record' | 'related';
+type WorkspaceLayoutPreset = 'balanced' | 'data' | 'map';
+
+export type WorkspaceDynamicPanelIcon = 'record' | 'related' | 'chart';
 
 export interface WorkspaceDynamicPanel {
   content: ReactNode;
@@ -184,6 +187,7 @@ const panelIcons = {
 } as const;
 
 const dynamicPanelIcons = {
+  chart: IconChartBar,
   record: IconPencil,
   related: IconDatabaseSearch,
 } as const;

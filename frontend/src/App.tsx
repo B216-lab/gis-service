@@ -7,7 +7,6 @@ import {
   Group,
   Loader,
   Menu,
-  Modal,
   Paper,
   ScrollArea,
   Select,
@@ -19,8 +18,6 @@ import {
 import {
   IconChartBar,
   IconDatabaseSearch,
-  IconInfoCircle,
-  IconLayersIntersect,
   IconRoute,
   IconSettings,
 } from '@tabler/icons-react';
@@ -29,9 +26,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnalyticsWorkspace } from './features/analytics/AnalyticsWorkspace';
 import { SharedDashboardPage } from './features/analytics/DashboardViewer';
 import {
+  WorkspaceAnalytics,
+  WorkspaceAnalyticsOverlays,
+} from './features/analytics/WorkspaceAnalytics';
+import {
+  combineTableFilters,
+  filtersForSource,
+} from './features/analytics/workspace-context';
+import {
+  sourceCompatible,
+  useWorkspaceAnalyticsStore,
+} from './features/analytics/workspace-store';
+import {
   createSavedViewSelectionKey,
   findLayerSource,
-  formatFlowmapSourceColumns,
   formatMapSelectionCount,
   formatMapSelectionObjectType,
   getMapSelectionBadgeColor,
@@ -42,7 +50,10 @@ import {
   EmptyState,
   PanelFrame,
 } from './features/app/chrome';
-import { WorkspaceLayout } from './features/app/WorkspaceLayout';
+import {
+  useWorkspacePanels,
+  WorkspaceLayout,
+} from './features/app/WorkspaceLayout';
 import { AuthManagementModal } from './features/auth/AuthManagementModal';
 import { type AuthUser, useAuthStore } from './features/auth/store';
 import { ConnectionManager } from './features/connections/ConnectionManager';
@@ -108,7 +119,7 @@ import { MapPane } from './features/map/MapPane';
 import type { MapSelection } from './features/map/selection';
 import { OnboardingTour } from './features/onboarding/OnboardingTour';
 
-type RightPaneTab = 'layer' | 'data' | 'analysis';
+type RightPaneTab = 'data' | 'analysis';
 
 interface GeoJsonSpatialFilterTarget {
   layer: GeoJsonMapLayer | FlowmapMapLayer | ArcMapLayer;
@@ -120,8 +131,59 @@ interface LocateFeatureBoundsState {
   bounds: GeoBounds;
 }
 
+function analyticsSourceForLayer(layer: MapLayer, source: MapSource) {
+  return {
+    connectionId: source.connectionId,
+    schema: source.schema,
+    table: source.table,
+    name: layer.name,
+    layerId: layer.id,
+    filter: combineTableFilters(
+      source.filter,
+      source.type === 'flowmap-table' && source.rowRef
+        ? {
+            conditions: source.rowRef.primaryKey.map((column) => ({
+              column,
+              operator: 'eq' as const,
+              value: String(source.rowRef?.rowKey[column]),
+            })),
+          }
+        : null,
+    ),
+    spatialFilter: source.spatialFilter,
+    geometryColumn:
+      source.type === 'geojson-table' ? source.geometryColumn : undefined,
+    flowColumns: source.type === 'flowmap-table' ? source.columns : undefined,
+  };
+}
+
+function AnalyticsLibraryDock({
+  opened,
+  onClose,
+}: {
+  opened: number;
+  onClose: () => void;
+}) {
+  const { registerPanel, closePanel, focusPanel } = useWorkspacePanels();
+  useEffect(() => {
+    if (opened) {
+      registerPanel({
+        id: 'analytics-library',
+        name: 'Analytics library',
+        icon: 'chart',
+        content: <AnalyticsWorkspace />,
+        floatRect: { width: 920, height: 720, top: 70, right: 80 },
+        onClose,
+      });
+      focusPanel('analytics-library');
+    } else {
+      closePanel('analytics-library');
+    }
+  }, [opened, onClose, registerPanel, closePanel, focusPanel]);
+  return null;
+}
+
 function RightPaneTabs({
-  activeLayer,
   activeSource,
   connection,
   geoJsonSpatialFilterTargets,
@@ -131,6 +193,7 @@ function RightPaneTabs({
   onClearSpatialFilter,
   onOpenTable,
   selectedTab,
+  onOpenAnalyticsLibrary,
 }: {
   activeLayer: MapLayer | null;
   activeSource: MapSource | null;
@@ -145,15 +208,30 @@ function RightPaneTabs({
   onClearSpatialFilter: (sourceId: string) => void;
   onOpenTable: (tableKey: string) => void | Promise<void>;
   selectedTab: RightPaneTab;
+  onOpenAnalyticsLibrary: () => void;
 }) {
+  const { focusPanel } = useWorkspacePanels();
+  const analysisRequested = useWorkspaceAnalyticsStore(
+    (state) => state.requested,
+  );
+  useEffect(() => {
+    if (analysisRequested) {
+      onChangeTab('analysis');
+      focusPanel('workspace');
+      useWorkspaceAnalyticsStore.setState({ requested: false });
+    }
+  }, [analysisRequested, focusPanel, onChangeTab]);
   const selectedRowCount = mapSelection?.rowRefs.length ?? 0;
+  const hasDataContext = Boolean(mapSelection || activeSource?.spatialFilter);
+  const visibleTab =
+    selectedTab === 'data' && !hasDataContext ? 'analysis' : selectedTab;
 
   return (
     <Tabs
       h="100%"
-      keepMounted={false}
+      keepMounted
       onChange={(value) => {
-        if (value === 'layer' || value === 'data' || value === 'analysis') {
+        if (value === 'data' || value === 'analysis') {
           onChangeTab(value);
         }
       }}
@@ -170,191 +248,58 @@ function RightPaneTabs({
           paddingTop: 'var(--mantine-spacing-md)',
         },
       }}
-      value={selectedTab}
+      value={visibleTab}
     >
       <Tabs.List grow>
-        <Tabs.Tab leftSection={<IconSettings size={14} />} value="layer">
-          Layer
-        </Tabs.Tab>
-        <Tabs.Tab
-          leftSection={<IconDatabaseSearch size={14} />}
-          rightSection={
-            selectedRowCount > 0 ? (
-              <Badge color="blue" size="xs" variant="light">
-                {selectedRowCount}
-              </Badge>
-            ) : null
-          }
-          value="data"
-        >
-          Data
-        </Tabs.Tab>
+        {hasDataContext ? (
+          <Tabs.Tab
+            leftSection={<IconDatabaseSearch size={14} />}
+            rightSection={
+              selectedRowCount > 0 ? (
+                <Badge color="blue" size="xs" variant="light">
+                  {selectedRowCount}
+                </Badge>
+              ) : null
+            }
+            value="data"
+          >
+            Data
+          </Tabs.Tab>
+        ) : null}
         <Tabs.Tab leftSection={<IconChartBar size={14} />} value="analysis">
           Analysis
         </Tabs.Tab>
       </Tabs.List>
 
-      <Tabs.Panel value="layer">
-        <LayerWorkspacePanel
-          activeLayer={activeLayer}
-          activeSource={activeSource}
-          mapSelection={mapSelection}
-          onClearSpatialFilter={onClearSpatialFilter}
-        />
-      </Tabs.Panel>
-
       <Tabs.Panel value="data">
         <DataWorkspacePanel
+          activeSource={activeSource}
           connection={connection}
           geoJsonSpatialFilterTargets={geoJsonSpatialFilterTargets}
           mapSelection={mapSelection}
           onApplySpatialFilter={onApplySpatialFilter}
+          onClearSpatialFilter={onClearSpatialFilter}
           onOpenTable={onOpenTable}
         />
       </Tabs.Panel>
 
       <Tabs.Panel value="analysis">
-        <AnalysisWorkspacePanel
-          activeLayer={activeLayer}
-          activeSource={activeSource}
-          mapSelection={mapSelection}
-        />
+        <WorkspaceAnalytics onOpenLibrary={onOpenAnalyticsLibrary} />
       </Tabs.Panel>
     </Tabs>
   );
 }
 
-function LayerWorkspacePanel({
-  activeLayer,
-  activeSource,
-  mapSelection,
-  onClearSpatialFilter,
-}: {
-  activeLayer: MapLayer | null;
-  activeSource: MapSource | null;
-  mapSelection: MapSelection | null;
-  onClearSpatialFilter: (sourceId: string) => void;
-}) {
-  if (!activeLayer || !activeSource) {
-    return (
-      <EmptyState
-        detail="Select layer from left panel or click map object to set active layer."
-        label="No Active Layer"
-      />
-    );
-  }
-
-  return (
-    <Stack h="100%" gap="md">
-      <Paper p="md" radius="md" withBorder>
-        <Stack gap="sm">
-          <Group justify="space-between" wrap="nowrap">
-            <Group gap="sm" wrap="nowrap">
-              <ThemeIcon color="blue" radius="xl" size="lg" variant="light">
-                <IconLayersIntersect size={16} />
-              </ThemeIcon>
-              <div>
-                <Text fw={700} size="sm">
-                  {activeLayer.name}
-                </Text>
-                <Text c="dimmed" size="xs">
-                  {activeSource.schema}.{activeSource.table}
-                </Text>
-              </div>
-            </Group>
-            <Badge
-              color={activeLayer.visible ? 'teal' : 'gray'}
-              variant="light"
-            >
-              {activeLayer.visible ? 'Visible' : 'Hidden'}
-            </Badge>
-          </Group>
-
-          <Group gap="xs">
-            <Badge color="gray" variant="outline">
-              {activeLayer.type}
-            </Badge>
-            <Badge color="gray" variant="outline">
-              {activeSource.type}
-            </Badge>
-            {mapSelection?.layerId === activeLayer.id ? (
-              <Badge color="blue" variant="light">
-                Current map selection
-              </Badge>
-            ) : null}
-          </Group>
-        </Stack>
-      </Paper>
-
-      <Alert
-        color="blue"
-        icon={<IconInfoCircle size={16} />}
-        title="Layer controls next"
-        variant="light"
-      >
-        Right pane owns layer settings next. Existing style editor stays in left
-        pane for now so data inspection can land without blocking that move.
-      </Alert>
-
-      <Paper
-        p="md"
-        radius="md"
-        style={{
-          flex: 1,
-          minHeight: 0,
-        }}
-        withBorder
-      >
-        <Stack gap="xs">
-          <Text fw={600} size="sm">
-            Source summary
-          </Text>
-          <Text c="dimmed" size="sm">
-            Table: {activeSource.fullName}
-          </Text>
-          {activeSource.type === 'geojson-table' ? (
-            <Text c="dimmed" size="sm">
-              Geometry: {activeSource.geometryColumn} (
-              {activeSource.geometryType})
-            </Text>
-          ) : (
-            <Text c="dimmed" size="sm">
-              Flow columns: {formatFlowmapSourceColumns(activeSource.columns)}
-            </Text>
-          )}
-          {activeSource.spatialFilter ? (
-            <Alert color="grape" title="Spatial filter active" variant="light">
-              <Stack gap="xs">
-                <Text size="sm">
-                  {formatSpatialFilterPredicate(
-                    activeSource.spatialFilter.predicate,
-                    activeSource.type,
-                  )}{' '}
-                  {activeSource.spatialFilter.sourceLayerName}
-                </Text>
-                <Button
-                  onClick={() => onClearSpatialFilter(activeSource.id)}
-                  size="compact-sm"
-                  variant="light"
-                >
-                  Clear Spatial Filter
-                </Button>
-              </Stack>
-            </Alert>
-          ) : null}
-        </Stack>
-      </Paper>
-    </Stack>
-  );
-}
-
 function DataWorkspacePanel({
+  activeSource,
   connection,
   geoJsonSpatialFilterTargets,
   mapSelection,
   onApplySpatialFilter,
+  onClearSpatialFilter,
   onOpenTable,
 }: {
+  activeSource: MapSource | null;
   connection: DatabaseConnection | null;
   geoJsonSpatialFilterTargets: GeoJsonSpatialFilterTarget[];
   mapSelection: MapSelection | null;
@@ -362,6 +307,7 @@ function DataWorkspacePanel({
     targetSourceId: string,
     predicate: SpatialFilterPredicate,
   ) => void;
+  onClearSpatialFilter: (sourceId: string) => void;
   onOpenTable: (tableKey: string) => void | Promise<void>;
 }) {
   const [lookupState, setLookupState] =
@@ -494,6 +440,26 @@ function DataWorkspacePanel({
 
   return (
     <Stack h="100%" gap="md">
+      {activeSource?.spatialFilter ? (
+        <Alert color="grape" title="Spatial filter active" variant="light">
+          <Stack gap="xs">
+            <Text size="sm">
+              {formatSpatialFilterPredicate(
+                activeSource.spatialFilter.predicate,
+                activeSource.type,
+              )}{' '}
+              {activeSource.spatialFilter.sourceLayerName}
+            </Text>
+            <Button
+              onClick={() => onClearSpatialFilter(activeSource.id)}
+              size="compact-sm"
+              variant="light"
+            >
+              Clear Spatial Filter
+            </Button>
+          </Stack>
+        </Alert>
+      ) : null}
       <Paper p="md" radius="md" withBorder>
         <Stack gap="sm">
           <Group justify="space-between" wrap="nowrap">
@@ -946,81 +912,6 @@ function boundsFromPoints(points: [number, number][]): GeoBounds {
   };
 }
 
-function AnalysisWorkspacePanel({
-  activeLayer,
-  activeSource,
-  mapSelection,
-}: {
-  activeLayer: MapLayer | null;
-  activeSource: MapSource | null;
-  mapSelection: MapSelection | null;
-}) {
-  if (!activeLayer || !activeSource) {
-    return (
-      <EmptyState
-        detail="Analytics widgets will react to active layer and map selection."
-        label="No Analysis Context"
-      />
-    );
-  }
-
-  return (
-    <Stack h="100%" gap="md">
-      <Group grow>
-        <Paper p="md" radius="md" withBorder>
-          <Text c="dimmed" size="xs">
-            Active layer
-          </Text>
-          <Text fw={700} size="lg">
-            {activeLayer.name}
-          </Text>
-        </Paper>
-        <Paper p="md" radius="md" withBorder>
-          <Text c="dimmed" size="xs">
-            Source
-          </Text>
-          <Text fw={700} size="lg">
-            {activeSource.type === 'flowmap-table' ? 'Flowmap' : 'Geometry'}
-          </Text>
-        </Paper>
-      </Group>
-
-      <Paper p="md" radius="md" withBorder>
-        <Stack gap="xs">
-          <Text fw={600} size="sm">
-            Analytics workspace
-          </Text>
-          <Text c="dimmed" size="sm">
-            Use this tab for widgets, charts, and infographics bound to current
-            layer or map selection.
-          </Text>
-          {mapSelection ? (
-            <Badge
-              color={getMapSelectionBadgeColor(mapSelection.objectType)}
-              variant="light"
-            >
-              Focused on{' '}
-              {formatMapSelectionObjectType(
-                mapSelection.objectType,
-              ).toLowerCase()}{' '}
-              with {formatMapSelectionCount(mapSelection.rowRefs.length)}
-            </Badge>
-          ) : (
-            <Badge color="gray" variant="outline">
-              No object selected
-            </Badge>
-          )}
-        </Stack>
-      </Paper>
-
-      <EmptyState
-        detail="Charts and analysis widgets plug in here next without changing map/data selection model."
-        label="Widgets Next"
-      />
-    </Stack>
-  );
-}
-
 function AppSettings({
   basemapId,
   onBasemapChange,
@@ -1141,7 +1032,8 @@ function GISApp() {
 }
 
 function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
-  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(0);
+  const closeAnalyticsLibrary = useCallback(() => setAnalyticsOpen(0), []);
   const [authManagementOpen, setAuthManagementOpen] = useState(false);
   const user = useAuthStore((state) => state.user);
   const connections = useConnectionStore((state) => state.connections);
@@ -1212,7 +1104,39 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
   const [mapSelection, setMapSelection] = useState<MapSelection | null>(null);
   const [locateFeatureBounds, setLocateFeatureBounds] =
     useState<LocateFeatureBoundsState | null>(null);
-  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('layer');
+  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('data');
+  const analyticsFilters = useWorkspaceAnalyticsStore((state) => state.filters);
+  const analyticsFilterDataset = useWorkspaceAnalyticsStore(
+    (state) => state.filterDataset,
+  );
+  const workspaceMapSources = useMemo(() => {
+    const errors: string[] = [];
+    const sources = mapSources.map((source) => {
+      const context = { ...source, name: source.fullName };
+      if (
+        !analyticsFilters.length ||
+        !analyticsFilterDataset ||
+        !sourceCompatible(context, analyticsFilterDataset)
+      )
+        return source;
+      try {
+        return {
+          ...source,
+          filter: filtersForSource(
+            analyticsFilters,
+            analyticsFilterDataset,
+            context,
+          ),
+        };
+      } catch (cause) {
+        errors.push(
+          `${source.fullName}: ${cause instanceof Error ? cause.message : 'Filter unavailable'}`,
+        );
+        return source;
+      }
+    });
+    return { sources, errors };
+  }, [mapSources, analyticsFilters, analyticsFilterDataset]);
   const [featureCreateRefreshToken, setFeatureCreateRefreshToken] = useState(0);
   const restoredCatalogSelectionRef = useRef<string | null>(null);
 
@@ -1271,6 +1195,25 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
   const selectedInspectableTable = selectedSourceTableKey
     ? (tableMetadataByKey[selectedSourceTableKey] ?? null)
     : null;
+  useEffect(() => {
+    const state = useWorkspaceAnalyticsStore.getState();
+    const source = state.activeSource;
+    if (
+      !selectedInspectableTable ||
+      !source ||
+      source.layerId ||
+      source.connectionId !== selectedConnectionId ||
+      source.schema !== selectedInspectableTable.schema ||
+      source.table !== selectedInspectableTable.name
+    )
+      return;
+    const geometryColumn =
+      selectedInspectableTable.geometryColumns.length === 1
+        ? selectedInspectableTable.geometryColumns[0].name
+        : undefined;
+    if (source.geometryColumn !== geometryColumn)
+      state.setSource({ ...source, geometryColumn });
+  }, [selectedInspectableTable, selectedConnectionId]);
   const visibleTableOptions = useMemo(
     () =>
       selectedSchemaNames.flatMap(
@@ -1306,8 +1249,39 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
       }
 
       setSelectedTable(selectedConnectionId, tableKey);
+      const selection = parseTableSelectionKey(tableKey);
+      const state = useConnectionStore.getState();
+      const view =
+        selection?.kind === 'view'
+          ? state.savedTableViews.find((item) => item.id === selection.value)
+          : null;
+      const table = Object.values(tableMetadataByKey).find((item) =>
+        view
+          ? item.schema === view.sourceSchema && item.name === view.sourceTable
+          : item.fullName === selection?.value,
+      );
+      const source = view
+        ? {
+            schema: view.sourceSchema,
+            table: view.sourceTable,
+            name: view.name,
+            filter: view.filter,
+          }
+        : table
+          ? { schema: table.schema, table: table.name, name: table.fullName }
+          : null;
+      if (source) {
+        useWorkspaceAnalyticsStore.getState().setSource({
+          connectionId: selectedConnectionId,
+          ...source,
+          geometryColumn:
+            table?.geometryColumns.length === 1
+              ? table.geometryColumns[0].name
+              : undefined,
+        });
+      }
     },
-    [selectedConnectionId, setSelectedTable],
+    [selectedConnectionId, setSelectedTable, tableMetadataByKey],
   );
   const updateSelectedSchemaNames = useCallback(
     (update: (current: string[]) => string[]) => {
@@ -1655,6 +1629,18 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
   const activeLayerSource = activeLayer
     ? (findLayerSource(mapSources, activeLayer) ?? null)
     : null;
+  useEffect(() => {
+    const state = useWorkspaceAnalyticsStore.getState();
+    if (
+      activeLayer &&
+      activeLayerSource &&
+      state.activeSource?.layerId === activeLayer.id
+    ) {
+      const source = analyticsSourceForLayer(activeLayer, activeLayerSource);
+      if (JSON.stringify(state.activeSource) !== JSON.stringify(source))
+        state.setSource(source);
+    }
+  }, [activeLayer, activeLayerSource]);
   const geoJsonSpatialFilterTargets = useMemo(
     () =>
       selectedConnectionMapLayers.flatMap((layer) => {
@@ -1738,7 +1724,7 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
     setCatalogError('');
     setActiveLayerId(null);
     setMapSelection(null);
-    setRightPaneTab('layer');
+    setRightPaneTab('data');
   }, [selectedConnectionId]);
 
   useEffect(() => {
@@ -1923,7 +1909,14 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
 
   function handleSelectLayer(layerId: string) {
     setActiveLayerId(layerId);
-    setRightPaneTab('layer');
+    const layer = mapLayers.find((item) => item.id === layerId);
+    const source =
+      layer && mapSources.find((item) => item.id === layer.sourceId);
+    if (layer && source) {
+      useWorkspaceAnalyticsStore
+        .getState()
+        .setSource(analyticsSourceForLayer(layer, source));
+    }
   }
 
   async function handleLocateLayer(layerId: string) {
@@ -1940,7 +1933,7 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
     }
 
     setActiveLayerId(layer.id);
-    setRightPaneTab('layer');
+    setRightPaneTab('data');
 
     if (!layer.visible) {
       toggleMapLayerVisibility(layer.id);
@@ -1972,11 +1965,12 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
     setMapSelection(selection);
 
     if (!selection) {
+      useWorkspaceAnalyticsStore.getState().setSelection([]);
       return;
     }
 
-    setActiveLayerId(selection.layerId);
-    setRightPaneTab('data');
+    handleSelectLayer(selection.layerId);
+    useWorkspaceAnalyticsStore.getState().setSelection(selection.rowRefs);
   }
 
   async function handleLocateFeature(
@@ -2118,7 +2112,7 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
       setActiveLayerId(layer.id);
     }
 
-    setRightPaneTab('layer');
+    setRightPaneTab('data');
     if (result.bounds) {
       setLocateFeatureBounds({
         token: Date.now(),
@@ -2222,7 +2216,7 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
     });
     setMapSelection(selection);
     setActiveLayerId(layer.id);
-    setRightPaneTab('layer');
+    setRightPaneTab('data');
     setLocateFeatureBounds({
       token: Date.now(),
       bounds: boundsFromPoints([start, end]),
@@ -2231,6 +2225,7 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
 
   function handleFeatureCreated(source: GeoJsonTableSource) {
     refreshMapSourcesForConnection(source.connectionId);
+    useWorkspaceAnalyticsStore.getState().refresh();
 
     setFeatureCreateRefreshToken((value) => value + 1);
   }
@@ -2296,18 +2291,33 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
         ),
         map: (
           <PanelFrame padding={0} tourId="map-panel">
-            <MapPane
-              activeLayerId={activeLayerId}
-              basemapId={selectedBasemapId ?? defaultBasemapId}
-              connection={selectedConnection}
-              locateFeatureBounds={locateFeatureBounds}
-              mapSelection={mapSelection}
-              onFeatureCreated={handleFeatureCreated}
-              onSelectMapObject={handleSelectMapObject}
-              sources={mapSources}
-              tables={metadataTables}
-              visibleLayers={selectedVisibleMapLayers}
-            />
+            <Box pos="relative" h="100%">
+              <MapPane
+                activeLayerId={activeLayerId}
+                basemapId={selectedBasemapId ?? defaultBasemapId}
+                connection={selectedConnection}
+                locateFeatureBounds={locateFeatureBounds}
+                mapSelection={mapSelection}
+                onFeatureCreated={handleFeatureCreated}
+                onSelectMapObject={handleSelectMapObject}
+                sources={workspaceMapSources.sources}
+                tables={metadataTables}
+                visibleLayers={selectedVisibleMapLayers}
+              />
+              <WorkspaceAnalyticsOverlays />
+              {workspaceMapSources.errors.length > 0 && (
+                <Alert
+                  pos="absolute"
+                  bottom={8}
+                  left={8}
+                  color="orange"
+                  maw={420}
+                  title="Map filters unavailable"
+                >
+                  {workspaceMapSources.errors.join('; ')}
+                </Alert>
+              )}
+            </Box>
           </PanelFrame>
         ),
         table: (
@@ -2345,6 +2355,9 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
               onClearSpatialFilter={handleClearSpatialFilter}
               onOpenTable={handleOpenTable}
               selectedTab={rightPaneTab}
+              onOpenAnalyticsLibrary={() =>
+                setAnalyticsOpen((request) => request + 1)
+              }
             />
           </PanelFrame>
         ),
@@ -2355,19 +2368,14 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
             size="xs"
             variant="light"
             leftSection={<IconChartBar size={16} />}
-            onClick={() => setAnalyticsOpen(true)}
+            onClick={() => setAnalyticsOpen((request) => request + 1)}
           >
             Analytics
           </Button>
-          <Modal
+          <AnalyticsLibraryDock
             opened={analyticsOpen}
-            onClose={() => setAnalyticsOpen(false)}
-            fullScreen
-            title="Analytics workspace"
-            keepMounted
-          >
-            <AnalyticsWorkspace />
-          </Modal>
+            onClose={closeAnalyticsLibrary}
+          />
           <OnboardingTour />
           <AppSettings
             basemapId={selectedBasemapId ?? defaultBasemapId}

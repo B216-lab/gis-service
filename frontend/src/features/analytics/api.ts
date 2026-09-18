@@ -5,6 +5,7 @@ import type {
   Query,
   QueryResult,
 } from './types';
+import type { WorkspaceSource } from './workspace-store';
 
 export class AnalyticsError extends Error {
   constructor(
@@ -74,6 +75,31 @@ export function runQuery(
     signal,
   });
 }
+export function runWorkspaceQuery(
+  query: Query,
+  source: WorkspaceSource,
+  signal?: AbortSignal,
+  bypassCache = false,
+): Promise<QueryResult> {
+  return analyticsRequest('/workspace-query', {
+    method: 'POST',
+    headers: bypassCache ? { 'Cache-Control': 'no-cache' } : undefined,
+    body: JSON.stringify({
+      query,
+      source: {
+        connectionId: source.connectionId,
+        schema: source.schema,
+        table: source.table,
+        filter: source.filter,
+        spatialFilter: source.spatialFilter,
+        geometryColumn: source.geometryColumn,
+        flowColumns: source.flowColumns,
+      },
+    }),
+    signal,
+  });
+}
+
 export function previewDataset(
   dataset: Dataset,
   signal?: AbortSignal,

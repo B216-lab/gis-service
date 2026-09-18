@@ -259,11 +259,48 @@ type LayerExtentRequest struct {
 }
 
 type SpatialFilter struct {
-	SourceSchema         string         `json:"sourceSchema"`
-	SourceTable          string         `json:"sourceTable"`
-	SourceGeometryColumn string         `json:"sourceGeometryColumn"`
-	Predicate            string         `json:"predicate"`
-	RowRefs              []RowReference `json:"rowRefs"`
+	SourceSchema         string `json:"sourceSchema"`
+	SourceTable          string `json:"sourceTable"`
+	SourceGeometryColumn string `json:"sourceGeometryColumn"`
+	// SourceLayerID and SourceLayerName are UI metadata. They are deliberately
+	// ignored when compiling the database predicate.
+	SourceLayerID   string         `json:"sourceLayerId,omitempty"`
+	SourceLayerName string         `json:"sourceLayerName,omitempty"`
+	Predicate       string         `json:"predicate"`
+	RowRefs         []RowReference `json:"rowRefs"`
+}
+
+// AnalyticsWorkspaceSource is a physical map/table source. It intentionally
+// carries no credentials and no arbitrary relation SQL.
+type AnalyticsWorkspaceSource struct {
+	ConnectionID   string                         `json:"connectionId"`
+	Schema         string                         `json:"schema"`
+	Table          string                         `json:"table"`
+	Filter         *QueryFilter                   `json:"filter,omitempty"`
+	SpatialFilter  *SpatialFilter                 `json:"spatialFilter,omitempty"`
+	GeometryColumn string                         `json:"geometryColumn,omitempty"`
+	FlowColumns    *AnalyticsWorkspaceFlowColumns `json:"flowColumns,omitempty"`
+}
+
+// AnalyticsWorkspaceFlowColumns describes the two endpoints of a flow source.
+// It mirrors the map flow source without presentation-only magnitude settings.
+type AnalyticsWorkspaceFlowColumns struct {
+	StartMode           string `json:"startMode"`
+	StartLonColumn      string `json:"startLon"`
+	StartLatColumn      string `json:"startLat"`
+	StartGeometryColumn string `json:"startGeometry"`
+	EndMode             string `json:"endMode"`
+	EndLonColumn        string `json:"endLon"`
+	EndLatColumn        string `json:"endLat"`
+	EndGeometryColumn   string `json:"endGeometry"`
+	// Accepted map payload metadata; workspace scope does not aggregate flows.
+	MagnitudeColumn  string  `json:"magnitude"`
+	DefaultMagnitude float64 `json:"defaultMagnitude"`
+}
+
+type AnalyticsWorkspaceScope struct {
+	SQL  string
+	Args []any
 }
 
 type ListFlowmapDataRequest struct {
@@ -280,6 +317,7 @@ type ListFlowmapDataRequest struct {
 	EndGeometryColumn   string                 `json:"endGeometryColumn"`
 	MagnitudeColumn     string                 `json:"magnitudeColumn"`
 	DefaultMagnitude    float64                `json:"defaultMagnitude"`
+	Filter              *QueryFilter           `json:"filter"`
 	SpatialFilter       *SpatialFilter         `json:"spatialFilter"`
 	RowKey              map[string]interface{} `json:"rowKey"`
 	Limit               int                    `json:"limit"`
@@ -698,6 +736,26 @@ func (request *ListFlowmapDataRequest) TrimSpaces() {
 	request.EndGeometryColumn = strings.TrimSpace(request.EndGeometryColumn)
 	request.MagnitudeColumn = strings.TrimSpace(request.MagnitudeColumn)
 	trimSpatialFilter(request.SpatialFilter)
+}
+
+func (source *AnalyticsWorkspaceSource) TrimSpaces() {
+	source.ConnectionID = strings.TrimSpace(source.ConnectionID)
+	source.Schema = strings.TrimSpace(source.Schema)
+	source.Table = strings.TrimSpace(source.Table)
+	source.GeometryColumn = strings.TrimSpace(source.GeometryColumn)
+	trimQueryFilter(source.Filter)
+	trimSpatialFilter(source.SpatialFilter)
+	if columns := source.FlowColumns; columns != nil {
+		columns.StartMode = strings.TrimSpace(columns.StartMode)
+		columns.StartLonColumn = strings.TrimSpace(columns.StartLonColumn)
+		columns.StartLatColumn = strings.TrimSpace(columns.StartLatColumn)
+		columns.StartGeometryColumn = strings.TrimSpace(columns.StartGeometryColumn)
+		columns.EndMode = strings.TrimSpace(columns.EndMode)
+		columns.EndLonColumn = strings.TrimSpace(columns.EndLonColumn)
+		columns.EndLatColumn = strings.TrimSpace(columns.EndLatColumn)
+		columns.EndGeometryColumn = strings.TrimSpace(columns.EndGeometryColumn)
+		columns.MagnitudeColumn = strings.TrimSpace(columns.MagnitudeColumn)
+	}
 }
 
 func trimQueryFilter(filter *QueryFilter) {
@@ -1303,6 +1361,9 @@ func (request ListFlowmapDataRequest) Validate() error {
 	if err := request.ConnectionTestRequest.Validate(); err != nil {
 		return err
 	}
+	if err := validateQueryFilter(request.Filter); err != nil {
+		return err
+	}
 
 	if request.Schema == "" {
 		return errors.New("Schema is required.")
@@ -1312,43 +1373,83 @@ func (request ListFlowmapDataRequest) Validate() error {
 		return errors.New("Table is required.")
 	}
 
-	switch request.StartMode {
+	if err := validateFlowmapColumns(AnalyticsWorkspaceFlowColumns{
+		StartMode:           request.StartMode,
+		StartLonColumn:      request.StartLonColumn,
+		StartLatColumn:      request.StartLatColumn,
+		StartGeometryColumn: request.StartGeometryColumn,
+		EndMode:             request.EndMode,
+		EndLonColumn:        request.EndLonColumn,
+		EndLatColumn:        request.EndLatColumn,
+		EndGeometryColumn:   request.EndGeometryColumn,
+	}); err != nil {
+		return err
+	}
+	if request.Limit < 1 || request.Limit > 5000 {
+		return errors.New("Limit must be between 1 and 5000.")
+	}
+	return validateSpatialFilter(request.SpatialFilter)
+}
+
+func (source AnalyticsWorkspaceSource) Validate() error {
+	if source.ConnectionID == "" {
+		return errors.New("Connection id is required.")
+	}
+	if source.Schema == "" {
+		return errors.New("Schema is required.")
+	}
+	if source.Table == "" {
+		return errors.New("Table is required.")
+	}
+	if err := validateQueryFilter(source.Filter); err != nil {
+		return err
+	}
+	if err := validateSpatialFilter(source.SpatialFilter); err != nil {
+		return err
+	}
+	if source.FlowColumns != nil {
+		return validateFlowmapColumns(*source.FlowColumns)
+	}
+	if source.SpatialFilter != nil && source.GeometryColumn == "" {
+		return errors.New("Geometry column is required for a spatial filter.")
+	}
+	return nil
+}
+
+func validateFlowmapColumns(columns AnalyticsWorkspaceFlowColumns) error {
+	switch columns.StartMode {
 	case "coordinates":
-		if request.StartLonColumn == "" {
+		if columns.StartLonColumn == "" {
 			return errors.New("Start longitude column is required.")
 		}
-		if request.StartLatColumn == "" {
+		if columns.StartLatColumn == "" {
 			return errors.New("Start latitude column is required.")
 		}
 	case "geometry":
-		if request.StartGeometryColumn == "" {
+		if columns.StartGeometryColumn == "" {
 			return errors.New("Start geometry column is required.")
 		}
 	default:
 		return errors.New("Start mode must be coordinates or geometry.")
 	}
 
-	switch request.EndMode {
+	switch columns.EndMode {
 	case "coordinates":
-		if request.EndLonColumn == "" {
+		if columns.EndLonColumn == "" {
 			return errors.New("End longitude column is required.")
 		}
-		if request.EndLatColumn == "" {
+		if columns.EndLatColumn == "" {
 			return errors.New("End latitude column is required.")
 		}
 	case "geometry":
-		if request.EndGeometryColumn == "" {
+		if columns.EndGeometryColumn == "" {
 			return errors.New("End geometry column is required.")
 		}
 	default:
 		return errors.New("End mode must be coordinates or geometry.")
 	}
 
-	if request.Limit < 1 || request.Limit > 5000 {
-		return errors.New("Limit must be between 1 and 5000.")
-	}
-
-	return validateSpatialFilter(request.SpatialFilter)
+	return nil
 }
 
 func (operation TableOperation) Validate() error {

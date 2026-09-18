@@ -1,19 +1,11 @@
-import { HeatmapLayer } from '@deck.gl/aggregation-layers';
-import type { Layer } from '@deck.gl/core';
-import { ArcLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { Alert, Box, Button, Stack } from '@mantine/core';
 import { Map as LibreMap, NavigationControl } from 'maplibre-gl';
 import { useEffect, useRef, useState } from 'react';
 import { getBasemapStyle } from '../map/basemaps';
 import type { ChartRendererProps } from './ChartRenderer';
-import {
-  geographicRows,
-  numeric,
-  optionsFor,
-  type Row,
-  rowFilters,
-} from './chart-utils';
+import { geographicRows, optionsFor, type Row } from './chart-utils';
+import { createGeographicDeckLayers } from './geographic-deck-layers';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 export default function GeographicChart({
@@ -71,94 +63,32 @@ export default function GeographicChart({
           ? [{ chart, data }]
           : [];
     const bounds: [number, number][] = [];
-    const deckLayers = entries.flatMap<Layer>(
-      ({ chart: layerChart, data: result }, index) => {
-        const o = optionsFor(layerChart);
-        const dims = layerChart.query.dimensions || [];
-        const lon = o.longitudeFieldId || dims[0];
-        const lat = o.latitudeFieldId || dims[1];
-        const endLon = o.targetLongitudeFieldId || dims[2];
-        const endLat = o.targetLatitudeFieldId || dims[3];
-        const weight = o.weightMetricId || layerChart.query.metrics?.[0];
-        const records = geographicRows(layerChart, result);
-        const position = (row: Row): [number, number] => [
-          Number(row[lon]),
-          Number(row[lat]),
-        ];
-        for (const row of records) {
-          bounds.push(position(row));
-          if (layerChart.type === 'geoArc')
-            bounds.push([Number(row[endLon]), Number(row[endLat])]);
-        }
-        const shared = {
-          id: `analytics-${layerChart.id}-${index}`,
-          data: records,
-          pickable: true,
-          onClick: (info: { object?: Row }) => {
-            if (info.object)
-              onSelectRef.current?.(rowFilters(layerChart, info.object));
-            return true;
-          },
-        };
-        if (layerChart.type === 'geoArc')
-          return [
-            new ArcLayer<Row>({
-              ...shared,
-              getSourcePosition: position,
-              getTargetPosition: (row) => [
-                Number(row[endLon]),
-                Number(row[endLat]),
-              ],
-              getSourceColor: [34, 139, 230],
-              getTargetColor: [250, 82, 82],
-              getWidth: (row) =>
-                weight
-                  ? Math.max(
-                      1,
-                      Math.min(10, Math.sqrt(numeric(row[weight]) ?? 1)),
-                    )
-                  : 2,
-            }),
-          ];
-        return [
-          new HeatmapLayer<Row>({
-            ...shared,
-            id: `${shared.id}-heat`,
-            getPosition: position,
-            getWeight: (row) =>
-              weight ? Math.max(0, numeric(row[weight]) ?? 0) : 1,
-            radiusPixels: o.radius || 30,
-            opacity: index ? 0.5 : 0.8,
-            colorRange:
-              index % 2
-                ? [
-                    [255, 255, 204],
-                    [255, 237, 160],
-                    [254, 178, 76],
-                    [253, 141, 60],
-                    [240, 59, 32],
-                    [189, 0, 38],
-                  ]
-                : [
-                    [239, 243, 255],
-                    [198, 219, 239],
-                    [158, 202, 225],
-                    [107, 174, 214],
-                    [49, 130, 189],
-                    [8, 81, 156],
-                  ],
-          }),
-          new ScatterplotLayer<Row>({
-            ...shared,
-            id: `${shared.id}-pick`,
-            getPosition: position,
-            getRadius: 5,
-            radiusUnits: 'pixels',
-            getFillColor: [34, 139, 230, 25],
-          }),
-        ];
-      },
+    const deckLayers = createGeographicDeckLayers(
+      entries,
+      'analytics',
+      onSelectRef.current,
     );
+    for (const { chart: layerChart, data: result } of entries) {
+      const options = optionsFor(layerChart);
+      const dimensions = layerChart.query.dimensions || [];
+      const longitude = options.longitudeFieldId || dimensions[0];
+      const latitude = options.latitudeFieldId || dimensions[1];
+      const targetLongitude = options.targetLongitudeFieldId || dimensions[2];
+      const targetLatitude = options.targetLatitudeFieldId || dimensions[3];
+      const records = geographicRows(layerChart, result);
+      const position = (row: Row): [number, number] => [
+        Number(row[longitude]),
+        Number(row[latitude]),
+      ];
+      for (const row of records) {
+        bounds.push(position(row));
+        if (layerChart.type === 'geoArc')
+          bounds.push([
+            Number(row[targetLongitude]),
+            Number(row[targetLatitude]),
+          ]);
+      }
+    }
     overlay.setProps({ layers: deckLayers });
     if (!fitted.current && bounds.length) {
       const extent = bounds.reduce(
