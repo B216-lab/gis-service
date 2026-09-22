@@ -575,6 +575,7 @@ export function WorkspaceAnalytics({
   }
 
   function syncDashboardFilters(next: Filter[]) {
+    if (binding === 'reference' || !activeSource) return;
     if (!next.length) {
       clearFilters();
       return;

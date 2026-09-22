@@ -19,6 +19,9 @@ services:
       AUTH_OIDC_REDIRECT_URL: ${AUTH_OIDC_REDIRECT_URL:?set AUTH_OIDC_REDIRECT_URL}
       AUTH_OIDC_CLIENT_SECRET: ${AUTH_OIDC_CLIENT_SECRET:?set AUTH_OIDC_CLIENT_SECRET}
       AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:?set AUTH_SESSION_SECRET}
+      AUTH_BOOTSTRAP_WORKSPACE_ID: ${AUTH_BOOTSTRAP_WORKSPACE_ID:-}
+      AUTH_BOOTSTRAP_WORKSPACE_NAME: ${AUTH_BOOTSTRAP_WORKSPACE_NAME:-}
+      AUTH_BOOTSTRAP_WORKSPACE_SUBJECT: ${AUTH_BOOTSTRAP_WORKSPACE_SUBJECT:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:18080/api/v1/health"]
       interval: 5s
@@ -37,7 +40,7 @@ services:
     build:
       context: ./frontend
       target: dev
-    command: bun run dev
+    command: sh -c "bun install --frozen-lockfile && exec bun run dev"
     environment:
       VITE_API_PROXY_TARGET: http://backend:18080
     depends_on:

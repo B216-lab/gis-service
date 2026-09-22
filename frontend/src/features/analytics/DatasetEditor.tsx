@@ -13,10 +13,10 @@ import {
   Table,
   Tabs,
   Text,
-  Textarea,
   TextInput,
 } from '@mantine/core';
 import { useEffect, useRef, useState } from 'react';
+import { SqlEditor } from '../app/SqlEditor';
 import { translateLabel, useI18n } from '../i18n/i18n';
 import { previewDataset } from './api';
 import { enumLabel, enumOptions } from './display-labels';
@@ -212,14 +212,13 @@ export function DatasetEditor({
           </Group>
         </Tabs.Panel>
         <Tabs.Panel value="sql" pt="sm">
-          <Textarea
+          <SqlEditor
             label="Read-only SQL"
             description="Use table names within this connection. Preview inspects output columns."
-            autosize
             minRows={7}
             maxRows={25}
             value={value.sql || ''}
-            onChange={(e) => patch({ sql: e.currentTarget.value })}
+            onChange={(sql) => patch({ sql })}
           />
         </Tabs.Panel>
         <Tabs.Panel value="visual" pt="sm">
@@ -236,11 +235,11 @@ export function DatasetEditor({
                 onChange={(e) => patch({ table: e.currentTarget.value })}
               />
             </Group>
-            <Textarea
+            <SqlEditor
               label="Projected columns / expressions"
               description="Example: base.id AS submission_id, status.description_ru AS social_status"
               value={projection}
-              onChange={(e) => setProjection(e.currentTarget.value)}
+              onChange={setProjection}
             />
             {joins.map((join) => (
               <Paper withBorder p="sm" key={join.id}>
@@ -391,12 +390,10 @@ export function DatasetEditor({
                 }
               />
             </SimpleGrid>
-            <Textarea
+            <SqlEditor
               label="Calculated SQL expression (optional)"
               value={field.expression || ''}
-              onChange={(e) =>
-                patchField(index, { expression: e.currentTarget.value })
-              }
+              onChange={(expression) => patchField(index, { expression })}
             />
             <Button
               variant="subtle"
@@ -467,13 +464,13 @@ export function DatasetEditor({
               }
             />
           </Group>
-          <Textarea
+          <SqlEditor
             label="Aggregate SQL expression"
             value={metric.expression}
-            onChange={(e) =>
+            onChange={(expression) =>
               patch({
                 metrics: value.metrics.map((m, i) =>
-                  i === index ? { ...m, expression: e.currentTarget.value } : m,
+                  i === index ? { ...m, expression } : m,
                 ),
               })
             }

@@ -83,6 +83,21 @@ export interface Dashboard extends Metadata {
   filters?: Filter[];
   description?: string;
 }
+export interface DashboardBundle {
+  format: 'geopanel-dashboard';
+  version: 1;
+  exportedAt: string;
+  dashboard: Dashboard;
+  charts: Chart[];
+  datasets: Dataset[];
+}
+export interface DashboardImportReport {
+  dashboardId: string;
+  datasetIds: string[];
+  chartIds: string[];
+  created: number;
+  updated: number;
+}
 export interface Connection {
   id: string;
   name: string;

@@ -15,7 +15,8 @@ import {
   Title,
 } from '@mantine/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useI18n } from '../i18n/i18n';
+import { ColorSchemeToggle } from '../app/chrome';
+import { LanguageSwitcher, useI18n } from '../i18n/i18n';
 import { analyticsRequest, runQuery } from './api';
 import { ChartRenderer } from './ChartRenderer';
 import { filterLabel, filtersForWidget, mapFilter } from './dashboard-filters';
@@ -562,6 +563,10 @@ export function SharedDashboardPage({
   );
   return (
     <Stack p="lg" maw={1800} mx="auto">
+      <Group gap="xs" justify="flex-end" wrap="nowrap">
+        <LanguageSwitcher />
+        <ColorSchemeToggle />
+      </Group>
       {error ? (
         <Alert color="red" title="Dashboard unavailable">
           {error}

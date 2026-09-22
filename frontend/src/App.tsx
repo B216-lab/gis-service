@@ -11,7 +11,6 @@ import {
   ScrollArea,
   Select,
   Stack,
-  Tabs,
   Text,
   ThemeIcon,
 } from '@mantine/core';
@@ -25,10 +24,7 @@ import 'mantine-react-table/styles.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnalyticsWorkspace } from './features/analytics/AnalyticsWorkspace';
 import { SharedDashboardPage } from './features/analytics/DashboardViewer';
-import {
-  WorkspaceAnalytics,
-  WorkspaceAnalyticsOverlays,
-} from './features/analytics/WorkspaceAnalytics';
+import { WorkspaceAnalyticsOverlays } from './features/analytics/WorkspaceAnalytics';
 import {
   combineTableFilters,
   filtersForSource,
@@ -119,8 +115,6 @@ import { MapPane } from './features/map/MapPane';
 import type { MapSelection } from './features/map/selection';
 import { OnboardingTour } from './features/onboarding/OnboardingTour';
 
-type RightPaneTab = 'data' | 'analysis';
-
 interface GeoJsonSpatialFilterTarget {
   layer: GeoJsonMapLayer | FlowmapMapLayer | ArcMapLayer;
   source: GeoJsonTableSource | FlowmapTableSource;
@@ -181,113 +175,6 @@ function AnalyticsLibraryDock({
     }
   }, [opened, onClose, registerPanel, closePanel, focusPanel]);
   return null;
-}
-
-function RightPaneTabs({
-  activeSource,
-  connection,
-  geoJsonSpatialFilterTargets,
-  mapSelection,
-  onApplySpatialFilter,
-  onChangeTab,
-  onClearSpatialFilter,
-  onOpenTable,
-  selectedTab,
-  onOpenAnalyticsLibrary,
-}: {
-  activeLayer: MapLayer | null;
-  activeSource: MapSource | null;
-  connection: DatabaseConnection | null;
-  geoJsonSpatialFilterTargets: GeoJsonSpatialFilterTarget[];
-  mapSelection: MapSelection | null;
-  onApplySpatialFilter: (
-    targetSourceId: string,
-    predicate: SpatialFilterPredicate,
-  ) => void;
-  onChangeTab: (value: RightPaneTab) => void;
-  onClearSpatialFilter: (sourceId: string) => void;
-  onOpenTable: (tableKey: string) => void | Promise<void>;
-  selectedTab: RightPaneTab;
-  onOpenAnalyticsLibrary: () => void;
-}) {
-  const { focusPanel } = useWorkspacePanels();
-  const analysisRequested = useWorkspaceAnalyticsStore(
-    (state) => state.requested,
-  );
-  useEffect(() => {
-    if (analysisRequested) {
-      onChangeTab('analysis');
-      focusPanel('workspace');
-      useWorkspaceAnalyticsStore.setState({ requested: false });
-    }
-  }, [analysisRequested, focusPanel, onChangeTab]);
-  const selectedRowCount = mapSelection?.rowRefs.length ?? 0;
-  const hasDataContext = Boolean(mapSelection || activeSource?.spatialFilter);
-  const visibleTab =
-    selectedTab === 'data' && !hasDataContext ? 'analysis' : selectedTab;
-
-  return (
-    <Tabs
-      h="100%"
-      keepMounted
-      onChange={(value) => {
-        if (value === 'data' || value === 'analysis') {
-          onChangeTab(value);
-        }
-      }}
-      styles={{
-        root: {
-          display: 'flex',
-          flexDirection: 'column',
-          height: '100%',
-          minHeight: 0,
-        },
-        panel: {
-          flex: 1,
-          minHeight: 0,
-          paddingTop: 'var(--mantine-spacing-md)',
-        },
-      }}
-      value={visibleTab}
-    >
-      <Tabs.List grow>
-        {hasDataContext ? (
-          <Tabs.Tab
-            leftSection={<IconDatabaseSearch size={14} />}
-            rightSection={
-              selectedRowCount > 0 ? (
-                <Badge color="blue" size="xs" variant="light">
-                  {selectedRowCount}
-                </Badge>
-              ) : null
-            }
-            value="data"
-          >
-            Data
-          </Tabs.Tab>
-        ) : null}
-        <Tabs.Tab leftSection={<IconChartBar size={14} />} value="analysis">
-          Analysis
-        </Tabs.Tab>
-      </Tabs.List>
-
-      <Tabs.Panel value="data">
-        <DataWorkspacePanel
-          activeSource={activeSource}
-          connection={connection}
-          geoJsonSpatialFilterTargets={geoJsonSpatialFilterTargets}
-          mapSelection={mapSelection}
-          onApplySpatialFilter={onApplySpatialFilter}
-          onClearSpatialFilter={onClearSpatialFilter}
-          onOpenTable={onOpenTable}
-        />
-      </Tabs.Panel>
-
-      <Tabs.Panel value="analysis">
-        <WorkspaceAnalytics onOpenLibrary={onOpenAnalyticsLibrary} />
-      </Tabs.Panel>
-    </Tabs>
-  );
 }
 
 function DataWorkspacePanel({
@@ -1104,7 +991,6 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
   const [mapSelection, setMapSelection] = useState<MapSelection | null>(null);
   const [locateFeatureBounds, setLocateFeatureBounds] =
     useState<LocateFeatureBoundsState | null>(null);
-  const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>('data');
   const analyticsFilters = useWorkspaceAnalyticsStore((state) => state.filters);
   const analyticsFilterDataset = useWorkspaceAnalyticsStore(
     (state) => state.filterDataset,
@@ -1724,7 +1610,6 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
     setCatalogError('');
     setActiveLayerId(null);
     setMapSelection(null);
-    setRightPaneTab('data');
   }, [selectedConnectionId]);
 
   useEffect(() => {
@@ -1933,8 +1818,6 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
     }
 
     setActiveLayerId(layer.id);
-    setRightPaneTab('data');
-
     if (!layer.visible) {
       toggleMapLayerVisibility(layer.id);
     }
@@ -2008,7 +1891,6 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
 
       setMapSelection(selection);
       setActiveLayerId(target.layer.id);
-      setRightPaneTab('data');
       setLocateFeatureBounds({
         token: Date.now(),
         bounds: boundsFromPoints([start, end]),
@@ -2025,8 +1907,6 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
 
     setMapSelection(buildLocatedFeatureSelection(result, target));
     setActiveLayerId(target.layer.id);
-    setRightPaneTab('data');
-
     if (result.bounds) {
       setLocateFeatureBounds({
         token: Date.now(),
@@ -2112,7 +1992,6 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
       setActiveLayerId(layer.id);
     }
 
-    setRightPaneTab('data');
     if (result.bounds) {
       setLocateFeatureBounds({
         token: Date.now(),
@@ -2216,7 +2095,6 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
     });
     setMapSelection(selection);
     setActiveLayerId(layer.id);
-    setRightPaneTab('data');
     setLocateFeatureBounds({
       token: Date.now(),
       bounds: boundsFromPoints([start, end]),
@@ -2344,20 +2222,14 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
         ),
         workspace: (
           <PanelFrame tourId="workspace-panel">
-            <RightPaneTabs
-              activeLayer={activeLayer}
+            <DataWorkspacePanel
               activeSource={activeLayerSource}
               connection={selectedConnection}
               geoJsonSpatialFilterTargets={geoJsonSpatialFilterTargets}
               mapSelection={mapSelection}
               onApplySpatialFilter={handleApplySpatialFilter}
-              onChangeTab={setRightPaneTab}
               onClearSpatialFilter={handleClearSpatialFilter}
               onOpenTable={handleOpenTable}
-              selectedTab={rightPaneTab}
-              onOpenAnalyticsLibrary={() =>
-                setAnalyticsOpen((request) => request + 1)
-              }
             />
           </PanelFrame>
         ),
@@ -2370,7 +2242,7 @@ function AuthenticatedGISApp({ onLogout }: { onLogout: () => void }) {
             leftSection={<IconChartBar size={16} />}
             onClick={() => setAnalyticsOpen((request) => request + 1)}
           >
-            Analytics
+            Analytics library
           </Button>
           <AnalyticsLibraryDock
             opened={analyticsOpen}

@@ -26,4 +26,17 @@ describe('controlled interface labels', () => {
       expect(translateLabel('≠', language)).toBe('≠');
     }
   });
+
+  test('localizes shared map controls and boolean labels', () => {
+    expect(
+      translateLabel('Drag to rotate map, click to reset north', 'ru'),
+    ).toBe(
+      'Перетащите для поворота карты, нажмите, чтобы вернуть север наверх',
+    );
+    expect(translateLabel('Toggle attribution', 'ru')).toBe(
+      'Показать или скрыть сведения об источниках',
+    );
+    expect(translateLabel('True', 'ru')).toBe('Да');
+    expect(translateLabel('False', 'ru')).toBe('Нет');
+  });
 });

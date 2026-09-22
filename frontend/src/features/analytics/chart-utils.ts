@@ -7,6 +7,7 @@ export const chartTypes = [
   { value: 'line', label: 'Line chart' },
   { value: 'matrixHeatmap', label: 'Matrix heatmap' },
   { value: 'calendarHeatmap', label: 'Calendar heatmap' },
+  { value: 'regionMap', label: 'Region map' },
   { value: 'geoHeatmap', label: 'Geographic heatmap' },
   { value: 'geoArc', label: 'Movement arcs' },
   { value: 'compositeMap', label: 'Composite map' },
@@ -61,7 +62,11 @@ export function formatValue(
   ).format(n)}${options.suffix || ''}`;
 }
 export function rowFilters(chart: Chart, row: Row): Filter[] {
-  return (chart.query.dimensions || []).flatMap((id): Filter[] => {
+  const dimensions = chart.query.dimensions || [];
+  // Polygon geometry is rendering data; only the region key filters peers.
+  return (
+    chart.type === 'regionMap' ? dimensions.slice(0, 1) : dimensions
+  ).flatMap((id): Filter[] => {
     const value = row[id];
     if (value === undefined) return [];
     const base = { fieldId: id, datasetId: chart.datasetId };

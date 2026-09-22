@@ -29,7 +29,7 @@ export async function analyticsRequest<T>(
   const data = await response.json().catch(() => null);
   if (!response.ok)
     throw new AnalyticsError(
-      response.status === 409
+      response.status === 409 && data?.error?.code !== 'import_conflict'
         ? 'Another editor changed this object. Reload before saving again.'
         : data?.error?.message ||
             data?.message ||

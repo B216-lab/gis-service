@@ -40,3 +40,48 @@ body {
 .workspace-layout .flexlayout__tab_toolbar_button {
   color: var(--mantine-color-dimmed);
 }
+
+.sql-editor-highlight .hljs-keyword,
+.sql-editor-highlight .hljs-operator {
+  color: var(--mantine-color-violet-6);
+}
+
+.sql-editor-highlight .hljs-string,
+.sql-editor-highlight .hljs-symbol {
+  color: var(--mantine-color-teal-7);
+}
+
+.sql-editor-highlight .hljs-number,
+.sql-editor-highlight .hljs-literal {
+  color: var(--mantine-color-orange-7);
+}
+
+.sql-editor-highlight .hljs-built_in,
+.sql-editor-highlight .hljs-type {
+  color: var(--mantine-color-blue-7);
+}
+
+.sql-editor-highlight .hljs-comment {
+  color: var(--mantine-color-dimmed);
+  font-style: italic;
+}
+
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-keyword,
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-operator {
+  color: var(--mantine-color-violet-3);
+}
+
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-string,
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-symbol {
+  color: var(--mantine-color-teal-3);
+}
+
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-number,
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-literal {
+  color: var(--mantine-color-orange-3);
+}
+
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-built_in,
+[data-mantine-color-scheme="dark"] .sql-editor-highlight .hljs-type {
+  color: var(--mantine-color-blue-3);
+}

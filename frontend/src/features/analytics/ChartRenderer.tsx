@@ -6,6 +6,7 @@ import type { Chart, Filter, QueryResult } from './types';
 
 const StatisticalChart = lazy(() => import('./StatisticalChart'));
 const GeographicChart = lazy(() => import('./GeographicChart'));
+const RegionChart = lazy(() => import('./RegionChart'));
 export interface ChartRendererProps {
   chart: Chart;
   data?: QueryResult;
@@ -75,7 +76,9 @@ export function ChartRenderer(props: ChartRendererProps) {
           </Center>
         }
       >
-        {['geoHeatmap', 'geoArc', 'compositeMap'].includes(chart.type) ? (
+        {chart.type === 'regionMap' ? (
+          <RegionChart {...props} />
+        ) : ['geoHeatmap', 'geoArc', 'compositeMap'].includes(chart.type) ? (
           <GeographicChart {...props} />
         ) : (
           <StatisticalChart {...props} />

@@ -16,7 +16,7 @@ import {
   TextInput,
   Title,
 } from '@mantine/core';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { analyticsRequest, deleteObject, listObjects, saveObject } from './api';
 import { DashboardViewer } from './DashboardViewer';
 import { filtersForWidget, placeWidgets } from './dashboard-filters';
@@ -59,6 +59,7 @@ export function DashboardBuilder({ datasets }: { datasets: Dataset[] }) {
   const [includeFilters, setIncludeFilters] = useState(true);
   const [saveCurrentFilters, setSaveCurrentFilters] = useState(true);
   const [publications, setPublications] = useState<Metadata[]>([]);
+  const initialCatalogLoaded = useRef(false);
   async function loadPublications() {
     if (!draft?.revision) return;
     try {
@@ -100,6 +101,14 @@ export function DashboardBuilder({ datasets }: { datasets: Dataset[] }) {
       ]);
       setDashboards(items);
       setCharts(savedCharts);
+      if (!initialCatalogLoaded.current) {
+        initialCatalogLoaded.current = true;
+        if (items[0]) {
+          const first = structuredClone(items[0]);
+          setDraft(first);
+          setFilters(first.filters || []);
+        }
+      }
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -277,7 +286,7 @@ export function DashboardBuilder({ datasets }: { datasets: Dataset[] }) {
     <Stack>
       <Group align="end">
         <Select
-          label="Dashboard catalog"
+          label={`Dashboard catalog (${dashboards.length})`}
           searchable
           renderOption={({ option }) => (
             <span translate="no">{option.label}</span>

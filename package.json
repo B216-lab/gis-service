@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
+    "install:skill": "node ./scripts/install-agent-skill.mjs",
     "dev:setup": "./scripts/dev-worktree setup",
     "dev:up": "./scripts/dev-worktree up",
     "dev:down": "./scripts/dev-worktree down",

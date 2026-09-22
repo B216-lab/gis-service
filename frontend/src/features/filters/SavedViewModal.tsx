@@ -6,11 +6,11 @@ import {
   Select,
   Stack,
   Text,
-  Textarea,
   TextInput,
 } from '@mantine/core';
 import { useEffect, useMemo, useState } from 'react';
 
+import { SqlEditor } from '../app/SqlEditor';
 import type { InspectableTable } from '../inspector/api';
 import {
   buildTableFilterDefinition,
@@ -203,12 +203,11 @@ export function SavedViewModal({
             />
           </>
         ) : (
-          <Textarea
-            autosize
+          <SqlEditor
             description="Condition only. Do not include WHERE."
             label="WHERE clause"
             minRows={6}
-            onChange={(event) => setDraftWhereClause(event.currentTarget.value)}
+            onChange={setDraftWhereClause}
             placeholder={`osm_level in (7, 8)\nboundary = 'administrative' and name is not null`}
             value={draftWhereClause}
           />

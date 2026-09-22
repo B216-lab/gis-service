@@ -348,6 +348,12 @@ const translations: Record<string, string> = {
   'Import failed.': 'Не удалось выполнить импорт.',
   'Filter to visible map area': 'Фильтровать по видимой области карты',
   'WebGL map unavailable.': 'Не удалось отобразить карту WebGL.',
+  'Region map unavailable.': 'Не удалось отобразить карту регионов.',
+  'Drag to rotate map, click to reset north':
+    'Перетащите для поворота карты, нажмите, чтобы вернуть север наверх',
+  'Toggle attribution': 'Показать или скрыть сведения об источниках',
+  True: 'Да',
+  False: 'Нет',
   'Save failed.': 'Не удалось сохранить изменения.',
   'Delete failed.': 'Не удалось удалить объект.',
   'Another editor changed this object. Reload before saving again.':
@@ -878,6 +884,11 @@ function translateText(value: string) {
       /^(.+) interactive chart\. Click to filter; Ctrl or Shift click to select multiple\.$/,
       '$1 — интерактивная диаграмма. Нажмите для фильтрации; Ctrl или Shift — для выбора нескольких значений.',
     )
+    .replace(
+      /^(.+) region map\. Click a region to filter; Ctrl or Shift click to select multiple\.$/,
+      '$1 — интерактивная карта регионов. Нажмите на регион для фильтрации; Ctrl или Shift — для выбора нескольких значений.',
+    )
+    .replace(/^(.+) map$/, '$1 — карта')
     .replace(/\bVisible schemas(?=\s*·)/g, 'Видимые схемы')
     .replace(/^Alias for\s+(.+)$/g, 'Псевдоним для $1')
     .replace(/^Relation label for\s+(.+)$/g, 'Подпись связи для $1')

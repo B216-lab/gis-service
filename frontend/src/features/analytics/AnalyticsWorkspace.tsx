@@ -18,6 +18,9 @@ import type { Connection, Dataset } from './types';
 const ImportPanel = lazy(() =>
   import('./ImportPanel').then((m) => ({ default: m.ImportPanel })),
 );
+const TransferPanel = lazy(() =>
+  import('./TransferPanel').then((m) => ({ default: m.TransferPanel })),
+);
 const ChartBuilder = lazy(() =>
   import('./ChartBuilder').then((m) => ({ default: m.ChartBuilder })),
 );
@@ -44,6 +47,7 @@ export function AnalyticsWorkspace() {
         listConnections(),
       ]);
       setDatasets(items);
+      setSelected((current) => current ?? items[0] ?? null);
       setConnections(sources);
     } catch (cause) {
       setError(
@@ -98,12 +102,13 @@ export function AnalyticsWorkspace() {
           <Tabs.Tab value="datasets">Datasets</Tabs.Tab>
           <Tabs.Tab value="charts">Charts</Tabs.Tab>
           <Tabs.Tab value="dashboards">Dashboards</Tabs.Tab>
+          <Tabs.Tab value="transfer">Export / import</Tabs.Tab>
           <Tabs.Tab value="import">Import reference</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="datasets" pt="md">
           <Group align="end">
             <Select
-              label="Dataset catalog"
+              label={`Dataset catalog (${datasets.length})`}
               searchable
               placeholder="Choose a saved dataset"
               renderOption={({ option }) => (
@@ -172,6 +177,16 @@ export function AnalyticsWorkspace() {
         <Tabs.Panel value="import" pt="md">
           <Suspense fallback={<Loader />}>
             <ImportPanel
+              connections={connections}
+              onImported={async () => {
+                await reload();
+              }}
+            />
+          </Suspense>
+        </Tabs.Panel>
+        <Tabs.Panel value="transfer" pt="md">
+          <Suspense fallback={<Loader />}>
+            <TransferPanel
               connections={connections}
               onImported={async () => {
                 await reload();

@@ -159,7 +159,7 @@ func TestTokenAPISecretReturnedOnlyOnCreation(t *testing.T) {
 }
 
 func TestTokenAPIStableErrorContract(t *testing.T) {
-	principal := Principal{Subject: "member", Scopes: map[string]bool{"auth:tokens:read": true}}
+	principal := Principal{Subject: "member", IsAPIToken: true, Scopes: map[string]bool{"auth:tokens:read": true}}
 	handler := tokenContractHandler(&tokenHTTPTestStore{}, map[string]WorkspaceRole{"member/workspace-a": WorkspaceAdmin}, principal)
 
 	tests := []struct {

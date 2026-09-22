@@ -52,13 +52,11 @@ export interface AnalyticsWorkspaceState {
   viewport: GeoBounds | null;
   refreshVersion: number;
   overlays: WorkspaceOverlay[];
-  requested: boolean;
   setSource: (source: WorkspaceSource | null) => void;
   setSelection: (rows: RowReference[]) => void;
   setFilters: (filters: Filter[], dataset: Dataset | null) => void;
   clearFilters: () => void;
   refresh: () => void;
-  requestAnalysis: (source: WorkspaceSource) => void;
   addOverlay: (chart: Chart, dataset: Dataset, reference: boolean) => boolean;
   removeOverlay: (id: string) => void;
   updateOverlayRect: (id: string, rect: WorkspaceOverlayRect) => void;
@@ -151,7 +149,6 @@ export const useWorkspaceAnalyticsStore = create<AnalyticsWorkspaceState>()(
       viewport: null,
       refreshVersion: 0,
       overlays: [],
-      requested: false,
       setSource: (source) =>
         set((state) => ({
           activeSource: source,
@@ -173,10 +170,6 @@ export const useWorkspaceAnalyticsStore = create<AnalyticsWorkspaceState>()(
       clearFilters: () => set({ filters: [], filterDataset: null }),
       refresh: () =>
         set((state) => ({ refreshVersion: state.refreshVersion + 1 })),
-      requestAnalysis: (source) => {
-        get().setSource(source);
-        set({ requested: true });
-      },
       addOverlay: (chart, dataset, reference) => {
         if (!reference && !sourceCompatible(get().activeSource, dataset)) {
           return false;

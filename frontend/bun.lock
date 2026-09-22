@@ -9,6 +9,7 @@
         "@deck.gl/layers": "^9.2.2",
         "@deck.gl/mapbox": "^9.2.2",
         "@flowmap.gl/layers": "^9.3.0",
+        "@mantine/code-highlight": "9.2.1",
         "@mantine/core": "^9.2.1",
         "@mantine/dates": "^9.4.1",
         "@mantine/hooks": "^9.2.1",
@@ -17,6 +18,7 @@
         "dayjs": "^1.11.21",
         "echarts": "^6.1.0",
         "flexlayout-react": "^0.10.5",
+        "highlight.js": "11.11.1",
         "mantine-react-table": "2.0.0-beta.9",
         "maplibre-gl": "^5.9.0",
         "pmtiles": "^4.3.0",
@@ -200,6 +202,8 @@
     "@luma.gl/shadertools": ["@luma.gl/shadertools@9.3.3", "", { "dependencies": { "@math.gl/core": "^4.1.0", "@math.gl/types": "^4.1.0" }, "peerDependencies": { "@luma.gl/core": "~9.3.0" } }, "sha512-4ZfG4/Utix951vqyiG/JIx+Eg+GMNwOxgr/07/i0gf7bK1gJZIEQ5BxVcDw4MCQfdoVlGPGzl0cQKbdqBvaCAQ=="],
 
     "@luma.gl/webgl": ["@luma.gl/webgl@9.3.3", "", { "dependencies": { "@math.gl/types": "^4.1.0", "@probe.gl/env": "^4.1.1" }, "peerDependencies": { "@luma.gl/core": "~9.3.0" } }, "sha512-X+aavdP5o6VFHSA0es9gKZTT145jfcFbhKJt/gwJrptnKNoIW4+Y37ZEpCo1AzAnr+FQCxjgcM2kOCpoWMfSVA=="],
+
+    "@mantine/code-highlight": ["@mantine/code-highlight@9.2.1", "", { "dependencies": { "clsx": "^2.1.1" }, "peerDependencies": { "@mantine/core": "9.2.1", "@mantine/hooks": "9.2.1", "react": "^19.2.0", "react-dom": "^19.2.0" } }, "sha512-BHeTA9xdK3PT56bVFWG3Ud5ZX2HGkEVAmV2a9wyavVUG2oLgyEQQ6FcXHc67pIcCHZsjejWzSadvrqug/x0HTw=="],
 
     "@mantine/core": ["@mantine/core@9.2.1", "", { "dependencies": { "@floating-ui/react": "^0.27.19", "clsx": "^2.1.1", "react-number-format": "^5.4.5", "react-remove-scroll": "^2.7.2", "type-fest": "^5.6.0" }, "peerDependencies": { "@mantine/hooks": "9.2.1", "react": "^19.2.0", "react-dom": "^19.2.0" } }, "sha512-CicPg9i2dM2pGp1jj+dMiR/63OFDsPjgJke4v5+0nbfJ+C7gn4C+7ltrp4RIETDMZHcj0fFuDRG0qtbiyBxvWA=="],
 
@@ -424,6 +428,8 @@
     "gl-matrix": ["gl-matrix@3.4.4", "", {}, "sha512-latSnyDNt/8zYUB6VIJ6PCh2jBjJX6gnDsoCZ7LyW7GkqrD51EWwa9qCoGixj8YqBtETQK/xY7OmpTF8xz1DdQ=="],
 
     "has-flag": ["has-flag@4.0.0", "", {}, "sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ=="],
+
+    "highlight.js": ["highlight.js@11.11.1", "", {}, "sha512-Xwwo44whKBVCYoliBQwaPvtd/2tYFkRQtXDWj1nackaV2JPXx3L0+Jvd8/qCJ2p+ML0/XVkJ2q+Mr+UVdpJK5w=="],
 
     "internmap": ["internmap@2.0.3", "", {}, "sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg=="],
 

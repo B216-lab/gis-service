@@ -4,8 +4,10 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"geopanel/backend/internal/postgres"
+	"io"
 	"math"
 	"net/http"
 	"sort"
@@ -496,6 +498,52 @@ type ConnectionRegistry interface {
 }
 
 func RegisterImportRoutes(h *Handler, registry ConnectionRegistry) {
+	h.Mux.HandleFunc("GET /api/v1/analytics/dashboards/{id}/export", noStore(func(w http.ResponseWriter, r *http.Request) {
+		bundle, e := h.Store.ExportDashboard(r.PathValue("id"))
+		if e != nil {
+			writeError(w, e)
+			return
+		}
+		w.Header().Set("Content-Disposition", `attachment; filename="dashboard.geopanel.json"`)
+		writeJSON(w, 200, bundle)
+	}))
+	h.Mux.HandleFunc("POST /api/v1/analytics/import-dashboard", noStore(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
+		var req struct {
+			Bundle            DashboardBundle   `json:"bundle"`
+			ConnectionMapping map[string]string `json:"connectionMapping"`
+			Replace           bool              `json:"replace"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if e := decoder.Decode(&req); e != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			writeError(w, ErrInvalid)
+			return
+		}
+		registered := map[string]bool{}
+		for _, connection := range registry.ListRegisteredConnections().Connections {
+			registered[connection.ID] = true
+		}
+		for _, target := range req.ConnectionMapping {
+			if !registered[target] {
+				writeError(w, fmt.Errorf("%w: unknown target connection", ErrInvalid))
+				return
+			}
+		}
+		report, e := h.Store.ImportDashboard(req.Bundle, req.ConnectionMapping, req.Replace)
+		if e != nil {
+			if errors.Is(e, ErrConflict) {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]string{
+					"code":    "import_conflict",
+					"message": "Analytics objects with matching IDs already exist. Enable replacement to deploy an updated bundle.",
+				}})
+				return
+			}
+			writeError(w, e)
+			return
+		}
+		writeJSON(w, 200, report)
+	}))
 	h.Mux.HandleFunc("POST /api/v1/analytics/import-reference", noStore(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ConnectionID string `json:"connectionId"`

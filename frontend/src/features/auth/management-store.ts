@@ -67,7 +67,11 @@ export const useAuthManagementStore = create<AuthManagementState>(
 
     function selectedWorkspace() {
       const workspaceId = get().selectedWorkspaceId;
-      if (!workspaceId) throw new Error('Select a workspace first.');
+      if (!workspaceId) {
+        const error = new Error('Select a workspace first.');
+        set({ error: error.message });
+        throw error;
+      }
       return workspaceId;
     }
 

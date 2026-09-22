@@ -72,6 +72,10 @@ export function chartValidation(chart: Chart): string {
       : 'Choose coordinate fields and include each in dimensions.';
   }
   if (!metrics.length) return 'Choose at least one metric.';
+  if (chart.type === 'regionMap')
+    return dimensions.length === 2 && metrics.length === 1
+      ? ''
+      : 'Region map requires region name and GeoJSON geometry dimensions, in that order, and one metric.';
   if (chart.type === 'matrixHeatmap')
     return dimensions.length === 2 && metrics.length === 1
       ? ''
@@ -110,6 +114,7 @@ export function ChartBuilder({ datasets }: { datasets: Dataset[] }) {
   const [selection, setSelection] = useState<Filter[]>([]);
   const abort = useRef<AbortController | null>(null);
   const requestVersion = useRef(0);
+  const initialCatalogLoaded = useRef(false);
   const dataset = datasets.find((d) => d.id === draft.datasetId);
   const fields =
     dataset?.fields.map((f) => ({ value: f.id, label: f.name })) || [];
@@ -119,7 +124,14 @@ export function ChartBuilder({ datasets }: { datasets: Dataset[] }) {
   const validation = chartValidation(draft);
   const refresh = useCallback(async () => {
     try {
-      setCharts(await listObjects<Chart>('charts'));
+      const items = await listObjects<Chart>('charts');
+      setCharts(items);
+      if (!initialCatalogLoaded.current) {
+        initialCatalogLoaded.current = true;
+        if (items[0]) {
+          setDraft(structuredClone(items[0]));
+        }
+      }
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : 'Could not load charts.',
@@ -235,7 +247,7 @@ export function ChartBuilder({ datasets }: { datasets: Dataset[] }) {
     <Stack>
       <Group align="end">
         <Select
-          label="Saved chart"
+          label={`Saved chart (${charts.length})`}
           searchable
           clearable
           miw={260}

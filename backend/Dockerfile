@@ -24,6 +24,8 @@ CMD ["sh", "./docker/dev-watch.sh"]
 
 FROM alpine:3.22
 
+# Alpine package revisions vary across patch releases; the base image pins the package set.
+# hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates
 
 RUN addgroup -S geopanel && adduser -S -G geopanel geopanel \

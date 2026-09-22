@@ -17,7 +17,6 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
-  IconChartBar,
   IconDeviceFloppy,
   IconMapPin,
   IconPencil,
@@ -250,9 +249,6 @@ export function DataInspector({
   const setTableDisplayConfig = useConnectionStore(
     (state) => state.setTableDisplayConfig,
   );
-  const requestAnalysis = useWorkspaceAnalyticsStore(
-    (state) => state.requestAnalysis,
-  );
   const setWorkspaceSelection = useWorkspaceAnalyticsStore(
     (state) => state.setSelection,
   );
@@ -264,10 +260,6 @@ export function DataInspector({
   const activeWorkspaceSource = useWorkspaceAnalyticsStore(
     (state) => state.activeSource,
   );
-  const workspaceSelection = useWorkspaceAnalyticsStore(
-    (state) => state.selection,
-  );
-
   const matchingSavedViews = useMemo(
     () =>
       savedTableViews.filter(
@@ -733,33 +725,6 @@ export function DataInspector({
     startTransition(() => {
       setRowsRefreshToken((value) => value + 1);
     });
-  }
-
-  function handleAnalyzeTable() {
-    if (!connection || !selectedTable) {
-      return;
-    }
-
-    const sourceSelection =
-      selectedRowReferences.length > 0
-        ? selectedRowReferences
-        : activeWorkspaceSource?.connectionId === connection.id &&
-            activeWorkspaceSource.schema === selectedTable.schema &&
-            activeWorkspaceSource.table === selectedTable.name
-          ? workspaceSelection
-          : [];
-    requestAnalysis({
-      connectionId: connection.id,
-      schema: selectedTable.schema,
-      table: selectedTable.name,
-      name: activeSavedView?.name ?? selectedTableAlias ?? selectedTable.name,
-      geometryColumn:
-        selectedTable.geometryColumns.length === 1
-          ? selectedTable.geometryColumns[0].name
-          : undefined,
-      ...(activeTableFilter ? { filter: activeTableFilter } : {}),
-    });
-    setWorkspaceSelection(sourceSelection);
   }
 
   function handleApplyPendingTableFilter() {
@@ -1737,15 +1702,6 @@ export function DataInspector({
             ) : null}
           </Group>
           <Group gap="xs" wrap="nowrap">
-            <Button
-              disabled={!selectedTable}
-              leftSection={<IconChartBar size={14} />}
-              onClick={handleAnalyzeTable}
-              size="compact-sm"
-              variant="light"
-            >
-              Analyze
-            </Button>
             <Button
               disabled={!canCreateSavedView}
               leftSection={<IconPlus size={14} />}

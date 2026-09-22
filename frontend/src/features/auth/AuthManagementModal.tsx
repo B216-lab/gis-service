@@ -327,6 +327,9 @@ function TokensPanel({
 }) {
   const tokens = useAuthManagementStore((state) => state.tokens);
   const busy = useAuthManagementStore((state) => state.busy);
+  const selectedWorkspaceId = useAuthManagementStore(
+    (state) => state.selectedWorkspaceId,
+  );
   const createToken = useAuthManagementStore((state) => state.createToken);
   const revokeToken = useAuthManagementStore((state) => state.revokeToken);
   const rotateToken = useAuthManagementStore((state) => state.rotateToken);
@@ -379,7 +382,7 @@ function TokensPanel({
             <Button
               leftSection={<IconKey size={16} />}
               loading={busy === 'token:create'}
-              disabled={selectedScopes.length === 0}
+              disabled={!selectedWorkspaceId || selectedScopes.length === 0}
               onClick={() => void submitToken()}
             >
               Create token
@@ -400,8 +403,9 @@ function TokensPanel({
                 key={definition.scope}
                 label={definition.label}
                 onChange={(event) => {
+                  const checked = event.currentTarget.checked;
                   setSelectedScopes((current) =>
-                    event.currentTarget.checked
+                    checked
                       ? [...current, definition.scope]
                       : current.filter((scope) => scope !== definition.scope),
                   );
@@ -595,6 +599,14 @@ export function AuthManagementModal({
 
           <CurrentUserPanel user={user} />
           <Divider />
+
+          {!loading && workspaces.length === 0 ? (
+            <Alert color="yellow" icon={<IconAlertCircle size={18} />}>
+              You do not have access to a GeoPanel workspace. Ask a workspace
+              admin to add your OIDC subject before managing members or API
+              tokens.
+            </Alert>
+          ) : null}
 
           <Tabs defaultValue="members">
             <Tabs.List>

@@ -71,6 +71,27 @@ func TestTokenRoutesUsePrincipalWorkspaceAndNeverReturnPlaintextOnList(t *testin
 	}
 }
 
+func TestBrowserSessionAdminCanCreateTokenWithoutAPITokenScopes(t *testing.T) {
+	store := &tokenHTTPTestStore{}
+	handler := &tokenHTTPHandler{
+		store: store,
+		authz: tokenHTTPTestAuthz{roles: map[string]WorkspaceRole{
+			"u/ws": WorkspaceAdmin,
+		}},
+	}
+	body := fmt.Sprintf(`{"scopes":{"read":true},"expires_at":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/tokens?workspace_id=ws", strings.NewReader(body)).WithContext(
+		WithPrincipal(context.Background(), Principal{Subject: "u"}),
+	)
+	response := httptest.NewRecorder()
+
+	handler.tokens(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create response: status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestTokenRoutesDenyCrossWorkspacePrincipal(t *testing.T) {
 	store := &tokenHTTPTestStore{}
 	handler := &tokenHTTPHandler{store: store, authz: tokenHTTPTestAuthz{roles: map[string]WorkspaceRole{"u/ws-a": WorkspaceAdmin, "u/ws-b": WorkspaceAdmin}}}

@@ -60,7 +60,6 @@ beforeEach(() => {
     viewport: null,
     refreshVersion: 0,
     overlays: [],
-    requested: false,
   });
 });
 

@@ -21,6 +21,55 @@ const chart: Chart = {
   },
 };
 describe('analytics chart selections', () => {
+  test('region map filters by region without leaking polygon geometry', () => {
+    const map: Chart = {
+      ...chart,
+      type: 'regionMap',
+      query: {
+        datasetId: 'd',
+        dimensions: ['region', 'geometry'],
+        metrics: ['count'],
+      },
+    };
+    const rows = [
+      { region: 'Irkutsk', geometry: '{"type":"Polygon"}', count: 12 },
+      { region: 'Buryatia', geometry: '{"type":"MultiPolygon"}', count: 4 },
+    ];
+    expect(chartValidation(map)).toBe('');
+    expect(selectionFilters(map, [rows[0]])).toEqual([
+      {
+        datasetId: 'd',
+        fieldId: 'region',
+        operator: 'eq',
+        values: ['Irkutsk'],
+      },
+    ]);
+    expect(selectionFilters(map, rows)[0].anyOf).toEqual([
+      [
+        {
+          datasetId: 'd',
+          fieldId: 'region',
+          operator: 'eq',
+          values: ['Irkutsk'],
+        },
+      ],
+      [
+        {
+          datasetId: 'd',
+          fieldId: 'region',
+          operator: 'eq',
+          values: ['Buryatia'],
+        },
+      ],
+    ]);
+    expect(selectionFilters(map, [])).toEqual([]);
+    expect(
+      chartValidation({
+        ...map,
+        query: { ...map.query, dimensions: ['region'] },
+      }),
+    ).toContain('GeoJSON');
+  });
   test('matrix selection preserves tuples rather than Cartesian product', () => {
     const filters = selectionFilters(chart, [
       { hour: 8, weekday: 1, count: 2 },

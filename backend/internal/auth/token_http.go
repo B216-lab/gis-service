@@ -218,6 +218,9 @@ func (handler *tokenHTTPHandler) authorize(w http.ResponseWriter, r *http.Reques
 }
 
 func hasTokenScope(principal Principal, operation string) bool {
+	if !principal.IsAPIToken {
+		return true
+	}
 	return principal.Scopes["auth:tokens:"+operation] || principal.Scopes["tokens:"+operation] || principal.Scopes["auth:tokens:write"]
 }
 
